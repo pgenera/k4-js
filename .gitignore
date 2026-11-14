@@ -1,0 +1,14 @@
+# Never track Elecraft manuals or any PDFs
+*.pdf
+*.PDF
+
+# Local simulator binaries and transient test logs/pids
+/sim/k4sim
+/artifacts/
+*.log
+*.pid
+
+# OS / editor artifacts
+.DS_Store
+*~
+*.swp

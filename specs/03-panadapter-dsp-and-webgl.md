@@ -1,0 +1,92 @@
+# Spec 03: Panadapter DSP, Waterfall Colorization, WebGL2 Renderer, and Click-to-Tune
+
+## 1. Exact DSP Formulas (`web/js/panadapter/dsp.js`)
+
+### 1.1 `K4.SpectrumScale`
+- Constants:
+  - `PAN_BYTE_OFFSET = 162.0` (`0x02` PAN: `dBm = byte - 162.0`)
+  - `MINIPAN_BYTE_OFFSET = 118.0` (`0x03` MiniPAN: `dBm = byte - 118.0`)
+- Static helpers:
+  - `decodePanBins(binsUint8, outFloat32)` -> converts `0..255` via `byte - 162.0`.
+  - `decodeMiniPanBins(binsUint8, outFloat32)` -> converts `0..255` via `byte - 118.0`.
+  - `sUnitForDbm(dBm)` -> returns formatted string (`'S5'`, `'S9+15'`, etc.) and numeric `sUnits` (`<= 9` is `(dBm + 127) / 6`).
+
+### 1.2 `K4.SpectrumGeometry`
+- **Hysteresis Span Crop**:
+  - `computeCrop(userSpanHz, tierKHz)`:
+    - `tierSpanHz = Math.max(1000, tierKHz * 1000)` (`24000`, `48000`, `96000`, `192000`, `384000`)
+    - `spanRatio = clamp(userSpanHz / tierSpanHz, 0.01, 1.0)`
+    - `leftRatio = 0.5 * (1.0 - spanRatio)`
+    - Normalized screen coordinate `u` in `[0, 1]` samples source normalized coordinate `tierU = leftRatio + u * spanRatio`.
+    - Source bin index (floating) for N bins: `binF = tierU * (N - 1)`.
+- **Mode Display Center & Passband Geometry**:
+  - `displayMarkerHz(rxState, cwPitchHz)`:
+    - `CW` (`mode === 3`): `rxState.freqHz + cwPitchHz`
+    - `CW-R` (`mode === 7`): `rxState.freqHz - cwPitchHz`
+    - All other modes: `rxState.freqHz`
+  - `computePassbandRange(rxState, cwPitchHz)`:
+    - Returns `{ carrierHz, centerHz, lowHz, highHz }`
+    - `carrierHz = rxState.freqHz`, `bw = rxState.bwHz`
+    - `USB` (`2`) or `DATA`/`DATA-A` (`6` with `dataSubMode === 0`): `center = carrier + rxState.ifShiftHz`
+    - `LSB` (`1`): `center = carrier - rxState.ifShiftHz`
+    - `CW` (`3`): `center = carrier + (rxState.ifShiftHz || cwPitchHz)`
+    - `CW-R` (`7`): `center = carrier - (rxState.ifShiftHz || cwPitchHz)`
+    - `AFSK-A` / `FSK-D` (`dataSubMode === 1 || 2` in `DATA`/`DATA-R`): `center = (rxState.mode === 9 ? carrier + 85 : carrier - 85)`
+    - `PSK-D` (`dataSubMode === 3`), `AM` (`5`), `FM` (`4`): `center = carrier`
+    - `lowHz = center - bw / 2`, `highHz = center + bw / 2`.
+- **Click-to-Tune Conversion**:
+  - `rfFreqFromX(xPx, plotLeftPx, plotWidthPx, panCenterHz, userSpanHz)`:
+    - `u = clamp((xPx - plotLeftPx) / plotWidthPx, 0, 1)`
+    - `return panCenterHz - userSpanHz / 2 + u * userSpanHz`
+  - `dialFreqFromClick({ xPx, plotLeftPx, plotWidthPx, panCenterHz, userSpanHz, mode, cwPitchHz, stepHz, fine })`:
+    - `rfHz = rfFreqFromX(...)`
+    - In `CW` (`mode === 3`): `rawDial = rfHz - cwPitchHz`
+    - In `CW-R` (`mode === 7`): `rawDial = rfHz + cwPitchHz`
+    - Else: `rawDial = rfHz`
+    - `step = fine ? 1 : (stepHz || 100)`
+    - `snappedHz = clamp(Math.round(rawDial / step) * step, 100000, 54000000)`
+    - Return `snappedHz`.
+
+### 1.3 `K4.PowerAverager`
+- Maintains `Float32Array` ring buffer of `depth` frames (sized dynamically when `#AVG` changes, `1..20`), storing linear power `Math.pow(10, dBm / 10)` per bin, running sum per bin, `shownDbm` `Float32Array` for trace smoothing.
+- `clear()`: resets ring buffer and `shownDbm` (MUST be called whenever `sampleRateKHz` tier changes or `panCenterHz` jumps `> tierSpanHz / 2`).
+- `push(rawDbmBins, avgCount)` -> returns `{ avgDbm: Float32Array, shownDbm: Float32Array, peakDbm: Float32Array }`:
+  - `avgDbm[i] = 10 * Math.log10(Math.max(1e-18, sumMw[i] / frameCount))`
+  - If `avgCount > 1`: `shownDbm[i] += 0.5 * (avgDbm[i] - shownDbm[i])`; else `shownDbm[i] = avgDbm[i]`.
+  - Track decaying peak hold (`peakDbm[i] = Math.max(avgDbm[i], peakDbm[i] - 0.12)`).
+
+### 1.4 `K4.WaterfallRowMapper`
+- `mapRow(avgDbmBins, { refDbm, scaleDb, wfBlack }, outUint8)`:
+  - `highDbm = refDbm`
+  - `spanDb = clamp(scaleDb || 80, 10, 150)`
+  - `wbs = (wfBlack >= 5 && wfBlack <= 30) ? wfBlack : 14`
+  - `lowDbm = highDbm - spanDb * (wbs / 40.0)`
+  - `range = Math.max(1.0, highDbm - lowDbm)`
+  - For each bin: `t = clamp((avgDbmBins[i] - lowDbm) / range, 0, 1)`; `outUint8[i] = 1 + Math.round(t * 254)` (`0` reserved strictly for uninitialized rows -> transparent/background `#090B10`).
+
+## 2. Waterfall Color LUTs (`web/js/panadapter/color-luts.js`)
+Provide 4 crisp, scientific 256-entry RGBA lookup tables (`Uint8Array(1024)`), index `0 = [9, 11, 16, 255]`:
+1. `'obsidian'` (Default signature Observatory theme): deep obsidian `#090B10` -> indigo `#1E3A8A` -> electric cyan `#06B6D4` -> luminous amber `#F59E0B` -> incandescent white `#F8FAFC`.
+2. `'thermal'`: black -> crimson -> orange -> gold -> white.
+3. `'viridis'`: perceptual scientific dark purple -> teal -> emerald -> bright yellow.
+4. `'cyan'`: high-contrast monochrome cyan (`#071018` -> `#38BDF8` -> `#E0F2FE`) tailored for CW/digital weak-signal decoding.
+
+## 3. Amateur Band Plan Ribbon (`web/js/panadapter/band-plan.js`)
+Expose IARU Region 2 segment metadata (`CW`, `Digital`, `Phone/SSB`, `Beacon`) across HF + 6m (`160m..6m`), rendered as a subtle 6px color-coded track along the frequency axis strip with hover tooltip.
+
+## 4. WebGL2 + Canvas2D Dual Renderer (`web/js/panadapter/webgl-renderer.js`)
+- `createPanRenderer(container, opts)` attempts `canvas.getContext('webgl2', { antialias: true, alpha: false, preserveDrawingBuffer: true })` (note `preserveDrawingBuffer: true` helps reliable screenshot capture AND pixel inspection tests!). If WebGL2 is unavailable (e.g., disabled software GL in headless mode), seamlessly instantiate `K4.PanadapterCanvas2D` implementing the identical API (`render(frameState)`, `pushWaterfallRow(uint8Row)`, `clearWaterfall()`, `setPalette(name)`, `resize()`, `destroy()`).
+- **Canvas Layer Stack**:
+  1. WebGL2 (or Canvas2D) pixel layer for GPU ring-buffer waterfall (`WIDTH × 512` `R8`/`RGBA8` `NEAREST` filtering so narrow CW/FT8 traces stay pixel-sharp!) + spectrum filled gradient + trace.
+  2. Crisp HiDPI Canvas2D overlay layer (`devicePixelRatio` scaled) drawing:
+     - Top ~38% Spectrum pane: horizontal dBm & S-unit grid (`-130 .. -10 dBm`), vertical kHz ticks, passband translucent curtain (Main `#38BDF8` 18% fill, Sub `#F59E0B` 14% fill when Sub RX enabled), manual notch vertical marker if `notchOn`, peak-hold hairline, VFO A & VFO B frequency needles with pill flags, and interactive hover crosshair (`f`, `dBm`, `delta from VFO`).
+     - Middle `26px` Axis & Band-Plan strip: crisp tabular kHz labels + band-plan color segments.
+     - Bottom ~62% Waterfall pane: GPU scrolled waterfall, plus `#DPM == 2` dual split (side-by-side when container width `>= 1000px`, stacked if narrower) and optional `#MP$` Mini-Pan (`280×150px` top-right overlay loupe when enabled).
+- **Canvas DOM Contract**: Assign predictable CSS classes (`k4-pan-surface`, `k4-pan-gl`, `k4-pan-overlay`, `k4-minipan-box`) and update `dataset.frames`, `dataset.renderer` (`'webgl2' | 'canvas2d'`) on the root container for observability and E2E verification.
+
+## 5. Interactive Controls (`web/js/panadapter/interaction.js`)
+- Left-click (no drag): tune Target VFO (`targetRx`, default `'A'`; `'B'` if `Shift` held or mobile target toggle set to `'B'`). If `Alt` held, `fine: true` (`1 Hz` snap).
+- Right-click (with `contextmenu` prevented inside panadapter): tune VFO B (`'B'`) immediately!
+- Horizontal pointer drag (`> 5px` threshold): pan active RX frequency smoothly (accumulate delta Hz, throttle `FA`/`FB` sends at max 20 Hz, wait until drag completes or snap cleanly). Also support dragging passband side-edges to adjust `BW`/`IS` when cursor hovers within 6px of a passband edge.
+- Mouse wheel: default scrolls frequency by `stepHz` (`Alt` = fine); if `Ctrl`/`Meta` held or hovering over frequency axis/span control, zooms `#SPN` smoothly across `[6, 12, 24, 36, 48, 72, 96, 144, 192, 288, 368]` kHz steps!
+- Touch gestures (`pointerType === 'touch'` / 2 pointers): single tap = click-to-tune active target VFO; 1-finger drag = smooth pan; 2-finger horizontal pinch = adjust `#SPN`.
