@@ -42,57 +42,69 @@ Return `{ kind, rx, ... }` (`rx` is `'A'` or `'B'` when receiver-scoped, `null` 
 - `MD` / `MD$`: 1 digit -> `{ kind: 'mode', rx, modeCode }`
 - `DT` / `DT$`: 1 digit -> `{ kind: 'dataSubMode', rx, subMode }`
 - `BW` / `BW$`: 4 digits (`x10 Hz`) -> `{ kind: 'bw', rx, bwHz: val * 10 }`
-- `IS` / `IS$`: optional leading space + 4 digits (`x10 Hz` in K41 mode; if raw >= 1000? Wait: K4 manual p.18: in `K41;` mode `IS$` uses `x10 Hz`, e.g. `IS$0150;` = `1500 Hz`, while legacy K3 is `IS 0500;` -> in `K41;` (`ER1;`), spec `IS`/`IS$` uses `val * 10` Hz when length is 4 digits <= 600, wait: let's follow QK4 & manual explicitly: since we always send `K41;`, `ISnnnn;` and `IS$nnnn;` are `val * 10` Hz! Note: support optional whitespace after `IS` such as `IS 0150;`). `{ kind: 'ifShift', rx, ifShiftHz: val * 10 }`
+- `IS` / `IS$`: optional leading space + 4 digits (`x10 Hz` in `K41;` / `ER1;` mode; e.g., `IS0150;` / `IS$0150;` / `IS 0150;` = `1500 Hz`) -> `{ kind: 'ifShift', rx, ifShiftHz: val * 10 }`
 - `CW`: 2 digits (`x10 Hz`) -> `{ kind: 'cwPitch', rx: null, cwPitchHz: val * 10 }`
-- `VT` / `VT$`: `nm` (step index `0..6`, optional mode digit) -> `{ kind: 'step', rx, stepIdx, stepHz: STEP_HZ_TABLE[idx] }`
+- `VT` / `VT$`: `nm` (step index `0..6`, optional mode digit) -> `{ kind: 'step', rx, stepIdx, stepHz: STEP_HZ_TABLE[stepIdx] }`
 - `LK` / `LK$`: `0|1` -> `{ kind: 'lock', rx, locked: val === 1 }`
-- `PA` / `PA$`: `nm` (`preamp: 0..3`, `on: 0|1`) -> `{ kind: 'preamp', rx, preamp: on ? n : 0, preampOn: on === 1 }`
-- `RA` / `RA$`: `nnm` (`attenDb: 0..21`, `on: 0|1`) -> `{ kind: 'atten', rx, attenDb: on ? nn : 0, attenOn: on === 1 }`
+- `BN` / `BN$`: 1–2 digits (zero-padded to 2 digits) -> `{ kind: 'band', rx, bn }`
+- `PA` / `PA$`: `PA[n]m` (`preamp: 0..3`, `on: 0|1`; 1-digit form maps `'1'` -> `preamp: 1`) -> `{ kind: 'preamp', rx, preamp: on ? n : 0, preampOn: on }`
+- `RA` / `RA$`: `RA[nn]m` (`attenDb: 0..21`, `on: 0|1`; 1-digit `'1'` -> `attenDb: 6`) -> `{ kind: 'atten', rx, attenDb: on ? nn : 0, attenOn: on }`
 - `AG` / `AG$`: `nnn` (`000..060`) -> `{ kind: 'afGain', rx, afGain }`
 - `RG` / `RG$`: `-nn` or `nn` (`-60..0`) -> `{ kind: 'rfGain', rx, rfGainDb }`
 - `SQ` / `SQ$`: `nnn` (`000..040`) -> `{ kind: 'squelch', rx, squelch }`
-- `NB` / `NB$`: `NBnnm` (3 chars: level `0..15`, on `0|1`) or `NBm` (1 char: on `0|1`) -> `{ kind: 'nb', rx, nbLevel, nbOn }`
-- `NR` / `NR$`: `NRnnm` (level `0..10`, on `0|1`) -> `{ kind: 'nr', rx, nrLevel, nrOn }`
-- `NM` / `NM$`: `NMnnnnm` (`150..5000 Hz`, on `0|1`) or `NMm` -> `{ kind: 'notch', rx, notchHz, notchOn }`
+- `NB` / `NB$`: `NBnnm` (level `0..15`, on `0|1`) or `NBm` (on `0|1`, `nbLevel: null`) -> `{ kind: 'nb', rx, nbLevel, nbOn }`
+- `NR` / `NR$`: `NRnnm` (level `0..10`, on `0|1`) or `NRm` (`nrLevel: null`) -> `{ kind: 'nr', rx, nrLevel, nrOn }`
+- `NM` / `NM$`: `NMnnnnm` (`150..5000 Hz`, on `0|1`) or `NMm` (`notchHz: null`) -> `{ kind: 'notch', rx, notchHz, notchOn }`
 - `GT` / `GT$`: `0|1|2` (`0=OFF, 1=SLOW, 2=FAST`) -> `{ kind: 'agc', rx, agc }`
 - `AP` / `AP$`: `mb` (`on: 0|1`, `bwIdx: 0|1|2`) -> `{ kind: 'apf', rx, apfOn, apfBwIdx }`
-- `SMH` / `SMH$`: signed dBm string e.g. `SMH-095;` or `SMH+005;` -> `{ kind: 'smeterDbm', rx, dBm }`. Compute S-unit label: if `dBm <= -73`, `S = clamp((dBm + 127) / 6, 0, 9)`; if `dBm > -73`, `overDb = Math.round(dBm + 73)` (`S9+XX`).
+- `OV$` / `OV`: 1–2 binary digits (`[01]{1,2}`, e.g. `OV0;`/`OV1;` or `OVnm;`) -> `{ kind: 'adcOverflow', rx, adcOverflow: t[0] === '1', cor: t.length >= 2 ? t[1] === '1' : false }`
+- `FI$` / `FI`: integer IF center frequency in Hz -> `{ kind: 'ifCenter', rx, ifCenterHz: v }`
+- `RT$` / `RT`: `0|1` -> `{ kind: 'rit', rx, ritOn: v === 1 }`
+- `RO$` / `RO`: signed integer offset in Hz (`-9999..+9999`) -> `{ kind: 'ritOffset', rx, ritOffsetHz: v }`
+- `DV`: `0|1` -> `{ kind: 'diversity', rx: null, diversityEnabled: v === 1 }`
+- `SMH` / `SMH$`: signed dBm string e.g. `SMH-095;` or `SMH+005;` -> `{ kind: 'smeterDbm', rx, dBm, sUnits, sLabel }`. Compute S-unit label: if `dBm <= -73`, `S = clamp((dBm + 127) / 6, 0, 9)`; if `dBm > -73`, `overDb = Math.round(dBm + 73)` (`S9+XX`).
 - `SM` / `SM$`: `nn` (`00..42` bars in `K41`) -> convert approx `dBm = -127 + (nn * 114) / 42` -> `{ kind: 'smeterBars', rx, bars: nn, dBm }`
-- `SB`: `0|1` -> `{ kind: 'subRx', subRxEnabled: val === 1 }`
-- `FT`: `0|1` -> `{ kind: 'split', splitEnabled: val === 1 }`
-- `LN`: `0|1` -> `{ kind: 'vfoLink', linked: val === 1 }`
+- `SB`: `0|1` -> `{ kind: 'subRx', rx: null, subRxEnabled: val === 1 }`
+- `FT`: `0|1` -> `{ kind: 'split', rx: null, splitEnabled: val === 1 }`
+- `LN`: `0|1` -> `{ kind: 'vfoLink', rx: null, linked: val === 1 }`
 - `#SPN` / `#SPN$`: integer (`>= 6000` direct Hz; `< 1000` interpret `* 1000` Hz per K4 manual `#SPN46;`!) -> `{ kind: 'panSpan', rx, spanHz }`
 - `#REF` / `#REF$`: signed int `-200..60` -> `{ kind: 'panRef', rx, refDbm }`
 - `#SCL` / `#SCL$`: int `10..150` -> `{ kind: 'panScale', rx, scaleDb }`
-- `#AVG`: int `1..20` -> `{ kind: 'panAvg', avg }`
+- `#AVG`: int `1..20` -> `{ kind: 'panAvg', rx: null, avg }`
 - `#WBS` / `#WBS$`: int `5..30` -> `{ kind: 'wfBlack', rx, wfBlack }`
-- `#AR` / `#AR$`: either `#ARaadd+oom` (take trailing `m === '1'`) or 1-char -> `{ kind: 'autoRef', rx, autoRef }`
-- `#DPM`: `0|1|2` -> `{ kind: 'dualPan', dualPanMode }`
-- `#MP` / `#MP$`: `0|1` (ignore `-1` or set `miniPanAvailable: false`) -> `{ kind: 'miniPan', rx, miniPan }`
-- `MX`: string in `['A.B','AB.AB','A.-A','A.AB','AB.B','AB.A','B.AB','B.B','B.A','A.A']` -> `{ kind: 'audioMix', mix }`
-- `EM`: `0|1|2|3` -> `{ kind: 'encodeMode', encodeMode }`
-- `SL`: `0..7` -> `{ kind: 'streamingLatency', streamingLatency }`
-- `PONG`: `<epoch>` -> `{ kind: 'pong', epoch }`
+- `#AR` / `#AR$`: either `#ARaadd+oom` (take trailing `m === '1'`) or 1-char (`A`/`M`/`0`/`1`/`9`) -> `{ kind: 'autoRef', rx, autoRef }`
+- `#DPM`: `0|1|2` -> `{ kind: 'dualPan', rx: null, dualPanMode }`
+- `#MP` / `#MP$`: `0|1` (or `-1` -> `{ kind: 'miniPan', rx, miniPan: false, miniPanAvailable: false }`) -> `{ kind: 'miniPan', rx, miniPan, miniPanAvailable }`
+- `#FRZ`: `0|1` -> `{ kind: 'panFrozen', rx: null, panFrozen: v === 1 }`
+- `MX`: string in `['A.B','AB.AB','A.-A','A.AB','AB.B','AB.A','B.AB','B.B','B.A','A.A']` -> `{ kind: 'audioMix', rx: null, mix }`
+- `EM`: `0|1|2|3` -> `{ kind: 'encodeMode', rx: null, encodeMode }`
+- `SL`: `0..7` -> `{ kind: 'streamingLatency', rx: null, streamingLatency }`
+- `PING` / `PONG`: `<epoch>` -> `{ kind: 'ping' | 'pong', rx: null, epoch }`
 - `TB` / `TB$`: `{ kind: 'decodedText', rx, txQueued, text }`
-- `ER`: `nn` or `nn:msg` -> `{ kind: 'radioError', code, message }`
-- `ID` / `OM` / `SN`: radio identity metadata.
+- `ER`: `nn` or `nn:msg` -> `{ kind: 'radioError', rx: null, code, message }`
+- `ID` / `OM` / `SN`: `{ kind: 'radioId' | 'optionModule' | 'serial', rx: null, ... }`
 
 ### Builder Functions (`CatCodec.builders`)
 - `freq(rx, hz)`: `'F' + (rx === 'B' ? 'B' : 'A') + String(Math.round(clamp(hz, 100000, 54000000))).padStart(11, '0') + ';'`
-- `mode(rx, code)`: `'MD' + (rx === 'B' ? '$' : '') + code + ';'`
-- `dataSubMode(rx, sub)`: `'DT' + (rx === 'B' ? '$' : '') + sub + ';'`
+- `mode(rx, code)`: `'MD' + (rx === 'B' ? '$' : '') + Math.round(Number(code)) + ';'`
+- `dataSubMode(rx, sub)`: `'DT' + (rx === 'B' ? '$' : '') + clamp(Math.round(Number(sub)), 0, 3) + ';'`
 - `bw(rx, bwHz)`: `'BW' + (rx === 'B' ? '$' : '') + String(Math.round(clamp(bwHz, 50, 5000) / 10)).padStart(4, '0') + ';'`
 - `ifShift(rx, hz)`: `'IS' + (rx === 'B' ? '$' : '') + String(Math.round(clamp(hz, 0, 5000) / 10)).padStart(4, '0') + ';'`
 - `cwPitch(hz)`: `'CW' + String(Math.round(clamp(hz, 250, 950) / 10)).padStart(2, '0') + ';'`
-- `step(rx, idx, modeCode)`: `'VT' + (rx === 'B' ? '$' : '') + clamp(idx, 0, 6) + (modeCode ?? '') + ';'`
+- `step(rx, idx, modeCode)`: `'VT' + (rx === 'B' ? '$' : '') + clamp(Math.round(Number(idx)), 0, 6) + (modeCode ?? '') + ';'`
 - `lock(rx, on)`: `'LK' + (rx === 'B' ? '$' : '') + (on ? '1' : '0') + ';'`
 - `subRx(on)`: `'SB' + (on ? '1' : '0') + ';'`
+- `band(rx, bn)`: `'BN' + (rx === 'B' ? '$' : '') + String(bn).padStart(2, '0') + ';'`
 - `preamp(rx, level)`: `'PA' + (rx === 'B' ? '$' : '') + (level > 0 ? `${level}1` : '00') + ';'`
 - `atten(rx, db)`: `'RA' + (rx === 'B' ? '$' : '') + String(db > 0 ? clamp(Math.round(db/3)*3, 3, 21) : 0).padStart(2, '0') + (db > 0 ? '1' : '0') + ';'`
+- `afGain(rx, val)`: `'AG' + (rx === 'B' ? '$' : '') + String(clamp(Math.round(Number(val)), 0, 60)).padStart(3, '0') + ';'`
+- `rfGain(rx, db)`: `'RG' + (rx === 'B' ? '$' : '') + (v === 0 ? '00' : String(clamp(Math.round(Number(db)), -60, 0))) + ';'`
+- `squelch(rx, val)`: `'SQ' + (rx === 'B' ? '$' : '') + String(clamp(Math.round(Number(val)), 0, 40)).padStart(3, '0') + ';'`
 - `nb(rx, level, on)`: `'NB' + (rx === 'B' ? '$' : '') + String(clamp(level, 0, 15)).padStart(2, '0') + (on ? '1' : '0') + ';'`
 - `nr(rx, level, on)`: `'NR' + (rx === 'B' ? '$' : '') + String(clamp(level, 0, 10)).padStart(2, '0') + (on ? '1' : '0') + ';'`
 - `notch(rx, hz, on)`: `'NM' + (rx === 'B' ? '$' : '') + String(clamp(Math.round(hz), 150, 5000)).padStart(4, '0') + (on ? '1' : '0') + ';'`
 - `agc(rx, mode)`: `'GT' + (rx === 'B' ? '$' : '') + clamp(mode, 0, 2) + ';'`
+- `apf(rx, on, bwIdx = 0)`: `'AP' + (rx === 'B' ? '$' : '') + (on ? '1' : '0') + clamp(Math.round(Number(bwIdx)), 0, 2) + ';'`
 - `panSpan(rx, spanHz)`: `'#SPN' + (rx === 'B' ? '$' : '') + Math.round(clamp(spanHz, 6000, 368000)) + ';'`
 - `panRef(rx, refDbm)`: `'#REF' + (rx === 'B' ? '$' : '') + Math.round(clamp(refDbm, -160, 20)) + ';'`
 - `panScale(rx, scaleDb)`: `'#SCL' + (rx === 'B' ? '$' : '') + Math.round(clamp(scaleDb, 10, 150)) + ';'`
@@ -101,19 +113,25 @@ Return `{ kind, rx, ... }` (`rx` is `'A'` or `'B'` when receiver-scoped, `null` 
 - `autoRef(rx, on)`: `'#AR' + (rx === 'B' ? '$' : '') + (on ? 'A' : 'M') + ';'`
 - `dualPan(mode)`: `'#DPM' + clamp(mode, 0, 2) + ';'`
 - `miniPan(rx, on)`: `'#MP' + (rx === 'B' ? '$' : '') + (on ? '1' : '0') + ';'`
-- `audioMix(mix)`: `'MX' + mix + ';'`
+- `centerPan(rx, offsetHz)`: when `offsetHz` is defined/finite and `Math.round(Number(offsetHz)) !== 0`, returns `'FC' + (rx === 'B' ? '$' : '') + (off > 0 ? '+' + off : String(off)) + ';'`; otherwise returns `'FC' + (rx === 'B' ? '$' : '') + ';'` (re-center panadapter on VFO)
+- `rit(rx, on)`: `'RT' + (rx === 'B' ? '$' : '') + (on ? '1' : '0') + ';'`
+- `ritOffset(rx, hz)`: clamps `hz` to `[-9999, 9999]` (default `0` if non-finite) and returns `'RO' + (rx === 'B' ? '$' : '') + (v < 0 ? '-' : '+') + String(Math.abs(v)).padStart(4, '0') + ';'`
+- `freezePan(on)`: `'#FRZ' + (on ? '1' : '0') + ';'`
+- `fixedTune(on)`: `'#FXT' + (on ? '1' : '0') + ';'`
+- `diversity(on)`: `'DV' + (on ? '1' : '0') + ';'`
+- `audioMix(mix)`: `'MX' + mix + ';'` (validates against `AUDIO_MIX_MODES`)
 - `encodeMode(em)`: `'EM' + clamp(em, 0, 3) + ';'`
 - `streamingLatency(sl)`: `'SL' + clamp(sl, 0, 7) + ';'`
 - `ping(epochSec)`: `'PING' + Math.floor(epochSec) + ';'`
 
 ## 4. `K4.RadioState` Default Snapshot & Events
 Default RX state (`createDefaultRxState(defaultFreqHz)`):
-- `rxA`: `freqHz: 14074000`, `mode: 6` (`DATA`), `dataSubMode: 0` (`DATA-A`), `bwHz: 2700`, `ifShiftHz: 1500`, `stepHz: 100`, `stepIdx: 2`, `locked: false`, `preamp: 0`, `attenDb: 0`, `afGain: 30`, `rfGainDb: 0`, `squelch: 0`, `nbOn: false`, `nbLevel: 5`, `nrOn: false`, `nrLevel: 4`, `notchOn: false`, `notchHz: 750`, `agc: 1`, `apfOn: false`, `apfBwIdx: 0`, `sMeterDbm: -115`, `panSpanHz: 48000`, `panRefDbm: -50`, `panScaleDb: 80`, `wfBlack: 14`, `autoRef: false`, `miniPan: false`, `panCenterHz: 14074000`, `panTierKHz: 48`, `noiseFloorDbm: -120`
-- `rxB`: same shape with `freqHz: 14025000`, `mode: 3` (`CW`), `bwHz: 500`, `ifShiftHz: 500`
+- `rxA`: `freqHz: 14074000`, `mode: 6` (`DATA`), `dataSubMode: 0` (`DATA-A`), `bwHz: 2700`, `ifShiftHz: 1500`, `stepHz: 100`, `stepIdx: 2`, `locked: false`, `preamp: 0`, `attenDb: 0`, `afGain: 30`, `rfGainDb: 0`, `squelch: 0`, `nbOn: false`, `nbLevel: 5`, `nrOn: false`, `nrLevel: 4`, `notchOn: false`, `notchHz: 750`, `agc: 1`, `apfOn: false`, `apfBwIdx: 0`, `sMeterDbm: -115`, `panSpanHz: 48000`, `panRefDbm: -50`, `panScaleDb: 80`, `wfBlack: 14`, `autoRef: false`, `miniPan: false`, `miniPanAvailable: true`, `panCenterHz: 14074000`, `panTierKHz: 48`, `noiseFloorDbm: -120`, `adcOverflow: false`, `ifCenterHz: null`, `ritOn: false`, `ritOffsetHz: 0`, `band: bandForFreq(14074000)`
+- `rxB`: same shape with `freqHz: 14025000`, `mode: 3` (`CW`), `bwHz: 500`, `ifShiftHz: 500`, `panCenterHz: 14025000`, `band: bandForFreq(14025000)`
 - Top-level fields:
   - `connection`: `{ status: 'disconnected'|'connecting'|'authenticating'|'connected'|'error', wsUrl: '', subprotocol: '', authStatus: 'none'|'authenticating'|'authenticated'|'rejected', error: null, rttMs: null, radioId: '', serial: '' }`
   - `operatingPolicy: 'rx-only'`
-  - `cwPitchHz: 500`, `subRxEnabled: false`, `splitEnabled: false`, `vfoLinked: false`, `activeTxVfo: 'A'`, `panAvg: 4`, `dualPanMode: 0`, `audioMix: 'A.B'`, `encodeMode: 1`, `streamingLatency: 2`
+  - `cwPitchHz: 500`, `subRxEnabled: false`, `splitEnabled: false`, `vfoLinked: false`, `diversityEnabled: false`, `activeTxVfo: 'A'`, `panAvg: 4`, `dualPanMode: 0`, `panFrozen: false`, `audioMix: 'A.B'`, `encodeMode: 1`, `streamingLatency: 2`
   - `decodedText: []` (array of `{ id, rx, text, timestamp }`, max 200 entries)
-  - `band`: derived helper / `K4.BandPlan`
-- Emits `'change'` with `(snapshot, changedKey)`. `K4.Client` forwards `'state'` events whenever `RadioState` changes.
+  - `band`: `rxA.band` (derived via `bandForFreq` / `K4.BANDS`)
+- `applyParsedCat(parsed)` updates all mapped per-RX and top-level fields (including `adcOverflow`, `ifCenterHz`, `ritOn`, `ritOffsetHz`, `diversityEnabled`, and `panFrozen`) and emits `'change'` with `(snapshot, changedKey)`. `K4.Client` forwards `'state'` events whenever `RadioState` changes.

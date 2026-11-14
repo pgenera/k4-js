@@ -11,18 +11,24 @@ The browser connects directly over `ws://` or `wss://` to an off-the-shelf WebSo
   - On `connect(opts)`: if `opts.subprotocolMode` is `'binary'`, pass `['binary']`; if `'none'`, omit subprotocols; if `'auto'` (default), first try `new WebSocket(url, ['binary'])` with `ws.binaryType = 'arraybuffer'`. If `onclose`/`onerror` fires *before* `onopen` succeeds, automatically reconnect once with `new WebSocket(url)` (empty subprotocols) before failing.
 
 ## 2. Authentication & Session Lifecycle
-1. Immediately inside `ws.onopen`, compute `K4.sha384HexSync(password)` (pure-`BigInt` FIPS 180-4 SHA-384 producing 96 lowercase hex ASCII bytes) and send those **96 raw ASCII bytes** (`TextEncoder` -> `Uint8Array(96)`) directly on the WebSocket — **NOT** wrapped in `0xFEFDFCFB` packet framing markers!
-   - Also expose async `K4.sha384Hex(input)` which uses `sha384HexSync` (or verifies via `crypto.subtle` if desired) so both sync unit tests and async callers always work on `file://` in Firefox and Chrome.
-2. **Bootstrap CAT Sequence** (sent in a single framed CAT packet immediately after the 96-byte auth blob, OR upon first open):
-   - Determine `emMode`: if `opts.encodeMode === 0 || 1 || 2 || 3`, use that; if `'auto'` (default), pick `3` ONLY when `K4.OpusPacketDecoder && K4.OpusPacketDecoder.isSupported()` is `true`, otherwise pick `1` (S16LE PCM — guaranteed on `file://` in Firefox!).
-   - Determine `slTier`: default `2` (40 ms). **Immediately self-apply `SL<slTier>` into `RadioState`**, because the K4 does NOT echo `SL<n>;`.
-   - Send:
+1. Immediately inside `ws.onopen`:
+   - Apply `SL<slTier>` and `EM<emMode>` immediately into `RadioState` (because the K4 does NOT echo `SL<n>;`), and transition `connection` to `status: 'authenticating'`, `authStatus: 'authenticating'`.
+   - Compute `K4.sha384HexSync(password)` (pure-`BigInt` FIPS 180-4 SHA-384 producing 96 lowercase hex ASCII bytes) and send **ONLY** those **96 raw ASCII bytes** (`Uint8Array(96)`) directly on the WebSocket — **NOT** wrapped in `0xFEFDFCFB` packet framing markers and **WITHOUT** immediately sending bootstrap CAT or `PING` (matching QK4 `src/network/tcpclient.cpp` post-auth ordering).
+   - Also expose async `K4.sha384Hex(input)` returning `Promise.resolve(sha384HexSync(input))` so both sync unit tests and async callers always work on `file://` in Firefox and Chrome.
+   - Set `this._bootstrapSent = false` and schedule a **250 ms fallback timer** (`this._bootstrapTimer`) to call `_sendBootstrapAndStartKeepalive(gen, emMode, slTier)` if the socket is still open on the same connection generation and no K4 packet has arrived yet.
+2. **Deferred Bootstrap CAT Sequence & 1 Hz `PING` Start** (`_sendBootstrapAndStartKeepalive`):
+   - Triggered immediately upon receipt of the **first valid framed K4 packet** in `_handleFrame(payload)` when `!this._bootstrapSent`, OR by the **250 ms fallback timer** if no packet arrived first.
+   - Marks `_bootstrapSent = true`, clears `_bootstrapTimer`, sends the single framed `bootstrapCat` packet, starts the 1 Hz `PING` timer, and attaches the `'pagehide'` teardown handler.
+   - Determine `emMode`: if `opts.encodeMode` is `0 | 1 | 2 | 3`, use `Number(encodeMode)`; if `'auto'` (default), pick `3` ONLY when `K4.OpusPacketDecoder && K4.OpusPacketDecoder.isSupported()` is `true`, otherwise pick `1` (S16LE PCM — guaranteed on `file://` in Firefox!).
+   - Determine `slTier`: default `2` (40 ms, clamped `0..7`).
+   - Send (note: bare `SP;` is omitted because `SP` is SET-only in rev. D4 and `SP;` triggers `?;`/`ER`):
      ```
-     RDY;K41;ER1;AI5;EM<emMode>;SL<slTier>;FA;FB;MD;MD$;DT;DT$;BW;BW$;IS;IS$;CW;VT;VT$;LK;LK$;SB;SP;FT;SMH;SMH$;#SPN;#SPN$;#REF;#REF$;#SCL;#SCL$;#AVG;#WBS;#WBS$;#AR;#AR$;#DPM;#MP;#MP$;MX;
+     RDY;K41;ER1;AI5;EM<emMode>;SL<slTier>;FA;FB;MD;MD$;DT;DT$;BW;BW$;IS;IS$;CW;VT;VT$;LK;LK$;SB;FT;SMH;SMH$;#SPN;#SPN$;#REF;#REF$;#SCL;#SCL$;#AVG;#WBS;#WBS$;#AR;#AR$;#DPM;#MP;#MP$;MX;
      ```
-3. **First Packet Confirmation**: Transition `connection.authStatus` from `'authenticating'` to `'authenticated'` as soon as ANY valid framed K4 packet arrives from the socket. If the socket closes cleanly or with error during `'authenticating'`, set `authStatus: 'rejected'` (or `'error'`) with diagnostic hint.
+3. **First Packet Confirmation**: Transition `connection.status` to `'connected'` and `connection.authStatus` from `'authenticating'` to `'authenticated'` (clearing `error: null`) as soon as ANY valid framed K4 packet arrives from the socket. If the socket closes cleanly or with error while `authStatus === 'authenticating'`, set `status: 'error'`, `authStatus: 'rejected'` with diagnostic hint.
 4. **1 Hz Keepalive & Clean Close**:
-   - Every `1000 ms` while open, send `PING<Math.floor(Date.now() / 1000)>;` and record send timestamp. When `PONG<ts>;` is received, update `rttMs = Math.round(performance.now() - lastPingSentPerfMs)`.
+   - Every `1000 ms` while open (once `_sendBootstrapAndStartKeepalive` runs), send `PING<Math.floor(Date.now() / 1000)>;` and record `performance.now()`. When `PONG<ts>;` is received, update `rttMs = Math.max(0, Math.round(nowMs() - lastPingSentPerfMs))`.
+   - Clear both `_pingTimer` and `_bootstrapTimer` (and reset `_bootstrapSent = false`) cleanly in `_stopKeepalive()`, `disconnect()`, and `ws.onclose`.
    - On `disconnect()` or `window` `'pagehide'`, attempt to send framed `RRN;` before `ws.close(1000)`.
 
 ## 3. Binary Stream Framing (`K4.PacketFramer`)
@@ -61,10 +67,24 @@ Stream parser rules (`framer.push(uint8Chunk)`):
 - **`0x03` MiniPAN**: Identical 27-byte header except `[19..22]` is `spanKHz (i32 LE)`, `noiseFloorDbm = null`, `rx = receiver === 1 ? 'B' : 'A'`, `bins = payload.subarray(27)`.
 
 ## 5. Client-Side Receive-Only Firewall (`K4.RxOnlyGate`)
-Initialized with `policy = 'rx-only'` (extensible enum `'rx-only' | 'tx-enabled'` for v2).
+Initialized with `policy = 'rx-only'` (extensible enum `'rx-only' | 'tx-enabled'` for v2; default `'rx-only'`).
 When `policy === 'rx-only'`:
-- `inspectCat(cmdString)` splits individual `;`-terminated commands and checks each trimmed uppercase command:
-  - **Allow**: `RX` explicitly permitted (`RX;`). All RX/pan/display/audio/query commands permitted (`FA`, `FB`, `MD`, `DT`, `BW`, `IS`, `CW`, `VT`, `LK`, `BN`, `SB`, `FT`, `LN`, `PA`, `RA`, `AG`, `RG`, `SQ`, `NB`, `NR`, `NM`, `NA`, `GT`, `AP`, `AR`, `AN`, `MX`, `BL`, `RD`, `RU`, `RC`, `TD`, `TB`, `EM`, `SL`, `RDY`, `K4`, `ER`, `AI`, `PING`, `RRN`, `SM`, `SMH`, `#*`).
-  - **Block**: Any command matching prefix `TX`, `TU`, `KY`, `KZ`, `DARM`, `DAPM`, `DAMP`, `DARC`, `PB`, `PC`, `EC`, `EE`, `LB`, `PS`, `SW`, `SWT`, `SWH`, `MOX`, `VOX`, `VX`, `CP`, `MG`, `ML`, `KP`, `KS`, `ES`, `DW`, `DR`, `#TX`, `AT`, `SP1`, `SP2`, `SP3` (allow `SP0;` off).
+- `inspectCat(cmdString)` splits individual `;`-terminated commands via `K4.CatCodec.splitFrames` (preserving `TB`/`TB$` embedded semicolons) and checks each trimmed uppercase command (`cmdUpper`) in strict order:
+  1. **Explicit exact-match allowlist (GET-only queries & safe off-toggles)**:
+     - `RX;`
+     - Safe off-toggles: `SP0;`, `FT0;`
+     - GET-only queries (SET forms rejected by default-deny): `ID;`, `OM;`, `SN;`, `RV;`, `IF;`, `TQ;`, `IN;`, `BG;`, `PP;`, `PP1;`, `PPnn;` (`/^\s*PP\d{2}\s*$/`), `AN;`, `FT;`
+  2. **Spot/sidetone block (`SP*`)**:
+     - Block bare `SP;` (SET-only in rev. D4), `SP1;`..`SP3;`, `SP$3;`, and any other `SP*` except `SP0;`.
+  3. **Explicit blocked prefixes (`BLOCKED_PREFIXES`, checked longest-first)**:
+     - TX / keyer / DVR / power / ATU / TX-test / front-panel switches: `TX`, `TU`, `KY`, `KZ`, `DARM`, `DAPM`, `DAMP`, `DARC`, `PB`, `PC`, `EC`, `EE`, `LB`, `PS`, `SW`, `SWT`, `SWH`, `MOX`, `VOX`, `VX`, `CP`, `MG`, `ML`, `KP`, `KS`, `ES`, `DW`, `DR`, `AT`, `TE`, `TG`, `TM`, `DO`, `XF`, `XT`, `#TX`, `#CAL`, `SP1`, `SP2`, `SP3`.
+     - Remote-admin / hardware-config / relay-state prefixes: `ACT`, `KZL`, `KZF`, `RRP`, `RRC`, `RRT`, `TS`, `DM`, `PK`, `PL`, `RP`, `MI`, `MS`, `VG`, `VI`, `SD`, `RS`, `MB` (and `PP` SET/non-GET forms fall through to default-deny).
+  4. **Safe panadapter / display `#*` commands**:
+     - After `#TX` and `#CAL` are blocked in step 3, permit all other `#*` display/pan commands (`#FRZ`, `#FXT`, `#FXA`, `#SPN`, `#SPN$`, `#REF`, `#REF$`, `#SCL`, `#SCL$`, `#AVG`, `#WBS`, `#WBS$`, `#AR`, `#AR$`, `#DPM`, `#MP`, `#MP$`, etc.).
+  5. **Safe RX / pan / audio / session prefixes (`ALLOWED_PREFIXES`, checked longest-first with boundary check)**:
+     - `PING`, `PONG`, `SMH`, `RDY`, `RRN`, `DNB`, `UPB`, `FA`, `FB`, `MD`, `DT`, `BW`, `IS`, `CW`, `VT`, `LK`, `BN`, `SB`, `LN`, `PA`, `RA`, `AG`, `RG`, `SQ`, `NB`, `NR`, `NM`, `NA`, `GT`, `AP`, `AR`, `MX`, `BL`, `RD`, `RU`, `RC`, `TD`, `TB`, `EM`, `SL`, `K4`, `ER`, `AI`, `SM`, `DV`, `OV`, `FI`, `FC`, `RT`, `RO`, `VC`, `FP`, `MA`, `DN`, `UP`.
+     - `matchPrefixBoundary` requires exact match or a valid separator (`$`, `+`, `-`, `/`, `\`, space, `~`, `?`, or `'0'..'9'`, plus unrestricted suffix for `MX` / `#AR`).
+     - **Rev. D4 `VC$*` guard**: reject `$` immediately after `VC` (`VC$*` is blocked because D4 defines `VCsm;` with no `$` Sub-RX form), while allowing `VC;` and `VCsm;`.
+  6. **Default-deny fallback**: any unrecognized command (including SET forms of GET-only commands like `AN1;`, `FT1;`, `IDW6ELE;`, `PP` SET, or `VC$12;`) is blocked.
   - Return `{ allowed: string[], blocked: string[], sanitized: string }`. Every blocked command increments `stats.blockedCatCount`, appends to `stats.recentBlocked` (max 25), and emits `'blocked'`.
-- `inspectBinary(typeByte)`: in `'rx-only'`, ONLY allow `typeByte === 0x00` (CAT). Block `0x01` (outbound TX audio), increment `stats.blockedBinaryCount`, emit `'blocked'`.
+- `inspectBinary(typeByte)`: in `'rx-only'`, ONLY allow `typeByte === 0x00` (CAT). Block `0x01` (outbound TX audio) and any other non-`0x00` byte, increment `stats.blockedBinaryCount`, record in `stats.recentBlocked`, emit `'blocked'`.
