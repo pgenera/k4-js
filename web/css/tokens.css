@@ -1,0 +1,69 @@
+:root {
+  color-scheme: dark;
+
+  /* Core Surfaces */
+  --bg-canvas: #090B10;
+  --bg-elevated: #0E131D;
+  --bg-panel: #111827;
+  --bg-glass: rgba(14, 19, 29, 0.84);
+  --bg-glass-strong: rgba(10, 14, 22, 0.94);
+  --bg-control: rgba(148, 163, 184, 0.08);
+  --bg-control-hover: rgba(148, 163, 184, 0.15);
+
+  /* Hairlines & Borders */
+  --border-hairline: rgba(148, 163, 184, 0.14);
+  --border-medium: rgba(148, 163, 184, 0.24);
+  --border-strong: rgba(148, 163, 184, 0.36);
+
+  /* Typography Colors */
+  --text-primary: #F1F5F9;
+  --text-secondary: #CBD5E1;
+  --text-muted: #94A3B8;
+  --text-dim: #64748B;
+
+  /* Instrument Accents */
+  --accent-vfo-a: #38BDF8;
+  --accent-vfo-a-soft: rgba(56, 189, 248, 0.16);
+  --accent-vfo-a-border: rgba(56, 189, 248, 0.42);
+
+  --accent-vfo-b: #F59E0B;
+  --accent-vfo-b-soft: rgba(245, 158, 11, 0.16);
+  --accent-vfo-b-border: rgba(245, 158, 11, 0.42);
+
+  --accent-rx-only: #10B981;
+  --accent-rx-only-soft: rgba(16, 185, 129, 0.15);
+  --accent-rx-only-border: rgba(16, 185, 129, 0.40);
+
+  --accent-danger: #F43F5E;
+  --accent-danger-soft: rgba(244, 63, 94, 0.16);
+  --accent-danger-border: rgba(244, 63, 94, 0.42);
+
+  /* System Typography */
+  --font-sans: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --font-mono: "SF Mono", ui-monospace, "Cascadia Mono", "Roboto Mono", monospace;
+
+  /* Geometry & Layout Dimensions */
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-pill: 999px;
+
+  --topbar-h: 56px;
+  --topbar-mobile-h: 52px;
+  --drawer-w: 320px;
+  --mobilenav-h: 60px;
+
+  /* Z-index Hierarchy */
+  --z-stage: 1;
+  --z-hud: 20;
+  --z-drawer: 30;
+  --z-sheet: 40;
+  --z-topbar: 50;
+  --z-modal: 80;
+  --z-toast: 100;
+
+  /* Shadows */
+  --shadow-hud: 0 8px 24px rgba(0, 0, 0, 0.48);
+  --shadow-modal: 0 20px 56px rgba(0, 0, 0, 0.72);
+}
