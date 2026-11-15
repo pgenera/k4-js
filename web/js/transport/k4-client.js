@@ -422,23 +422,18 @@
     }
 
     _resolveEncodeMode(encodeMode) {
-      if (
-        encodeMode === 0 ||
-        encodeMode === 1 ||
-        encodeMode === 2 ||
-        encodeMode === 3 ||
-        encodeMode === '0' ||
-        encodeMode === '1' ||
-        encodeMode === '2' ||
-        encodeMode === '3'
-      ) {
+      if (encodeMode === 0 || encodeMode === '0' || encodeMode === 1 || encodeMode === '1') {
         return Number(encodeMode);
       }
-      const opusSupported =
-        K4.OpusPacketDecoder &&
-        typeof K4.OpusPacketDecoder.isSupported === 'function' &&
-        K4.OpusPacketDecoder.isSupported();
-      return opusSupported ? 3 : 1;
+      if (encodeMode === 2 || encodeMode === '2' || encodeMode === 3 || encodeMode === '3') {
+        const opusSupported =
+          !K4.OpusPacketDecoder ||
+          typeof K4.OpusPacketDecoder.isSupported !== 'function' ||
+          Boolean(K4.OpusPacketDecoder.isSupported());
+        return opusSupported ? Number(encodeMode) : 1;
+      }
+      // Default ('auto' or omitted/unrecognized) uses EM1 (12 kHz S16LE PCM) for lowest CPU and universal origin compatibility.
+      return 1;
     }
 
     _handleFrame(payload) {

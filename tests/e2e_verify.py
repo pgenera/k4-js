@@ -1392,14 +1392,32 @@ def run_http_origin_and_screenshots(
         lambda: client.execute_script(
             """
             const d = globalThis.k4App.audio.getDiagnostics();
+            const s = globalThis.k4App.state.getSnapshot();
             const rtt = document.querySelector('#conn-btn .k4-conn-rtt');
             const e2e = document.querySelector('[data-testid="diag-e2eLatency"]');
-            return d.started && !d.muted && rtt && rtt.textContent.startsWith('E2E ') && e2e && e2e.textContent.startsWith('RX ') && e2e.textContent.includes('ms');
+            const lbl = document.querySelector('#audio-toggle .k4-audio-label');
+            return d.started && !d.muted && s.encodeMode === 1 && lbl && lbl.textContent === 'PCM 12k' &&
+                   rtt && rtt.textContent.startsWith('E2E ') && e2e && e2e.textContent.startsWith('RX ') && e2e.textContent.includes('ms');
             """
         ),
-        "Live audio shows E2E XXms in #conn-btn and Telemetry diag-e2eLatency",
+        "Live audio defaults to EM1 (PCM 12k) and shows E2E XXms in #conn-btn and Telemetry diag-e2eLatency",
         timeout=10.0,
     )
+    if client.execute_script("return Boolean(K4.OpusPacketDecoder && K4.OpusPacketDecoder.isSupported());"):
+        client.execute_script("globalThis.k4App.client.setEncodeMode(3);")
+        wait_until(
+            lambda: client.execute_script(
+                "const s = globalThis.k4App.state.getSnapshot(); const lbl = document.querySelector('#audio-toggle .k4-audio-label'); return s.encodeMode === 3 && lbl && lbl.textContent === 'Opus 48k';"
+            ),
+            "Explicit setEncodeMode(3) switches cleanly to Opus 48k",
+        )
+        client.execute_script("globalThis.k4App.client.setEncodeMode(1);")
+        wait_until(
+            lambda: client.execute_script(
+                "const s = globalThis.k4App.state.getSnapshot(); const lbl = document.querySelector('#audio-toggle .k4-audio-label'); return s.encodeMode === 1 && lbl && lbl.textContent === 'PCM 12k';"
+            ),
+            "setEncodeMode(1) switches cleanly back to PCM 12k",
+        )
     media_check = client.execute_script(
         """
         const keepAlive = Array.from(document.querySelectorAll('audio')).find((el) => el.loop);

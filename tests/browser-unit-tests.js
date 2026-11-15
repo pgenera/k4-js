@@ -411,6 +411,27 @@
     assertEqual(K4.PcmDecoder.softClip(0.9), 0.9, 'softClip linear <= 0.9');
     assert(K4.PcmDecoder.softClip(10.0) < 1.0, 'softClip saturates < 1.0');
 
+    // Zero-alloc decodeInto matches decode() sample-for-sample and reuses backing buffers across calls
+    const scratch = { left: new Float32Array(4), right: new Float32Array(4) };
+    const origLeftBuf = scratch.left.buffer;
+    const origRightBuf = scratch.right.buffer;
+    const into1 = K4.PcmDecoder.decodeInto(parsed1, scratch);
+    assertEqual(into1.sampleRate, dec1.sampleRate, 'decodeInto sampleRate matches decode');
+    assertEqual(into1.left.length, dec1.left.length, 'decodeInto length matches frameCount');
+    for (let i = 0; i < dec1.left.length; i++) {
+      assertApprox(into1.left[i], dec1.left[i], 1e-7, `decodeInto left[${i}] matches decode`);
+      assertApprox(into1.right[i], dec1.right[i], 1e-7, `decodeInto right[${i}] matches decode`);
+    }
+    assertEqual(into1.left.buffer, origLeftBuf, 'decodeInto reuses scratch left ArrayBuffer');
+    assertEqual(into1.right.buffer, origRightBuf, 'decodeInto reuses scratch right ArrayBuffer');
+    const into1b = K4.PcmDecoder.decodeInto(parsed1, scratch);
+    assertEqual(into1b.left.buffer, origLeftBuf, 'repeat decodeInto call keeps same scratch left buffer');
+    assertEqual(into1b.right.buffer, origRightBuf, 'repeat decodeInto call keeps same scratch right buffer');
+    // Verify growth only when packet exceeds current capacity
+    const dec0Into = K4.PcmDecoder.decodeInto(pkt0, scratch);
+    assertApprox(dec0Into.left[0], dec0.left[0], 1e-7, 'decodeInto EM0 left[0] matches decode');
+    assertEqual(dec0Into.left.buffer, origLeftBuf, 'decodeInto EM0 smaller frame reuses same buffer');
+
     // Verify mixStereoSample gates Sub when subRxEnabled === false
     const monoGated = K4.mixStereoSample(0.4, 0.9, {
       subRxEnabled: false,
@@ -490,6 +511,32 @@
         assertEqual(dec.configure(), false, 'OpusPacketDecoder.configure returns false cleanly when unsupported');
         engine.pushPacket({ seq: 0, encodeMode: 2, dataView: new DataView(new ArrayBuffer(8)), frameCount: 2 });
         assertEqual(opusErrors.length, 1, 'AudioEngine emits error on Opus packet when AudioDecoder unavailable');
+      } finally {
+        if (audioDecDesc) {
+          Object.defineProperty(globalThis, 'AudioDecoder', audioDecDesc);
+        } else {
+          delete globalThis.AudioDecoder;
+        }
+      }
+
+      const emClient = new K4.Client({ state });
+      try {
+        Object.defineProperty(globalThis, 'AudioDecoder', { value: function MockAudioDecoder() {}, configurable: true, writable: true });
+        assertEqual(K4.OpusPacketDecoder.isSupported(), true, 'OpusPacketDecoder.isSupported true when AudioDecoder present');
+        assertEqual(emClient._resolveEncodeMode('auto'), 1, 'Client._resolveEncodeMode(auto) defaults to EM1 when Opus supported');
+        assertEqual(emClient._resolveEncodeMode(undefined), 1, 'Client._resolveEncodeMode(undefined) defaults to EM1');
+        assertEqual(emClient._resolveEncodeMode('bogus'), 1, 'Client._resolveEncodeMode(bogus) falls back to EM1');
+        assertEqual(emClient._resolveEncodeMode(0), 0, 'Client._resolveEncodeMode(0) keeps EM0');
+        assertEqual(emClient._resolveEncodeMode('1'), 1, 'Client._resolveEncodeMode("1") keeps EM1');
+        assertEqual(emClient._resolveEncodeMode(3), 3, 'Client._resolveEncodeMode(3) keeps EM3 when Opus supported');
+        assertEqual(emClient._resolveEncodeMode('2'), 2, 'Client._resolveEncodeMode("2") keeps EM2 when Opus supported');
+
+        Object.defineProperty(globalThis, 'AudioDecoder', { value: undefined, configurable: true, writable: true });
+        assertEqual(K4.OpusPacketDecoder.isSupported(), false, 'OpusPacketDecoder.isSupported false when AudioDecoder undefined');
+        assertEqual(emClient._resolveEncodeMode('auto'), 1, 'Client._resolveEncodeMode(auto) returns EM1 without Opus');
+        assertEqual(emClient._resolveEncodeMode(3), 1, 'Client._resolveEncodeMode(3) falls back to EM1 without Opus');
+        assertEqual(emClient._resolveEncodeMode('2'), 1, 'Client._resolveEncodeMode("2") falls back to EM1 without Opus');
+        assertEqual(emClient._resolveEncodeMode(0), 0, 'Client._resolveEncodeMode(0) keeps EM0 without Opus');
       } finally {
         if (audioDecDesc) {
           Object.defineProperty(globalThis, 'AudioDecoder', audioDecDesc);

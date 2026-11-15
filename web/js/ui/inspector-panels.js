@@ -1549,9 +1549,9 @@
       emSelect.className = 'k4-select';
       const opusOk = Boolean(K4.OpusPacketDecoder && K4.OpusPacketDecoder.isSupported && K4.OpusPacketDecoder.isSupported());
       const emChoices = [
-        { val: '1', label: 'PCM S16LE 12k' },
+        { val: '1', label: 'PCM S16LE 12k (Lowest CPU)' },
         { val: '0', label: 'PCM 24-bit 12k' },
-        { val: '3', label: opusOk ? 'Opus 48k Stereo' : 'Opus (unavailable on file://)' },
+        { val: '3', label: opusOk ? 'Opus 48k Stereo (Low BW)' : 'Opus (unavailable on file://)' },
       ];
       for (let i = 0; i < emChoices.length; i++) {
         const opt = document.createElement('option');

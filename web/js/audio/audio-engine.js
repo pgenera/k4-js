@@ -492,6 +492,7 @@
         mixMode: 'A.B',
       };
       this._tapMixScratch = { left: 0, right: 0 };
+      this._pcmDecodeScratch = { left: new Float32Array(512), right: new Float32Array(512) };
 
       this._recActive = false;
       this._recStartMs = 0;
@@ -1273,7 +1274,9 @@
 
       if (em === 0 || em === 1) {
         if (!K4.PcmDecoder) return;
-        const decoded = K4.PcmDecoder.decode(audioPkt);
+        const decoded = K4.PcmDecoder.decodeInto
+          ? K4.PcmDecoder.decodeInto(audioPkt, this._pcmDecodeScratch)
+          : K4.PcmDecoder.decode(audioPkt);
         if (decoded && decoded.left && decoded.left.length > 0) {
           const sr = decoded.sampleRate || AF_TAP_SAMPLE_RATE;
           this._tapDecodedStereo(decoded.left, decoded.right, sr);

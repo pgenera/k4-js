@@ -71,13 +71,18 @@
     return { encodeMode, frameSamplesPerCh, sampleRate, dv };
   }
 
-  /**
-   * Decode a K4 0x01 PCM audio packet (EM0 24-bit-in-S32LE or EM1 S16LE) into
-   * calibrated float32 stereo buffers with 32x boost and soft limiting.
-   */
-  function decode(audioPkt) {
+  function emptyResult(sampleRate, scratch) {
+    if (scratch) {
+      const left = scratch.left instanceof Float32Array ? scratch.left.subarray(0, 0) : new Float32Array(0);
+      const right = scratch.right instanceof Float32Array ? scratch.right.subarray(0, 0) : new Float32Array(0);
+      return { left, right, sampleRate };
+    }
+    return { left: new Float32Array(0), right: new Float32Array(0), sampleRate };
+  }
+
+  function decodeCore(audioPkt, scratch) {
     if (!audioPkt) {
-      return { left: new Float32Array(0), right: new Float32Array(0), sampleRate: 12000 };
+      return emptyResult(12000, scratch);
     }
 
     const { encodeMode, frameSamplesPerCh, sampleRate, dv } = extractPacketView(audioPkt);
@@ -87,7 +92,7 @@
     }
 
     if (!dv || dv.byteLength === 0) {
-      return { left: new Float32Array(0), right: new Float32Array(0), sampleRate };
+      return emptyResult(sampleRate, scratch);
     }
 
     const bytesPerFrame = encodeMode === 0 ? 8 : 4;
@@ -96,22 +101,62 @@
       ? Math.min(frameSamplesPerCh, availableFrames)
       : availableFrames;
 
-    const left = new Float32Array(frameCount);
-    const right = new Float32Array(frameCount);
+    if (frameCount === 0) {
+      return emptyResult(sampleRate, scratch);
+    }
+
+    let leftBuf;
+    let rightBuf;
+    if (scratch) {
+      if (!(scratch.left instanceof Float32Array) || scratch.left.length < frameCount) {
+        scratch.left = new Float32Array(frameCount);
+      }
+      if (!(scratch.right instanceof Float32Array) || scratch.right.length < frameCount) {
+        scratch.right = new Float32Array(frameCount);
+      }
+      leftBuf = scratch.left;
+      rightBuf = scratch.right;
+    } else {
+      leftBuf = new Float32Array(frameCount);
+      rightBuf = new Float32Array(frameCount);
+    }
 
     if (encodeMode === 1) {
       for (let i = 0, pos = 0; i < frameCount; i++, pos += 4) {
-        left[i] = softClip(dv.getInt16(pos, true) * S16_SCALE);
-        right[i] = softClip(dv.getInt16(pos + 2, true) * S16_SCALE);
+        const vl = dv.getInt16(pos, true) * S16_SCALE;
+        const vr = dv.getInt16(pos + 2, true) * S16_SCALE;
+        leftBuf[i] = vl >= -0.9 && vl <= 0.9 ? vl : softClip(vl);
+        rightBuf[i] = vr >= -0.9 && vr <= 0.9 ? vr : softClip(vr);
       }
     } else {
       for (let i = 0, pos = 0; i < frameCount; i++, pos += 8) {
-        left[i] = softClip(dv.getInt32(pos, true) * S24_SCALE);
-        right[i] = softClip(dv.getInt32(pos + 4, true) * S24_SCALE);
+        const vl = dv.getInt32(pos, true) * S24_SCALE;
+        const vr = dv.getInt32(pos + 4, true) * S24_SCALE;
+        leftBuf[i] = vl >= -0.9 && vl <= 0.9 ? vl : softClip(vl);
+        rightBuf[i] = vr >= -0.9 && vr <= 0.9 ? vr : softClip(vr);
       }
     }
 
-    return { left, right, sampleRate };
+    return scratch
+      ? { left: leftBuf.subarray(0, frameCount), right: rightBuf.subarray(0, frameCount), sampleRate }
+      : { left: leftBuf, right: rightBuf, sampleRate };
+  }
+
+  /**
+   * Decode a K4 0x01 PCM audio packet (EM0 24-bit-in-S32LE or EM1 S16LE) into
+   * newly allocated calibrated float32 stereo buffers with 32x boost and soft limiting.
+   */
+  function decode(audioPkt) {
+    return decodeCore(audioPkt, null);
+  }
+
+  /**
+   * Zero-alloc decode path reusing preallocated `scratch.left` / `scratch.right` Float32Arrays
+   * (growing only when `frameCount > capacity`) and returning `.subarray(0, frameCount)` views.
+   */
+  function decodeInto(audioPkt, scratch) {
+    const target = scratch && typeof scratch === 'object' ? scratch : {};
+    return decodeCore(audioPkt, target);
   }
 
   K4.PcmDecoder = {
@@ -120,5 +165,6 @@
     S24_SCALE,
     softClip,
     decode,
+    decodeInto,
   };
 })();

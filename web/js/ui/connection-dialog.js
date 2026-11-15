@@ -140,10 +140,10 @@
       this.emSelect.className = 'k4-select';
       const opusSupported = Boolean(K4.OpusPacketDecoder && K4.OpusPacketDecoder.isSupported && K4.OpusPacketDecoder.isSupported());
       const emOptions = [
-        { val: 'auto', text: opusSupported ? 'Auto (Opus / PCM)' : 'Auto (PCM on file://)' },
-        { val: '1', text: 'PCM S16LE' },
-        { val: '0', text: 'PCM 24-bit' },
-        { val: '3', text: opusSupported ? 'Opus Stereo' : 'Opus (unsupported)' },
+        { val: 'auto', text: 'Auto (PCM S16LE · Lowest CPU)' },
+        { val: '1', text: 'PCM S16LE (12 kHz)' },
+        { val: '0', text: 'PCM 24-bit (12 kHz)' },
+        { val: '3', text: opusSupported ? 'Opus Stereo (Low Bandwidth)' : 'Opus (unsupported)' },
       ];
       for (let i = 0; i < emOptions.length; i++) {
         const opt = document.createElement('option');
@@ -152,7 +152,11 @@
         if (emOptions[i].val === '3' && !opusSupported) opt.disabled = true;
         this.emSelect.appendChild(opt);
       }
-      this.emSelect.value = K4.storage ? K4.storage.get('k4.encodeMode', 'auto') : 'auto';
+      const storedEm = K4.storage ? K4.storage.get('k4.encodeMode', 'auto') : 'auto';
+      this.emSelect.value = (!opusSupported && (storedEm === '3' || storedEm === '2')) ? 'auto' : storedEm;
+      if (!this.emSelect.value) {
+        this.emSelect.value = 'auto';
+      }
       emField.appendChild(emLbl);
       emField.appendChild(this.emSelect);
       row.appendChild(emField);

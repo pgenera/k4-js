@@ -20,7 +20,7 @@ The browser connects directly over `ws://` or `wss://` to an off-the-shelf WebSo
 2. **Deferred Bootstrap CAT Sequence & 1 Hz `PING` Start** (`_sendBootstrapAndStartKeepalive`):
    - Triggered immediately upon receipt of the **first valid framed K4 packet** (typically `0x01` audio on real K4) in `_handleFrame(payload)` when `!this._bootstrapSent`, OR by the **250 ms fallback timer** if no packet arrived first. Sending `RDY;` + CAT triggers the K4 to emit the full snapshot and begin streaming `0x02` PAN frames.
    - Marks `_bootstrapSent = true`, clears `_bootstrapTimer`, sends the single framed `bootstrapCat` packet, starts the 1 Hz `PING` timer, and attaches the `'pagehide'` teardown handler.
-   - Determine `emMode`: if `opts.encodeMode` is `0 | 1 | 2 | 3`, use `Number(encodeMode)`; if `'auto'` (default), pick `3` ONLY when `K4.OpusPacketDecoder && K4.OpusPacketDecoder.isSupported()` is `true`, otherwise pick `1` (S16LE PCM — guaranteed on `file://` in Firefox!).
+   - Determine `emMode`: if `opts.encodeMode` is `'auto'` (default), omitted, or unrecognized, always pick `1` (`EM1` — 12 kHz S16LE PCM, lowest CPU with universal browser and `file://` support). Explicit `0` or `1` selects PCM `EM0`/`EM1`; explicit `2` or `3` (Opus WAN opt-in) selects Opus ONLY when `K4.OpusPacketDecoder.isSupported()` is `true` (falling back gracefully to `1` if unsupported).
    - Determine `slTier`: default `2` (40 ms, clamped `0..7`).
    - Send (omitting bare `SP;` because `SP` is SET-only in rev. D4 and triggers `?;`/`ER`, and omitting `#SCL$;`, `#WBS$;`, `#AR$;`, `#FXT$;` because `#SCL`, `#WBS`, `#AR`, and `#FXT` are global-only on real K4 firmware and `$` returns `?;`; also keep `AI5;` after `RDY;` because `RDY;` initializes client mode to `AI4`):
      ```
