@@ -22,9 +22,9 @@ The browser connects directly over `ws://` or `wss://` to an off-the-shelf WebSo
    - Marks `_bootstrapSent = true`, clears `_bootstrapTimer`, sends the single framed `bootstrapCat` packet, starts the 1 Hz `PING` timer, and attaches the `'pagehide'` teardown handler.
    - Determine `emMode`: if `opts.encodeMode` is `0 | 1 | 2 | 3`, use `Number(encodeMode)`; if `'auto'` (default), pick `3` ONLY when `K4.OpusPacketDecoder && K4.OpusPacketDecoder.isSupported()` is `true`, otherwise pick `1` (S16LE PCM — guaranteed on `file://` in Firefox!).
    - Determine `slTier`: default `2` (40 ms, clamped `0..7`).
-   - Send (omitting bare `SP;` because `SP` is SET-only in rev. D4 and triggers `?;`/`ER`, and omitting `#SCL$;`, `#WBS$;`, `#AR$;` because `#SCL`, `#WBS`, and `#AR` are global-only on real K4 firmware and `$` returns `#SCL?;`, `#WBS?;`, `#AR?;`; also keep `AI5;` after `RDY;` because `RDY;` initializes client mode to `AI4`):
+   - Send (omitting bare `SP;` because `SP` is SET-only in rev. D4 and triggers `?;`/`ER`, and omitting `#SCL$;`, `#WBS$;`, `#AR$;`, `#FXT$;` because `#SCL`, `#WBS`, `#AR`, and `#FXT` are global-only on real K4 firmware and `$` returns `?;`; also keep `AI5;` after `RDY;` because `RDY;` initializes client mode to `AI4`):
      ```
-     RDY;K41;ER1;AI5;EM<emMode>;SL<slTier>;FA;FB;MD;MD$;DT;DT$;BW;BW$;IS;IS$;CW;VT;VT$;LK;LK$;SB;FT;SMH;SMH$;#SPN;#SPN$;#REF;#REF$;#SCL;#AVG;#WBS;#AR;#DPM;#MP;#MP$;MX;
+     RDY;K41;ER1;AI5;EM<emMode>;SL<slTier>;FA;FB;MD;MD$;DT;DT$;BW;BW$;IS;IS$;CW;VT;VT$;LK;LK$;SB;FT;SMH;SMH$;#SPN;#SPN$;#REF;#REF$;#SCL;#AVG;#WBS;#AR;#DPM;#MP;#MP$;MX;#FXT;TD;TD$;
      ```
 3. **First Packet Confirmation**: Transition `connection.status` to `'connected'` and `connection.authStatus` from `'authenticating'` to `'authenticated'` (clearing `error: null`) as soon as ANY valid framed K4 packet arrives from the socket. If the socket closes cleanly or with error while `authStatus === 'authenticating'`, set `status: 'error'`, `authStatus: 'rejected'` with diagnostic hint.
 4. **1 Hz Keepalive & Clean Close**:
@@ -85,7 +85,7 @@ When `policy === 'rx-only'`:
      - Remote-admin / hardware-config / relay-state prefixes: `ACT`, `KZL`, `KZF`, `RRP`, `RRC`, `RRT`, `TS`, `DM`, `PK`, `PL`, `RP`, `MI`, `MS`, `VG`, `VI`, `SD`, `RS`, `MB` (and `PP` SET/non-GET forms fall through to default-deny).
   4. **Explicit `#` RX / display allowlist (`ALLOWED_HASH_PREFIXES`)**:
      - Instead of permitting arbitrary `#*` commands, after `#TX` and `#CAL` are blocked in step 3, check `#` commands against the explicit RX/panadapter/display allowlist (longest-first with `matchPrefixBoundary`, allowing unrestricted suffix on `#AR`):
-       `#SPN`, `#REF`, `#HREF`, `#SCL`, `#AVG`, `#WBS`, `#HWBS`, `#WFC`, `#HWFC`, `#WFH`, `#HWFH`, `#AR`, `#DPM`, `#HDPM`, `#MP`, `#FRZ`, `#FXT`, `#FXA`, `#FSL`, `#PKM`, `#FPS`, `#CWT`, `#VFA`, `#VFB`, `#MKA`, `#MKB`, `#DSM`, `#HDM`, `#HDS`, `#UNM`, `#NB`, `#NBL`, `#SFL`.
+       `#SPN`, `#REF`, `#HREF`, `#SCL`, `#AVG`, `#WBS`, `#HWBS`, `#WFC`, `#HWFC`, `#WFH`, `#HWFH`, `#AR`, `#DPM`, `#HDPM`, `#MP`, `#FRZ`, `#FXT`, `#FXA`, `#FSL`, `#PKM`, `#FPS`, `#CWT`, `#VFA`, `#VFB`, `#MKA`, `#MKB`, `#DSM`, `#HDM`, `#HDS`, `#HDSM`, `#UNM`, `#NB`, `#NBL`, `#SFL`, `#SPM`.
      - Unknown `#*` commands (as well as `#TX` and `#CAL`) are rejected by default-deny.
   5. **Safe RX / pan / audio / session prefixes (`ALLOWED_PREFIXES`, checked longest-first with boundary check)**:
      - `PING`, `PONG`, `SMH`, `RDY`, `RRN`, `DNB`, `UPB`, `FA`, `FB`, `MD`, `DT`, `BW`, `IS`, `CW`, `VT`, `LK`, `BN`, `SB`, `LN`, `PA`, `RA`, `AG`, `RG`, `SQ`, `NB`, `NR`, `NM`, `NA`, `GT`, `AP`, `AR`, `MX`, `BL`, `RD`, `RU`, `RC`, `TD`, `TB`, `EM`, `SL`, `K4`, `ER`, `AI`, `SM`, `DV`, `OV`, `FI`, `FC`, `RT`, `RO`, `VC`, `FP`, `MA`, `DN`, `UP`.

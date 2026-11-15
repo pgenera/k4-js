@@ -65,37 +65,47 @@
   - Track decaying peak hold (`peakDbm[i] = Math.max(avgDbm[i], peakDbm[i] - 0.12)`).
 
 ### 1.4 `K4.WaterfallRowMapper`
+- Uses Elecraft K4 bottom-referenced `#REF` convention (`[minDbm, maxDbm] = [refDbm, refDbm + scaleDb]`, matching QK4's waterfall black-level formula):
 - `mapRow(avgDbmBins, { refDbm, scaleDb, wfBlack }, outUint8)`:
-  - `highDbm = refDbm`
   - `spanDb = clamp(scaleDb || 80, 10, 150)`
   - `wbs = (wfBlack >= 5 && wfBlack <= 30) ? wfBlack : 14`
-  - `lowDbm = highDbm - spanDb * (wbs / 40.0)`
-  - `range = Math.max(1.0, highDbm - lowDbm)`
-  - For each bin: `t = clamp((avgDbmBins[i] - lowDbm) / range, 0, 1)`; `outUint8[i] = 1 + Math.round(t * 254)` (`0` reserved strictly for uninitialized rows -> transparent/background `#090B10`).
+  - `lowDbm = refDbm - spanDb * (wbs / 40.0)`
+  - `highDbm = lowDbm + spanDb`
+  - `invRange = 1.0 / Math.max(1.0, spanDb)` (i.e., `range = Math.max(1.0, highDbm - lowDbm) = spanDb`)
+  - For each bin: `t = clamp((avgDbmBins[i] - lowDbm) * invRange, 0, 1)`; `outUint8[i] = 1 + Math.round(t * 254)` (`0` reserved strictly for uninitialized rows -> transparent/background `#090B10`).
 
 ## 2. Waterfall Color LUTs (`web/js/panadapter/color-luts.js`)
-Provide 4 crisp, scientific 256-entry RGBA lookup tables (`Uint8Array(1024)`), index `0 = [9, 11, 16, 255]`:
+Provide 5 crisp, scientific 256-entry RGBA lookup tables (`Uint8Array(1024)`), index `0 = [9, 11, 16, 255]`:
 1. `'obsidian'` (Default signature Observatory theme): deep obsidian `#090B10` -> indigo `#1E3A8A` -> electric cyan `#06B6D4` -> luminous amber `#F59E0B` -> incandescent white `#F8FAFC`.
-2. `'thermal'`: black -> crimson -> orange -> gold -> white.
-3. `'viridis'`: perceptual scientific dark purple -> teal -> emerald -> bright yellow.
-4. `'cyan'`: high-contrast monochrome cyan (`#071018` -> `#38BDF8` -> `#E0F2FE`) tailored for CW/digital weak-signal decoding.
+2. `'k4'` (`K4 Classic` 7-stage hardware waterfall ramp): `#000000` -> `#000041` -> `#0000AA` -> `#00C8C8` -> `#00C800` -> `#FFFF00` -> `#FF5000` -> `#FF0000` (with index `0 = [9, 11, 16, 255]`).
+3. `'thermal'`: black -> crimson -> orange -> gold -> white.
+4. `'viridis'`: perceptual scientific dark purple -> teal -> emerald -> bright yellow.
+5. `'cyan'`: high-contrast monochrome cyan (`#071018` -> `#38BDF8` -> `#E0F2FE`) tailored for CW/digital weak-signal decoding.
 
 ## 3. Amateur Band Plan Ribbon (`web/js/panadapter/band-plan.js`)
 Expose IARU Region 2 segment metadata (`CW`, `Digital`, `Phone/SSB`, `Beacon`) across HF + 6m (`160m..6m`), rendered as a subtle 6px color-coded track along the frequency axis strip with hover tooltip.
 
-## 4. WebGL2 + Canvas2D Dual Renderer (`web/js/panadapter/webgl-renderer.js`)
+## 4. WebGL2 + Canvas2D Dual Renderer (`web/js/panadapter/webgl-renderer.js`, `panadapter-view.js`)
 - `createPanRenderer(container, opts)` attempts `canvas.getContext('webgl2', { antialias: true, alpha: false, preserveDrawingBuffer: true })` (note `preserveDrawingBuffer: true` helps reliable screenshot capture AND pixel inspection tests!). If WebGL2 is unavailable (e.g., disabled software GL in headless mode), seamlessly instantiate `K4.PanadapterCanvas2D` implementing the identical API (`render(frameState)`, `pushWaterfallRow(uint8Row)`, `clearWaterfall()`, `setPalette(name)`, `resize()`, `destroy()`).
+- **Bottom-Referenced Amplitude Window (`[minDbm, maxDbm] = [refDbm, refDbm + scaleDb]`)**:
+  - Real K4 (`R40.B1`) treats `#REF` (`refDbm`, default `-110 dBm`) as the **bottom edge** of the spectrum window, and `#SCL` (`scaleDb`, default `80 dB`) as the vertical dynamic span above `refDbm`.
+  - ALL 4 renderer coordinate calculations — overlay dBm grid/noise-floor/peak-hold, Mini-Pan dBm Y-axis, WebGL `_drawSpectrumGl`, and Canvas2D `_drawSpectrum2D` — MUST map `minDbm = refDbm` at the bottom and `maxDbm = refDbm + scaleDb` at the top (`norm = clamp((dbm - minDbm) / Math.max(1, scaleDb), 0, 1)`).
+- **Mini-Pan `0x03` Continuous Streaming & Strict Visibility Gating**:
+  - Real K4 firmware continues streaming `0x03` Mini-PAN frames even when `#MP0;` is OFF (verified 14 frames in ~0.6 s after `#MP0;` in `real_k4_wave2_capture.json`).
+  - `PanadapterView` buffers incoming `0x03` Mini-PAN frames per RX (`'A'` and `'B'`), NEVER marks Mini-Pan active purely upon receiving a `0x03` packet, and only schedules a render when that RX's `RadioState.miniPan` is `true`.
+  - `webgl-renderer.js` MUST gate Mini-Pan loupe rendering strictly on `rxA.miniPan || (snapshot.subRxEnabled && rxB.miniPan && snapshot.rxB.miniPanAvailable !== false)` so turning Mini-Pan OFF produces **zero flicker**.
 - **Canvas Layer Stack**:
   1. WebGL2 (or Canvas2D) pixel layer for GPU ring-buffer waterfall (`WIDTH × 512` `R8`/`RGBA8` `NEAREST` filtering so narrow CW/FT8 traces stay pixel-sharp!) + spectrum filled gradient + trace.
   2. Crisp HiDPI Canvas2D overlay layer (`devicePixelRatio` scaled) drawing:
-     - Top ~38% Spectrum pane: horizontal dBm & S-unit grid (`-130 .. -10 dBm`), vertical kHz ticks, passband translucent curtain (Main `#38BDF8` 18% fill, Sub `#F59E0B` 14% fill when Sub RX enabled), manual notch vertical marker if `notchOn`, peak-hold hairline, VFO A & VFO B frequency needles with pill flags, and interactive hover crosshair (`f`, `dBm`, `delta from VFO`).
+     - Top ~38% Spectrum pane: horizontal dBm grid (`minDbm = refDbm` .. `maxDbm = refDbm + scaleDb`) & S-unit ticks, vertical kHz ticks, passband translucent curtain (Main `#38BDF8` 18% fill, Sub `#F59E0B` 14% fill when Sub RX enabled), manual notch vertical marker if `notchOn`, peak-hold hairline, VFO A & VFO B frequency needles with pill flags, and interactive hover crosshair (`f`, `dBm`, `delta from VFO`).
      - Middle `26px` Axis & Band-Plan strip: crisp tabular kHz labels + band-plan color segments.
-     - Bottom ~62% Waterfall pane: GPU scrolled waterfall, plus `#DPM == 2` dual split (side-by-side when container width `>= 1000px`, stacked if narrower) and optional `#MP$` Mini-Pan (`280×150px` top-right overlay loupe when enabled).
+     - Bottom ~62% Waterfall pane: GPU scrolled waterfall, plus `#DPM == 2` dual split (side-by-side when container width `>= 1000px`, stacked if narrower) and optional `#MP`/`#MP$` Mini-Pan (`280×150px` top-right overlay loupe when gated ON in `RadioState`).
 - **Canvas DOM Contract**: Assign predictable CSS classes (`k4-pan-surface`, `k4-pan-gl`, `k4-pan-overlay`, `k4-minipan-box`) and update `dataset.frames`, `dataset.renderer` (`'webgl2' | 'canvas2d'`) on the root container for observability and E2E verification.
 
 ## 5. Interactive Controls (`web/js/panadapter/interaction.js`)
 - Left-click (no drag): tune Target VFO (`targetRx`, default `'A'`; `'B'` if `Shift` held or mobile target toggle set to `'B'`). If `Alt` held, `fine: true` (`1 Hz` snap).
+  - Note: in Single-Pan (`#DPM0` or `#DPM1`), display controls (Inspector Geometry, HUD Span `−`/`+`, Axis/Center/Fixed-Tune) track the **visible display RX** (`dispRx = snap.dualPanMode === 2 ? targetRx : (snap.dualPanMode === 1 ? 'B' : 'A')`), independent of click-to-tune `targetRx`.
 - Right-click (with `contextmenu` prevented inside panadapter): tune VFO B (`'B'`) immediately!
-- Horizontal pointer drag (`> 5px` threshold): pan active RX frequency smoothly (accumulate delta Hz, throttle `FA`/`FB` sends at max 20 Hz, wait until drag completes or snap cleanly). Also support dragging passband side-edges to adjust `BW`/`IS` when cursor hovers within 6px of a passband edge.
-- Mouse wheel: default scrolls frequency by `stepHz` (`Alt` = fine); if `Ctrl`/`Meta` held or hovering over frequency axis/span control, zooms `#SPN` smoothly across `[6, 12, 24, 36, 48, 72, 96, 144, 192, 288, 368]` kHz steps!
-- Touch gestures (`pointerType === 'touch'` / 2 pointers): single tap = click-to-tune active target VFO; 1-finger drag = smooth pan; 2-finger horizontal pinch = adjust `#SPN`.
+- Horizontal pointer drag (`> 5px` threshold): pan active RX frequency smoothly (accumulate delta Hz, throttle `FA`/`FB` sends at max 20 Hz, wait until drag completes or snap cleanly). Also support dragging passband side-edges to adjust `BW`/`IS` when cursor hovers within 6px of a passband edge (`EDGE_HIT_PX = 6`), preserving no-drag left-clicks inside `EDGE_HIT_PX` as VFO tunes.
+- Mouse wheel: default scrolls frequency by `stepHz` (`Alt` = fine); if `Ctrl`/`Meta` held or hovering over frequency axis/span control (`hit.inAxis`), zooms `#SPN`/`#SPN$` on **`hit.paneRx`** (the pane under cursor, NOT `targetRx`) smoothly across `[6, 12, 24, 36, 48, 72, 96, 144, 192, 288, 368]` kHz steps!
+- Touch gestures (`pointerType === 'touch'` / 2 pointers): single tap = click-to-tune active target VFO; 1-finger drag = smooth pan; 2-finger horizontal pinch = adjust `#SPN`/`#SPN$` on the pinched pane (`hit.paneRx`).

@@ -25,13 +25,13 @@ CSS Grid `100vh` (`100dvh`), zero page scrollbars (`overflow: hidden`):
 2. **Main Observatory Workspace (`#workspace`)**:
    - **Panadapter + Waterfall Stage (`#pan-stage`)**: fills `1fr` (~85% of viewport!), hosting `K4.PanadapterView`.
    - **Floating Canvas Overlay Controls**:
-     - Top-left pill: active Click-to-Tune Target (`Tune: VFO A` / `Tune: VFO B`), current Step (`100 Hz`), Span quick-zoom (`-` / `48 kHz` / `+`), Dual-Pan toggle (`1x` / `2x`), Mini-Pan toggle (`Loupe`).
-     - Bottom-left **Decoded Text Ticker (`#text-ticker`)**: translucent expandable drawer showing live `TB$` CW / RTTY / PSK decoded text lines (including `;` characters preserved cleanly!), with Clear button.
+     - Top-left pill: active Click-to-Tune Target (`Tune: VFO A` / `Tune: VFO B`), current Step (`100 Hz`), Span quick-zoom (`-` / active `dispRx` span readout / `+`, routing to visible pane RX: `dualPanMode === 2 ? targetRx : (dualPanMode === 1 ? 'B' : 'A')`), Dual-Pan toggle (`1x` / `2x`), Mini-Pan toggle (`Loupe A` / `Loupe B`, targeting VFO B only when `targetRx === 'B' && subRxEnabled && rxB.miniPanAvailable !== false`).
+     - Bottom-left **Decoded Text Ticker (`#text-ticker`)**: translucent expandable drawer showing live `TB`/`TB$` CW / RTTY / PSK decoded text lines (including `;` characters preserved cleanly!), with Clear button and an inline mode-aware **Decode (`TD`/`TD$`)** selector in the header (calling `e.stopPropagation()` so drawer collapse isn't triggered; CW/CW-R offers `OFF` / `CW 8-45` / `CW 8-60` / `CW 8-90` + Threshold `AUTO`/`1..9`; FSK-D/PSK-D offers `OFF` / `DATA ON`; incompatible modes disable the control with a CW/FSK-D/PSK-D tooltip).
    - **Collapsible Right Inspector (`320px`, `#inspector-drawer`)**:
      Clean segmented sections (tabs or compact cards):
      - **Bands & Mode**: 11 band pills (`160m..6m`), Mode selector (`LSB, USB, CW, CW-R, DATA-A, AFSK-A, FSK-D, PSK-D, AM, FM`), Target RX selector (`A` vs `B`).
-     - **RF & DSP Filter**: Width (`BW` slider + presets `250 / 500 / 2.4k / 2.8k`), IF Center/Pitch (`IS`), CW Pitch (`CW`), Preamp (`Off / 10dB / 18dB`), Attenuator (`0..21 dB`), AGC (`Slow / Fast / Off`), Noise Blanker (`NB`), Noise Reduction (`NR`), Manual Notch (`NM`).
-     - **Spectrum Display**: Span (`6–368 kHz`), Reference (`#REF`), Scale (`#SCL`), Averaging (`#AVG`), Auto-Ref (`#AR`), Waterfall Black (`#WBS`), Palette (`Obsidian / Thermal / Viridis / Cyan`), Peak Hold toggle.
+     - **RF & DSP Filter**: Width (`BW` slider + presets `250 / 500 / 2.4k / 2.8k`), IF Center/Pitch (`IS`), CW Pitch (`CW`), Preamp (`Off / 10dB / 18dB`), Attenuator (`0..21 dB`), AGC (`Slow / Fast / Off`), Noise Blanker (`NB`), Noise Reduction (`NR`), Manual Notch (`NM`), plus synchronized mode-aware Text Decode (`TD`/`TD$`) selector.
+     - **Spectrum Display**: Active pane badge (`PAN A` / `PAN B`, routed to `dispRx`), Dual-Pan (`1x Main A` / `1x Sub B` / `2x Dual`, disabling `B`/`2x` when `hasSubRx === false`), Span (`6–368 kHz`), Reference (`#REF`, `-160..0 dBm`, default `-110 dBm`, bottom of spectrum window; editing while Auto-Ref is active prepends `#ARM;`), `Center on VFO` (`FC`), `Fixed Tune` (`#FXT`), Scale (`#SCL` global), Averaging (`#AVG`), Auto-Ref (`#ARA`/`#ARM`) + `Auto-Ref Now` (`#AR1`), Waterfall Black (`#WBS` global), Palette (`Obsidian / K4 Classic / Thermal / Viridis / Cyan`), explicit `Mini-Pan VFO A` (`#MP`) and `Mini-Pan VFO B` (`#MP$`, disabled when Sub RX off or unavailable), Peak Hold toggle.
      - **Audio & Diagnostics**: Mute, Main/Sub Volume sliders, Balance slider, Mix (`MX`: `A.B`, `AB.AB`, `A.AB`, `AB.B`, etc.), Latency Tier (`SL0..SL7`), Encode Mode (`Auto / Opus / PCM`), Packet & Buffer telemetry + Phase 2 TX Extension Hook info (locked RX-only).
 
 ### Mobile (`max-width: 959px`, `height: 100dvh`)
@@ -41,7 +41,7 @@ CSS Grid `100vh` (`100dvh`), zero page scrollbars (`overflow: hidden`):
    - `Tune` (keypad + step + lock)
    - `Band/Mode`
    - `DSP` (BW, Preamp, NB/NR, AGC)
-   - `Display` (Span, Ref/Scale, Palette, MiniPan)
+   - `Display` (Span, Ref/Scale, Palette `Obsidian`/`K4 Classic`/`Thermal`/`Viridis`/`Cyan`, Center/Fixed Tune, Auto-Ref, Mini-Pan A/B)
    - `Audio` (Volume, Sub, Mix, Connection/Text)
    Tapping any tab opens a smooth **Bottom Sheet** (`max-height: 46vh`) over the lower portion so the upper live spectrum trace stays visible while tweaking controls; tapping the active tab again, dragging down, or pressing `Escape` dismisses it.
 
@@ -52,6 +52,6 @@ CSS Grid `100vh` (`100dvh`), zero page scrollbars (`overflow: hidden`):
   - Audio Codec selector (`Auto (PCM on file://)`, `PCM S16LE (EM1)`, `PCM 24-bit (EM0)`, `Opus (EM3)`)
   - Subprotocol mode (`Auto (websockify + websocat)`, `binary (websockify)`, `none (websocat)`)
   - Helpful inline banner when running on `file://` telling the operator the one-liner command: `websockify 127.0.0.1:9280 <k4-ip>:9205`.
-  - Auto-open Connection Dialog if not connected on startup, EXCEPT allow inspecting the URL query params `?ws=...&autoconnect=1` or calling `k4App.connect(...)` for seamless automation and bookmarking!
+  - Auto-open Connection Dialog if not connected on startup, EXCEPT allow inspecting the URL query params `?ws=...&autoconnect=1` (and immediately strip any `password` query param via `window.history.replaceState` after reading it) or calling `k4App.connect(...)` for seamless automation and bookmarking!
 - Expose `globalThis.k4App` with `.client`, `.state`, `.gate`, `.panadapter`, `.audio`, `.toast(msg, level)`, `.openOmnibar()`, `.openConnectionDialog()`, `.closeOverlays()`.
 - Support keyboard shortcuts (`Cmd/Ctrl+K` omnibar, `M` mute audio, `Space`? no—don't bind space to TX since RX-only! Bind `?` shortcuts or `ArrowLeft`/`ArrowRight` frequency step when no input focused, `+`/`-` zoom span, `Escape` close overlays).

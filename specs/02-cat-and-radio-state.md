@@ -69,20 +69,21 @@ Return `{ kind, rx, ... }` (`rx` is `'A'` or `'B'` when receiver-scoped, `null` 
 - `FT`: `0|1` -> `{ kind: 'split', rx: null, splitEnabled: val === 1 }`
 - `LN`: `0|1` -> `{ kind: 'vfoLink', rx: null, linked: val === 1 }`
 - `#SPN` / `#SPN$`: integer (`>= 6000` direct Hz; `< 1000` interpret `* 1000` Hz per K4 manual `#SPN46;`!) -> `{ kind: 'panSpan', rx, spanHz }`
-- `#REF` / `#REF$`: signed int `-200..60` -> `{ kind: 'panRef', rx, refDbm }`
-- `#SCL` / `#SCL$`: int `10..150` -> `{ kind: 'panScale', rx, scaleDb }`
+- `#REF` / `#REF$`: signed int `-200..60` (bottom-of-window dBm `[refDbm, refDbm + scaleDb]`; note while `#ARA;` Auto-Ref is active on real K4 `R40.B1`, manual `#REF` values are overwritten back to the noise floor on the next auto-ref tick unless `#ARM;` is sent first) -> `{ kind: 'panRef', rx, refDbm }`
+- `#SCL` (global-only; `#SCL$;` returns `#SCL?;`): int `10..150` -> `{ kind: 'panScale', rx, scaleDb }` (State updates mirror `panScaleDb` to both `rxA` and `rxB`.)
 - `#AVG`: int `1..20` -> `{ kind: 'panAvg', rx: null, avg }`
-- `#WBS` / `#WBS$`: int `5..30` -> `{ kind: 'wfBlack', rx, wfBlack }`
-- `#AR` (global-only; `#AR$;` returns `#AR?;`): either `#ARaadd±oom;` (e.g., `#AR1206-021;` with signed offset and trailing `m === '1'`) or 1-char SET shortcut (`A`/`M`/`0`/`1`/`9`/`/`) -> `{ kind: 'autoRef', rx: null, autoRef }`
-- `#DPM`: `0|1|2` -> `{ kind: 'dualPan', rx: null, dualPanMode }`
-- `#MP` / `#MP$`: `0|1` (or `-1` such as `#MP$-1;` when Sub MiniPAN is unavailable -> `{ kind: 'miniPan', rx, miniPan: false, miniPanAvailable: false }`) -> `{ kind: 'miniPan', rx, miniPan, miniPanAvailable }`
+- `#WBS` (global-only; `#WBS$;` returns `#WBS?;`): int `5..30` -> `{ kind: 'wfBlack', rx, wfBlack }` (State updates mirror `wfBlack` to both `rxA` and `rxB`.)
+- `#AR` (global-only; `#AR$;` returns `#AR?;`): either `#ARaadd±oom;` (e.g., `#AR1206-021;` / `#AR1206-020;` with signed offset and trailing `m === '1'`) or 1-char SET shortcut (`A`/`M`/`0`/`1`/`9`/`/`) -> `{ kind: 'autoRef', rx: null, autoRef }` (Note hardware behavior verified in `real_k4_wave2_capture.json`: `#ARA;` anchors `#REF` to noise floor continuously, `#AR1;` runs one-shot auto-ref preserving AUTO/MAN mode, and `#ARM;` switches to manual without overwriting `#REF`; updates mirror `autoRef` to both `rxA` and `rxB`.)
+- `#DPM`: `0|1|2` (`0` = 1x Main A, `1` = 1x Sub B, `2` = 2x Dual) -> `{ kind: 'dualPan', rx: null, dualPanMode }`
+- `#MP` / `#MP$`: `0|1` (or `-1` such as `#MP-1;` / `#MP$-1;` when unavailable -> `{ kind: 'miniPan', rx, miniPan: false, miniPanAvailable: false }`) -> `{ kind: 'miniPan', rx, miniPan, miniPanAvailable }`. Note real K4 continues streaming `0x03` Mini-PAN frames even when `#MP0;` is OFF, so display visibility MUST follow CAT `miniPan` state rather than packet arrival.
 - `#FRZ`: `0|1` -> `{ kind: 'panFrozen', rx: null, panFrozen: v === 1 }`
 - `#FXT` (global; `#FXT$;` returns `#FXT?;`): `0|1` -> `{ kind: 'fixedTune', rx: null, fixedTune: v === 1 }`
+- `TD` / `TD$`: `TDmtl;` / `TD$mtl;` (`m` mode `0..4`, `t` threshold `0..9`, `l` lines `0..1`) -> `{ kind: 'textDecode', rx, mode, threshold, lines, enabled: mode > 0 }`. On real K4 `R40.B1`, `TD > 0` works only in CW (`MD3`), CW-R (`MD7`), FSK-D (`MD6/9+DT2`), and PSK-D (`MD6/9+DT3`); attempting `TD` in incompatible modes such as `DATA-A` (`MD6+DT0`) replies `ER12:SET command incompatible with target VFO's mode.;`.
 - `MX`: string in `['A.B','AB.AB','A.-A','A.AB','AB.B','AB.A','B.AB','B.B','B.A','A.A']` -> `{ kind: 'audioMix', rx: null, mix }`
 - `EM`: `0|1|2|3` -> `{ kind: 'encodeMode', rx: null, encodeMode }`
 - `SL`: `0..7` (note `SL;` GET returns `SL3;`, whereas `SL<n>;` SET is silent) -> `{ kind: 'streamingLatency', rx: null, streamingLatency }`
 - `PING` / `PONG`: optional `<epoch>` (real K4 `R40.B1` emits bare `PONG;` with empty epoch `null`, while simulators or older targets may echo `PONG<epoch>;`) -> `{ kind: 'ping' | 'pong', rx: null, epoch }`
-- `TB` / `TB$`: `{ kind: 'decodedText', rx, txQueued, text }`
+- `TB` / `TB$`: `{ kind: 'decodedText', rx, txQueued, text }` (`TB000;` / `TB$000;` empty-buffer reply with length `00` is a silent no-op and does not append blank entries to `decodedText`)
 - `ER`: `nn` or `nn:msg` -> `{ kind: 'radioError', rx: null, code, message }`
 - `ID` / `OM` / `SN` / `RV` / `IF` / `AN` / `MEDF`:
   - `OM`: 12-char fixed-position option string `OM APXSHML14---;` (`A`=KAT4, `P`=KPA4, `X`=XVTR, `S`=KRX4 Sub RX, `H`=HDR, `M`=K40 Mini, `L`=Linear, `1`=KPA1500, `4`=K4; e.g., `OM AP------4---;` on single-RX K4 or `OM AP-S----4---;` when KRX4 Sub RX is installed) -> `{ kind: 'optionModule', rx: null, raw, options }`
@@ -115,12 +116,14 @@ Return `{ kind, rx, ... }` (`rx` is `'A'` or `'B'` when receiver-scoped, `null` 
 - `apf(rx, on, bwIdx = 0)`: `'AP' + (rx === 'B' ? '$' : '') + (on ? '1' : '0') + clamp(Math.round(Number(bwIdx)), 0, 2) + ';'`
 - `panSpan(rx, spanHz)`: `'#SPN' + (rx === 'B' ? '$' : '') + Math.round(clamp(spanHz, 6000, 368000)) + ';'`
 - `panRef(rx, refDbm)`: `'#REF' + (rx === 'B' ? '$' : '') + Math.round(clamp(refDbm, -160, 20)) + ';'`
-- `panScale(rx, scaleDb)`: `'#SCL' + (rx === 'B' ? '$' : '') + Math.round(clamp(scaleDb, 10, 150)) + ';'`
+- `panScale(rxOrDb, maybeDb)`: emits global `'#SCL' + Math.round(clamp(scaleDb, 10, 150)) + ';'` (no `$` suffix — `#SCL` is global on real K4; accepts `(scaleDb)` or legacy `(rx, scaleDb)`)
 - `panAvg(avg)`: `'#AVG' + String(clamp(Math.round(avg), 1, 20)).padStart(2, '0') + ';'`
-- `wfBlack(rx, wbs)`: `'#WBS' + (rx === 'B' ? '$' : '') + Math.round(clamp(wbs, 5, 30)) + ';'`
-- `autoRef(rx, on)`: `'#AR' + (rx === 'B' ? '$' : '') + (on ? 'A' : 'M') + ';'`
+- `wfBlack(rxOrWbs, maybeWbs)`: emits global `'#WBS' + Math.round(clamp(wbs, 5, 30)) + ';'` (no `$` suffix — `#WBS` is global on real K4; accepts `(wbs)` or legacy `(rx, wbs)`)
+- `autoRef(rxOrOn, maybeOn)`: emits global `'#AR' + (on ? 'A' : 'M') + ';'` (no `$` suffix — `#AR` is global on real K4; accepts `(on)` or legacy `(rx, on)`)
+- `autoRefOneShot()`: `'#AR1;'` (one-shot auto-ref level adjustment preserving current AUTO/MAN mode)
 - `dualPan(mode)`: `'#DPM' + clamp(mode, 0, 2) + ';'`
 - `miniPan(rx, on)`: `'#MP' + (rx === 'B' ? '$' : '') + (on ? '1' : '0') + ';'`
+- `textDecode(rx, mode, threshold = 0, lines = 1)`: `'TD' + (rx === 'B' ? '$' : '') + clamp(m, 0, 4) + clamp(t, 0, 9) + clamp(l, 0, 1) + ';'`
 - `centerPan(rx, offsetHz)`: when `offsetHz` is defined/finite and `Math.round(Number(offsetHz)) !== 0`, returns `'FC' + (rx === 'B' ? '$' : '') + (off > 0 ? '+' + off : String(off)) + ';'`; otherwise returns `'FC' + (rx === 'B' ? '$' : '') + ';'` (re-center panadapter on VFO)
 - `rit(rx, on)`: `'RT' + (rx === 'B' ? '$' : '') + (on ? '1' : '0') + ';'`
 - `ritOffset(rx, hz)`: clamps `hz` to `[-9999, 9999]` (default `0` if non-finite) and returns `'RO' + (rx === 'B' ? '$' : '') + (v < 0 ? '-' : '+') + String(Math.abs(v)).padStart(4, '0') + ';'`
@@ -134,12 +137,16 @@ Return `{ kind, rx, ... }` (`rx` is `'A'` or `'B'` when receiver-scoped, `null` 
 
 ## 4. `K4.RadioState` Default Snapshot & Events
 Default RX state (`createDefaultRxState(defaultFreqHz)`):
-- `rxA`: `freqHz: 14074000`, `mode: 6` (`DATA`), `dataSubMode: 0` (`DATA-A`), `bwHz: 2700`, `ifShiftHz: 1500`, `stepHz: 100`, `stepIdx: 2`, `locked: false`, `preamp: 0`, `attenDb: 0`, `afGain: 30`, `rfGainDb: 0`, `squelch: 0`, `nbOn: false`, `nbLevel: 5`, `nrOn: false`, `nrLevel: 4`, `notchOn: false`, `notchHz: 750`, `agc: 1`, `apfOn: false`, `apfBwIdx: 0`, `sMeterDbm: -115`, `panSpanHz: 48000`, `panRefDbm: -50`, `panScaleDb: 80`, `wfBlack: 14`, `autoRef: false`, `miniPan: false`, `miniPanAvailable: true`, `panCenterHz: 14074000`, `panTierKHz: 48`, `noiseFloorDbm: -120`, `adcOverflow: false`, `ifCenterHz: null`, `ritOn: false`, `ritOffsetHz: 0`, `band: bandForFreq(14074000)`
+- `rxA`: `freqHz: 14074000`, `mode: 6` (`DATA`), `dataSubMode: 0` (`DATA-A`), `bwHz: 2700`, `ifShiftHz: 1500`, `stepHz: 100`, `stepIdx: 2`, `locked: false`, `preamp: 0`, `attenDb: 0`, `afGain: 30`, `rfGainDb: 0`, `squelch: 0`, `nbOn: false`, `nbLevel: 5`, `nrOn: false`, `nrLevel: 4`, `notchOn: false`, `notchHz: 750`, `agc: 1`, `apfOn: false`, `apfBwIdx: 0`, `sMeterDbm: -115`, `panSpanHz: 48000`, `panRefDbm: -110` (bottom-referenced `#REF`), `panScaleDb: 80`, `wfBlack: 14`, `autoRef: false`, `miniPan: false`, `miniPanAvailable: true`, `panCenterHz: 14074000`, `panTierKHz: 48`, `noiseFloorDbm: -120`, `adcOverflow: false`, `ifCenterHz: null`, `ritOn: false`, `ritOffsetHz: 0`, `textDecodeMode: 0`, `textDecodeThreshold: 0`, `textDecodeLines: 1`, `textDecodeEnabled: false`, `band: bandForFreq(14074000)`
 - `rxB`: same shape with `freqHz: 14025000`, `mode: 3` (`CW`), `bwHz: 500`, `ifShiftHz: 500`, `panCenterHz: 14025000`, `band: bandForFreq(14025000)`
 - Top-level fields:
   - `connection`: `{ status: 'disconnected'|'connecting'|'authenticating'|'connected'|'error', wsUrl: '', subprotocol: '', authStatus: 'none'|'authenticating'|'authenticated'|'rejected', error: null, rttMs: null, radioId: '', serial: '' }`
   - `operatingPolicy: 'rx-only'`
-  - `cwPitchHz: 500`, `subRxEnabled: false`, `splitEnabled: false`, `vfoLinked: false`, `diversityEnabled: false`, `activeTxVfo: 'A'`, `panAvg: 4`, `dualPanMode: 0`, `panFrozen: false`, `audioMix: 'A.B'`, `encodeMode: 1`, `streamingLatency: 2`
-  - `decodedText: []` (array of `{ id, rx, text, timestamp }`, max 200 entries)
+  - `cwPitchHz: 500`, `subRxEnabled: false`, `hasSubRx: true`, `optionModules: ''` (`hasSubRx` reflects `'S'` option in `OM`), `splitEnabled: false`, `vfoLinked: false`, `diversityEnabled: false`, `activeTxVfo: 'A'`, `panAvg: 4`, `dualPanMode: 0`, `panFrozen: false`, `fixedTune: false`, `audioMix: 'A.B'`, `encodeMode: 1`, `streamingLatency: 2`
+  - `decodedText: []` (array of `{ id, rx, text, timestamp }`, max 200 entries; empty `TB000;`/`TB$000;` payloads ignored)
   - `band`: `rxA.band` (derived via `bandForFreq` / `K4.BANDS`)
-- `applyParsedCat(parsed)` updates all mapped per-RX and top-level fields (including `adcOverflow`, `ifCenterHz`, `ritOn`, `ritOffsetHz`, `diversityEnabled`, and `panFrozen`) and emits `'change'` with `(snapshot, changedKey)`. `K4.Client` forwards `'state'` events whenever `RadioState` changes.
+- `applyParsedCat(parsed)` updates all mapped per-RX and top-level fields (including `fixedTune`, `hasSubRx`/`optionModules`, `textDecode*`, `adcOverflow`, `ifCenterHz`, `ritOn`, `ritOffsetHz`, `diversityEnabled`, and `panFrozen`; mirroring global `#SCL`/`#WBS`/`#AR` values across both `rxA` and `rxB`) and emits `'change'` with `(snapshot, changedKey)`.
+- **Client Command Ordering & Polling (`K4.Client`)**:
+  - `setDisplay(rx, patch)`: if setting `panRefDbm` while `autoRef` is true, prepend `#ARM;` (and optimistically clear `autoRef: false` on both RXs) so the firmware does not snap `#REF` back to noise floor; when toggling `autoRef: true`, send `#ARA;#AR1;#REF;#REF$;`; when `autoRef: false`, send `#ARM;#REF;#REF$;`; follow `#MP`/`#MP$` SET with `#MP;`/`#MP$;` query to capture `-1` hardware availability immediately. Expose `applyAutoRefNow()` -> `#AR1;#REF;#REF$;`.
+  - `setTextDecode(rx, { mode, threshold, lines })`: sends `TD...;TD;TB;` (or `$` for VFO B).
+  - Conditional `TB;` / `TB$;` poll timer (350 ms interval) runs ONLY while `rxA.textDecodeMode > 0` or `rxB.textDecodeMode > 0`, querying only the active RX(s).
