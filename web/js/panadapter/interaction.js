@@ -122,6 +122,13 @@
       return this.view.getFrameState().snapshot || {};
     }
 
+    _isInsideMiniPan(e) {
+      const t = e && e.target;
+      return Boolean(
+        t && typeof t.closest === 'function' && t.closest('.k4-minipan-box')
+      );
+    }
+
     _hitTest(xPx, yPx) {
       const frame = this.view.getFrameState();
       const snapshot = frame.snapshot || this._getSnapshot();
@@ -129,9 +136,12 @@
       if ((!layouts || layouts.length === 0) && K4._computePanLayouts) {
         const w = this.surface.clientWidth || 800;
         const h = this.surface.clientHeight || 400;
-        const topInset = K4._measureHudTopInset
-          ? K4._measureHudTopInset(this.surface.parentElement, h)
-          : 0;
+        const topInset =
+          typeof this.renderer.getHudTopInset === 'function'
+            ? this.renderer.getHudTopInset()
+            : K4._measureHudTopInset
+            ? K4._measureHudTopInset(this.surface.parentElement, h)
+            : 0;
         layouts = K4._computePanLayouts(w, h, frame.dualPanMode || 0, topInset, {
           displayMode: snapshot.displayMode,
           waterfallHeightPct: snapshot.waterfallHeightPct,
@@ -582,7 +592,7 @@
     }
 
     _handlePointerDown(e) {
-      if (this._destroyed) return;
+      if (this._destroyed || this._isInsideMiniPan(e)) return;
       const { xPx, yPx } = this._getLocalPoint(e);
       const hit = this._hitTest(xPx, yPx);
 
@@ -710,6 +720,13 @@
 
     _handlePointerMove(e) {
       if (this._destroyed) return;
+      if (!this._dragMode && this._isInsideMiniPan(e)) {
+        if (this.view && typeof this.view.setHoverState === 'function') {
+          this.view.setHoverState(null);
+        }
+        this.surface.style.cursor = 'default';
+        return;
+      }
       const { xPx, yPx } = this._getLocalPoint(e);
 
       if (e.pointerType === 'touch') {
@@ -806,6 +823,14 @@
 
     _handlePointerUp(e) {
       if (this._destroyed) return;
+      if (
+        !this._dragMode &&
+        this._activePointerId === null &&
+        this._touches.size === 0 &&
+        this._isInsideMiniPan(e)
+      ) {
+        return;
+      }
       const { xPx, yPx } = this._getLocalPoint(e);
 
       if (e.pointerType === 'touch') {
@@ -876,9 +901,9 @@
     }
 
     _handleContextMenu(e) {
+      if (this._destroyed || this._isInsideMiniPan(e)) return;
       e.preventDefault();
       e.stopPropagation();
-      if (this._destroyed) return;
       if (performance.now() - this._lastRightHandledMs > 250) {
         const { xPx, yPx } = this._getLocalPoint(e);
         const hit = this._hitTest(xPx, yPx);
@@ -890,6 +915,7 @@
     }
 
     _handleAuxClick(e) {
+      if (this._destroyed || this._isInsideMiniPan(e)) return;
       if (e.button === 1) {
         e.preventDefault();
         e.stopPropagation();
@@ -897,8 +923,9 @@
     }
 
     _handleWheel(e) {
+      if (this._destroyed || this._isInsideMiniPan(e)) return;
       e.preventDefault();
-      if (this._destroyed || !this.client) return;
+      if (!this.client) return;
       const { xPx, yPx } = this._getLocalPoint(e);
       const hit = this._hitTest(xPx, yPx);
       if (!hit) return;
@@ -992,7 +1019,7 @@
     }
 
     _handleDblClick(e) {
-      if (this._destroyed) return;
+      if (this._destroyed || this._isInsideMiniPan(e)) return;
       const { xPx, yPx } = this._getLocalPoint(e);
       const hit = this._hitTest(xPx, yPx);
       if (
@@ -1007,8 +1034,9 @@
     }
 
     _handleGestureStart(e) {
+      if (this._destroyed || this._isInsideMiniPan(e)) return;
       if (typeof e.preventDefault === 'function') e.preventDefault();
-      if (this._destroyed || !this.view || typeof this.view.applyMapZoom !== 'function') {
+      if (!this.view || typeof this.view.applyMapZoom !== 'function') {
         return;
       }
       const { xPx, yPx } = this._getLocalPoint(e);
@@ -1026,9 +1054,9 @@
     }
 
     _handleGestureChange(e) {
+      if (this._destroyed || (!this._inSafariGesture && this._isInsideMiniPan(e))) return;
       if (typeof e.preventDefault === 'function') e.preventDefault();
       if (
-        this._destroyed ||
         !this._inSafariGesture ||
         !this.view ||
         typeof this.view.applyMapZoom !== 'function'
@@ -1058,6 +1086,7 @@
     }
 
     _handleGestureEnd(e) {
+      if (this._destroyed || (!this._inSafariGesture && this._isInsideMiniPan(e))) return;
       if (typeof e.preventDefault === 'function') e.preventDefault();
       this._inSafariGesture = false;
       this._flushPendingSpan();

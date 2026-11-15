@@ -5,6 +5,161 @@
 
   const RING_HEIGHT = 512;
   const DEFAULT_BINS = 1024;
+  const MINIPAN_HEADER_H = 24;
+  const ACCENT_RGB_A = [56 / 255, 189 / 255, 248 / 255];
+  const ACCENT_RGB_B = [245 / 255, 158 / 255, 11 / 255];
+  const MONO_FONT =
+    '"SF Mono", ui-monospace, "Cascadia Mono", "Roboto Mono", monospace';
+  const SANS_FONT =
+    'ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+
+  function ensureGlobalPerf() {
+    const p = (globalThis.__k4Perf = globalThis.__k4Perf || {});
+    if (typeof p.panFrames !== 'number') p.panFrames = 0;
+    if (typeof p.overlayDraws !== 'number') p.overlayDraws = 0;
+    if (typeof p.overlaySkips !== 'number') p.overlaySkips = 0;
+    if (typeof p.hudMeasures !== 'number') p.hudMeasures = 0;
+    if (typeof p.metaTexUploads !== 'number') p.metaTexUploads = 0;
+    return p;
+  }
+
+  function createPerfCounters() {
+    ensureGlobalPerf();
+    return {
+      panFrames: 0,
+      overlayDraws: 0,
+      overlaySkips: 0,
+      hudMeasures: 0,
+      metaTexUploads: 0,
+    };
+  }
+
+  function bumpPerf(perf, key) {
+    if (perf) perf[key] = (perf[key] || 0) + 1;
+    const g = ensureGlobalPerf();
+    g[key] = (g[key] || 0) + 1;
+  }
+
+  function ensureMiniPanBaseStyles() {
+    if (typeof document === 'undefined' || !document.head) return;
+    if (document.getElementById('k4-minipan-base-style')) return;
+    const style = document.createElement('style');
+    style.id = 'k4-minipan-base-style';
+    style.textContent = `
+:where(.k4-minipan-box) {
+  position: absolute;
+  z-index: 6;
+  display: none;
+  flex-direction: column;
+  box-sizing: border-box;
+  border-radius: 8px;
+  border: 1px solid rgba(56, 189, 248, 0.35);
+  background: rgba(9, 11, 16, 0.92);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  overflow: hidden;
+  pointer-events: auto;
+  user-select: none;
+  touch-action: none;
+}
+:where(.k4-minipan-box[data-snapping="true"]) {
+  transition: left 140ms ease-out, top 140ms ease-out;
+}
+:where(.k4-minipan-box[data-dragging="true"]) {
+  transition: none;
+}
+:where(.k4-minipan-box[data-rx="B"]) {
+  border-color: rgba(245, 158, 11, 0.40);
+}
+:where(.k4-minipan-header) {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 24px;
+  flex: 0 0 24px;
+  padding: 0 6px 0 8px;
+  background: rgba(14, 19, 29, 0.94);
+  border-bottom: 1px solid rgba(148, 163, 184, 0.16);
+  cursor: grab;
+  user-select: none;
+  touch-action: none;
+}
+:where(.k4-minipan-header:active),
+:where(.k4-minipan-box[data-dragging="true"] .k4-minipan-header) {
+  cursor: grabbing;
+}
+:where(.k4-minipan-title) {
+  font-family: ${SANS_FONT};
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  color: #38BDF8;
+  white-space: nowrap;
+}
+:where(.k4-minipan-box[data-rx="B"] .k4-minipan-title) {
+  color: #F59E0B;
+}
+:where(.k4-minipan-span) {
+  margin-left: auto;
+  font-family: ${MONO_FONT};
+  font-variant-numeric: tabular-nums;
+  font-size: 10px;
+  color: #CBD5E1;
+  white-space: nowrap;
+}
+:where(.k4-minipan-close) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: #94A3B8;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+}
+:where(.k4-minipan-close:hover) {
+  background: rgba(148, 163, 184, 0.18);
+  color: #F8FAFC;
+}
+:where(.k4-minipan-canvas) {
+  display: block;
+  width: 100%;
+  flex: 1 1 auto;
+  min-height: 0;
+  pointer-events: auto;
+}
+`;
+    document.head.appendChild(style);
+  }
+
+  function computeViewportCropInto(out, viewCenterHz, viewSpanHz, streamCenterHz, tierKHz) {
+    const safeTierKHz = Number.isFinite(tierKHz) && tierKHz > 0 ? tierKHz : 48;
+    const tierSpanHz = Math.max(1000, safeTierKHz * 1000);
+    const spanHz =
+      Number.isFinite(viewSpanHz) && viewSpanHz > 0 ? viewSpanHz : tierSpanHz;
+    if (!Number.isFinite(viewCenterHz) || !Number.isFinite(streamCenterHz)) {
+      const spanRatio = clamp(spanHz / tierSpanHz, 0.01, 1.0);
+      const leftRatio = 0.5 * (1.0 - spanRatio);
+      out.tierSpanHz = tierSpanHz;
+      out.spanRatio = spanRatio;
+      out.leftRatio = leftRatio;
+      out.rightRatio = leftRatio + spanRatio;
+      return out;
+    }
+    const spanRatio = Math.max(0.005, spanHz / tierSpanHz);
+    const streamLeftHz = streamCenterHz - tierSpanHz * 0.5;
+    const viewLeftHz = viewCenterHz - spanHz * 0.5;
+    const leftRatio = (viewLeftHz - streamLeftHz) / tierSpanHz;
+    out.tierSpanHz = tierSpanHz;
+    out.spanRatio = spanRatio;
+    out.leftRatio = leftRatio;
+    out.rightRatio = leftRatio + spanRatio;
+    return out;
+  }
 
   const WF_VERT_SRC = `#version 300 es
 in vec2 a_pos;
@@ -222,6 +377,7 @@ void main() {
   }
 
   function ensureSurfaceDom(container) {
+    ensureMiniPanBaseStyles();
     let surface = container.querySelector(':scope > .k4-pan-surface');
     if (!surface) {
       surface = document.createElement('div');
@@ -265,26 +421,13 @@ void main() {
       surface.appendChild(overlayCanvas);
     }
 
-    let miniPanBox = surface.querySelector(':scope > .k4-minipan-box');
-    if (!miniPanBox) {
-      miniPanBox = document.createElement('canvas');
-      miniPanBox.className = 'k4-minipan-box';
-      miniPanBox.style.position = 'absolute';
-      miniPanBox.style.top = '10px';
-      miniPanBox.style.right = '10px';
-      miniPanBox.style.width = '280px';
-      miniPanBox.style.height = '150px';
-      miniPanBox.style.borderRadius = '8px';
-      miniPanBox.style.border = '1px solid rgba(56, 189, 248, 0.35)';
-      miniPanBox.style.background = 'rgba(9, 11, 16, 0.90)';
-      miniPanBox.style.boxShadow = '0 8px 24px rgba(0, 0, 0, 0.55)';
-      miniPanBox.style.pointerEvents = 'none';
-      miniPanBox.style.zIndex = '4';
-      miniPanBox.style.display = 'none';
-      surface.appendChild(miniPanBox);
+    // Remove any legacy or stale Mini-Pan boxes before mounting fresh A & B boxes
+    const staleBoxes = surface.querySelectorAll(':scope > .k4-minipan-box');
+    for (let i = 0; i < staleBoxes.length; i++) {
+      staleBoxes[i].remove();
     }
 
-    return { surface, glCanvas, overlayCanvas, miniPanBox };
+    return { surface, glCanvas, overlayCanvas };
   }
 
   function drawRoundedPill(ctx, x, y, w, h, r) {
@@ -588,10 +731,8 @@ void main() {
     return txPinHz;
   }
 
-  function drawOverlayAndMiniPan({
+  function drawMainOverlay({
     overlayCtx,
-    miniPanBox,
-    miniCtx,
     cssW,
     cssH,
     dpr,
@@ -1334,147 +1475,214 @@ void main() {
       }
     }
 
-    // 5. Mini-Pan Loupe (#MP$)
-    drawMiniPanLoupe({
-      miniPanBox,
-      miniCtx,
-      cssW,
-      dpr,
-      layouts,
-      frameState,
-      snapshot,
-      cwPitchHz,
-      monoFont,
-      sansFont,
+  }
+
+  function isDocumentHidden() {
+    return typeof document !== 'undefined' && document.hidden === true;
+  }
+
+  function minipanStorageKey(rx) {
+    return rx === 'B' ? 'k4.minipan.pos.b' : 'k4.minipan.pos.a';
+  }
+
+  function readMiniPanPos(rx) {
+    if (!K4.storage || typeof K4.storage.get !== 'function') return null;
+    const val = K4.storage.get(minipanStorageKey(rx), null);
+    if (!val || typeof val !== 'object') return null;
+    if (!Number.isFinite(val.left) || !Number.isFinite(val.top)) return null;
+    return { left: Math.round(val.left), top: Math.round(val.top) };
+  }
+
+  function writeMiniPanPos(rx, left, top) {
+    if (!K4.storage || typeof K4.storage.set !== 'function') return;
+    K4.storage.set(minipanStorageKey(rx), {
+      left: Math.round(left),
+      top: Math.round(top),
     });
   }
 
-  function drawMiniPanLoupe({
-    miniPanBox,
-    miniCtx,
-    cssW,
-    dpr,
-    layouts,
-    frameState,
-    snapshot,
-    cwPitchHz,
-    monoFont,
-    sansFont,
-  }) {
-    if (!miniPanBox || !miniCtx) return;
-    const rxA = snapshot.rxA || {};
-    const rxB = snapshot.rxB || {};
-    const aAvail = Boolean(rxA.miniPan);
-    const subAvail = Boolean(
-      snapshot.subRxEnabled && rxB.miniPan && rxB.miniPanAvailable !== false
-    );
-    const enabled = aAvail || subAvail;
+  function clearMiniPanPos(rx) {
+    const key = minipanStorageKey(rx);
+    if (K4.storage && typeof K4.storage.remove === 'function') {
+      K4.storage.remove(key);
+    } else if (K4.storage && typeof K4.storage.set === 'function') {
+      K4.storage.set(key, null);
+    }
+  }
 
-    if (!enabled) {
-      miniPanBox.style.display = 'none';
-      return;
+  function rxOverlaySignaturePart(rxState) {
+    if (!rxState) return '';
+    return [
+      rxState.freqHz || 0,
+      rxState.mode || 0,
+      rxState.dataSubMode || 0,
+      rxState.bwHz || 0,
+      rxState.ifShiftHz || 0,
+      Number.isFinite(rxState.filterLoHz) ? rxState.filterLoHz : '',
+      Number.isFinite(rxState.filterHiHz) ? rxState.filterHiHz : '',
+      rxState.locked ? 1 : 0,
+      rxState.ritOn ? 1 : 0,
+      rxState.ritOffsetHz || 0,
+      rxState.notchOn ? 1 : 0,
+      rxState.notchHz || 0,
+      rxState.adcOverflow ? 1 : 0,
+      rxState.panCenterHz || 0,
+      rxState.panSpanHz || 0,
+      rxState.panRefDbm || 0,
+      rxState.panScaleDb || 0,
+    ].join(',');
+  }
+
+  function paneOverlaySignaturePart(pane, peakHold) {
+    if (!pane) return '';
+    return [
+      pane.panCenterHz || 0,
+      pane.userSpanHz || 0,
+      pane.refDbm || 0,
+      pane.scaleDb || 0,
+      pane.streamCenterHz || 0,
+      pane.tierKHz || 0,
+      pane.binsReady ? 1 : 0,
+      Number.isFinite(pane.noiseFloorDbm) ? Math.round(pane.noiseFloorDbm) : '',
+      peakHold ? pane.binSeq || 0 : 0,
+    ].join(',');
+  }
+
+  function computeOverlaySignature({
+    frameState,
+    layouts,
+    cssW,
+    cssH,
+    dpr,
+    hudTopInset,
+    paletteName,
+  }) {
+    const snap = (frameState && frameState.snapshot) || {};
+    const rxA = snap.rxA || {};
+    const rxB = snap.rxB || {};
+    const panes = (frameState && frameState.panes) || {};
+    const dualPanMode = frameState ? frameState.dualPanMode : 0;
+    const peakHold = Boolean(frameState && frameState.peakHold);
+    const hover = frameState && frameState.hover;
+    const theme =
+      typeof document !== 'undefined' &&
+      document.documentElement &&
+      document.documentElement.dataset
+        ? document.documentElement.dataset.theme || ''
+        : '';
+
+    let hoverPart = '0';
+    if (hover && hover.active) {
+      const hPane = panes[hover.paneRx];
+      hoverPart = [
+        hover.paneRx || 'A',
+        Math.round(hover.xPx || 0),
+        Math.round(hover.yPx || 0),
+        hover.edgeHint ? (hover.edgeHint.rx || '') + ':' + (hover.edgeHint.edge || '') : '',
+        hPane ? hPane.binSeq || 0 : 0,
+      ].join(',');
     }
 
-    const targetRx = frameState && frameState.targetRx === 'B' ? 'B' : 'A';
-    const rx = aAvail && subAvail ? targetRx : subAvail ? 'B' : 'A';
-    const byRx = frameState && frameState.miniPanByRx;
-    const mp = (byRx && byRx[rx]) || (frameState && frameState.miniPan);
-    const dualPanMode = frameState ? frameState.dualPanMode : 0;
-    const subRxEnabled = Boolean(snapshot.subRxEnabled);
-    let targetLayout = layouts && layouts[0];
-    if (layouts && layouts.length > 0) {
-      for (let i = 0; i < layouts.length; i++) {
-        if (layouts[i].rx === rx) {
-          targetLayout = layouts[i];
-          break;
-        }
+    let bmPart = '';
+    if (frameState && Number.isFinite(frameState.bookmarksRev)) {
+      bmPart = String(frameState.bookmarksRev);
+    } else if (frameState && Array.isArray(frameState.bookmarks)) {
+      const bms = frameState.bookmarks;
+      bmPart = String(bms.length);
+      for (let i = 0; i < bms.length; i++) {
+        bmPart += ';' + (bms[i].freqHz || 0) + ':' + (bms[i].label || '');
       }
     }
 
-    const paneRect = targetLayout
-      ? targetLayout.paneRect
-      : { x: 0, y: 0, w: cssW, h: 300 };
-    const specRect = targetLayout
-      ? targetLayout.specRect
-      : { x: 0, y: 0, w: cssW, h: 200 };
+    const swrPart =
+      snap.atuTuning && snap.txMeters && Number.isFinite(snap.txMeters.swr)
+        ? snap.txMeters.swr.toFixed(1)
+        : '';
 
-    const isCompact = cssW < 640;
-    const twoVfosInPane = dualPanMode !== 2 && subRxEnabled;
-    let boxW;
-    let boxH;
-    let rightClear;
-    let vfoClear;
-
-    if (dualPanMode === 2 && cssW >= 1000) {
-      rightClear = 42;
-      vfoClear = 26;
-      const halfClear = Math.floor(paneRect.w * 0.5) + 46;
-      const maxW = Math.max(140, paneRect.w - rightClear - halfClear);
-      boxW = clamp(maxW, 148, 220);
-      boxH = clamp(
-        Math.round(boxW * 0.56),
-        84,
-        Math.max(84, specRect.h - vfoClear - 8)
-      );
-    } else if (dualPanMode === 2) {
-      rightClear = isCompact ? 36 : 44;
-      vfoClear = 24;
-      const maxW = Math.max(128, Math.floor(paneRect.w * 0.5 - rightClear - 24));
-      boxW = clamp(maxW, 128, 210);
-      boxH = clamp(
-        Math.round(boxW * 0.54),
-        68,
-        Math.max(68, specRect.h - vfoClear - 4)
-      );
-    } else if (isCompact) {
-      rightClear = 38;
-      vfoClear = twoVfosInPane ? 42 : 24;
-      const maxW = Math.max(124, Math.floor(paneRect.w * 0.5 - rightClear - 32));
-      boxW = clamp(maxW, 124, 182);
-      boxH = clamp(
-        Math.round(boxW * 0.56),
-        68,
-        Math.max(68, specRect.h - vfoClear - 4)
-      );
-    } else {
-      rightClear = 44;
-      vfoClear = twoVfosInPane ? 44 : 26;
-      const maxW = Math.max(150, Math.floor(paneRect.w * 0.5 - rightClear - 46));
-      boxW = specRect.w >= 760 ? Math.min(280, maxW) : clamp(maxW, 160, 240);
-      boxH = clamp(
-        Math.round(boxW * (150 / 280)),
-        84,
-        Math.min(150, Math.max(84, specRect.h - vfoClear - 8))
-      );
-    }
-
-    const boxLeft = Math.round(
-      Math.max(paneRect.x + 8, paneRect.x + paneRect.w - rightClear - boxW)
+    const needB = Boolean(
+      snap.subRxEnabled ||
+        snap.splitEnabled ||
+        dualPanMode === 1 ||
+        dualPanMode === 2
     );
-    const boxTop = Math.round(specRect.y + vfoClear);
 
-    miniPanBox.style.display = 'block';
-    miniPanBox.style.right = 'auto';
-    miniPanBox.style.left = boxLeft + 'px';
-    miniPanBox.style.top = boxTop + 'px';
-    miniPanBox.style.width = boxW + 'px';
-    miniPanBox.style.height = boxH + 'px';
-
-    const targetW = Math.round(boxW * dpr);
-    const targetH = Math.round(boxH * dpr);
-    if (miniPanBox.width !== targetW || miniPanBox.height !== targetH) {
-      miniPanBox.width = targetW;
-      miniPanBox.height = targetH;
+    let layoutPart = '';
+    if (layouts) {
+      for (let i = 0; i < layouts.length; i++) {
+        const l = layouts[i];
+        layoutPart +=
+          l.rx +
+          ':' +
+          l.specRect.h +
+          ':' +
+          l.wfRect.h +
+          (i < layouts.length - 1 ? '|' : '');
+      }
     }
 
-    const ctx = miniCtx;
+    return [
+      cssW,
+      cssH,
+      dpr,
+      hudTopInset,
+      paletteName || '',
+      theme,
+      dualPanMode,
+      layoutPart,
+      frameState && frameState.targetRx ? frameState.targetRx : 'A',
+      peakHold ? 1 : 0,
+      frameState && frameState.dragState ? frameState.dragState : '',
+      Number.isFinite(snap.cwPitchHz) ? snap.cwPitchHz : 500,
+      snap.subRxEnabled ? 1 : 0,
+      snap.splitEnabled ? 1 : 0,
+      snap.xitEnabled ? 1 : 0,
+      snap.txVfo || 'A',
+      snap.txActive ? 1 : 0,
+      snap.atuTuning ? 1 : 0,
+      swrPart,
+      snap.txPosture || 'rx-only',
+      snap.txTestMode ? 1 : 0,
+      snap.panFrozen ? 1 : 0,
+      snap.txInhibit ? 1 : 0,
+      Number.isFinite(snap.displayMode) ? snap.displayMode : 1,
+      Number.isFinite(snap.waterfallHeightPct) ? snap.waterfallHeightPct : 62,
+      bmPart,
+      hoverPart,
+      rxOverlaySignaturePart(rxA),
+      needB ? rxOverlaySignaturePart(rxB) : '',
+      paneOverlaySignaturePart(panes.A, peakHold),
+      needB || dualPanMode === 1 || dualPanMode === 2
+        ? paneOverlaySignaturePart(panes.B, peakHold)
+        : '',
+    ].join('#');
+  }
+
+  function drawMiniPanCanvas({
+    canvas,
+    ctx,
+    cssW,
+    cssH,
+    dpr,
+    rx,
+    mp,
+    rxState,
+    cwPitchHz,
+  }) {
+    if (!canvas || !ctx || cssW <= 0 || cssH <= 0) return;
+
+    const targetW = Math.max(1, Math.round(cssW * dpr));
+    const targetH = Math.max(1, Math.round(cssH * dpr));
+    if (canvas.width !== targetW || canvas.height !== targetH) {
+      canvas.width = targetW;
+      canvas.height = targetH;
+    }
+
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.clearRect(0, 0, boxW, boxH);
+    ctx.clearRect(0, 0, cssW, cssH);
 
     ctx.fillStyle = '#090B10';
-    ctx.fillRect(0, 0, boxW, boxH);
+    ctx.fillRect(0, 0, cssW, cssH);
 
-    const rxState = rx === 'B' ? rxB : rxA;
     const accent = rx === 'B' ? '#F59E0B' : '#38BDF8';
     const accentSoft =
       rx === 'B' ? 'rgba(245, 158, 11, 0.22)' : 'rgba(56, 189, 248, 0.22)';
@@ -1484,65 +1692,41 @@ void main() {
       (mp && Number.isFinite(mp.centerFreqHz) ? mp.centerFreqHz : null) ||
       K4.SpectrumGeometry.displayMarkerHz(rxState, cwPitchHz);
 
-    const headerH = boxH < 96 ? 18 : 22;
     const padX = 6;
-    const padBottom = boxH < 96 ? 13 : 16;
-    const plotX = padX;
-    const plotY = headerH + 2;
-    const plotW = boxW - padX * 2;
-    const plotH = boxH - plotY - padBottom;
+    const plotY = 4;
+    const padBottom = cssH < 66 ? 13 : 15;
+    const plotW = Math.max(20, cssW - padX * 2);
+    const plotH = Math.max(16, cssH - plotY - padBottom);
 
-    // Header
-    ctx.fillStyle = 'rgba(14, 19, 29, 0.9)';
-    ctx.fillRect(0, 0, boxW, headerH);
-    ctx.strokeStyle = 'rgba(148, 163, 184, 0.16)';
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.moveTo(0, headerH + 0.5);
-    ctx.lineTo(boxW, headerH + 0.5);
-    ctx.stroke();
-
-    ctx.font = 'bold 10px ' + sansFont;
-    ctx.fillStyle = accent;
-    ctx.textAlign = 'left';
-    ctx.textBaseline = 'middle';
-    ctx.fillText('MINI-PAN ' + rx, 8, headerH / 2 + 0.5);
-
-    ctx.font = '10px ' + monoFont;
-    ctx.fillStyle = '#CBD5E1';
-    ctx.textAlign = 'right';
-    ctx.fillText(spanKHz + ' kHz', boxW - 8, headerH / 2 + 0.5);
-
-    // Mini-pan dBm scale
     const refDbm = Number.isFinite(rxState.panRefDbm) ? rxState.panRefDbm : -110;
-    const scaleDb = Number.isFinite(rxState.panScaleDb) ? rxState.panScaleDb : 80;
-    const minDbm = refDbm;
+    const scaleDb = Math.max(10, Number.isFinite(rxState.panScaleDb) ? rxState.panScaleDb : 80);
     const maxDbm = refDbm + scaleDb;
 
     // Grid
-    ctx.strokeStyle = 'rgba(148, 163, 184, 0.12)';
+    ctx.strokeStyle = 'rgba(148, 163, 184, 0.14)';
+    ctx.lineWidth = 1;
     for (let k = 1; k <= 3; k++) {
       const gy = Math.round(plotY + (plotH * k) / 4) + 0.5;
       ctx.beginPath();
-      ctx.moveTo(plotX, gy);
-      ctx.lineTo(plotX + plotW, gy);
+      ctx.moveTo(padX, gy);
+      ctx.lineTo(padX + plotW, gy);
       ctx.stroke();
     }
 
-    // Passband curtain & needle
+    // Passband curtain & marker needle
     const pb = K4.SpectrumGeometry.computePassbandRange(rxState, cwPitchHz);
-    const lowX = K4.SpectrumGeometry.xFromRfFreq(pb.lowHz, plotX, plotW, centerHz, spanHz);
-    const highX = K4.SpectrumGeometry.xFromRfFreq(pb.highHz, plotX, plotW, centerHz, spanHz);
-    const cLeft = clamp(lowX, plotX, plotX + plotW);
-    const cRight = clamp(highX, plotX, plotX + plotW);
+    const lowX = K4.SpectrumGeometry.xFromRfFreq(pb.lowHz, padX, plotW, centerHz, spanHz);
+    const highX = K4.SpectrumGeometry.xFromRfFreq(pb.highHz, padX, plotW, centerHz, spanHz);
+    const cLeft = clamp(lowX, padX, padX + plotW);
+    const cRight = clamp(highX, padX, padX + plotW);
     if (cRight > cLeft) {
       ctx.fillStyle = accentSoft;
       ctx.fillRect(cLeft, plotY, cRight - cLeft, plotH);
     }
 
     const markerHz = K4.SpectrumGeometry.displayMarkerHz(rxState, cwPitchHz);
-    const mx = K4.SpectrumGeometry.xFromRfFreq(markerHz, plotX, plotW, centerHz, spanHz);
-    if (mx >= plotX && mx <= plotX + plotW) {
+    const mx = K4.SpectrumGeometry.xFromRfFreq(markerHz, padX, plotW, centerHz, spanHz);
+    if (mx >= padX && mx <= padX + plotW) {
       ctx.strokeStyle = accent;
       ctx.lineWidth = 1.2;
       ctx.beginPath();
@@ -1557,29 +1741,32 @@ void main() {
       const n = bins.length;
       ctx.save();
       ctx.beginPath();
-      ctx.rect(plotX, plotY, plotW, plotH);
+      ctx.rect(padX, plotY, plotW, plotH);
       ctx.clip();
 
       const grad = ctx.createLinearGradient(0, plotY, 0, plotY + plotH);
-      grad.addColorStop(0, rx === 'B' ? 'rgba(245, 158, 11, 0.42)' : 'rgba(56, 189, 248, 0.42)');
+      grad.addColorStop(
+        0,
+        rx === 'B' ? 'rgba(245, 158, 11, 0.42)' : 'rgba(56, 189, 248, 0.42)'
+      );
       grad.addColorStop(1, 'rgba(9, 11, 16, 0.02)');
 
       ctx.beginPath();
-      ctx.moveTo(plotX, plotY + plotH);
+      ctx.moveTo(padX, plotY + plotH);
       for (let i = 0; i < n; i++) {
-        const x = plotX + (i / (n - 1)) * plotW;
+        const x = padX + (i / (n - 1)) * plotW;
         const yNorm = clamp((maxDbm - bins[i]) / scaleDb, 0, 1);
         const y = plotY + yNorm * plotH;
         ctx.lineTo(x, y);
       }
-      ctx.lineTo(plotX + plotW, plotY + plotH);
+      ctx.lineTo(padX + plotW, plotY + plotH);
       ctx.closePath();
       ctx.fillStyle = grad;
       ctx.fill();
 
       ctx.beginPath();
       for (let i = 0; i < n; i++) {
-        const x = plotX + (i / (n - 1)) * plotW;
+        const x = padX + (i / (n - 1)) * plotW;
         const yNorm = clamp((maxDbm - bins[i]) / scaleDb, 0, 1);
         const y = plotY + yNorm * plotH;
         if (i === 0) ctx.moveTo(x, y);
@@ -1590,19 +1777,918 @@ void main() {
       ctx.stroke();
       ctx.restore();
     } else {
-      ctx.font = '10px ' + monoFont;
+      ctx.font = '10px ' + MONO_FONT;
       ctx.fillStyle = '#64748B';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      ctx.fillText('Awaiting #MP stream…', boxW / 2, plotY + plotH / 2);
+      ctx.fillText('Awaiting #MP stream…', cssW / 2, plotY + plotH / 2);
     }
 
     // Center frequency footer
-    ctx.font = '9.5px ' + monoFont;
+    ctx.font = '9.5px ' + MONO_FONT;
     ctx.fillStyle = '#94A3B8';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'bottom';
-    ctx.fillText(formatFreqMHz(centerHz) + ' MHz', boxW / 2, boxH - 3);
+    ctx.fillText(formatFreqMHz(centerHz) + ' MHz', cssW / 2, cssH - 2);
+  }
+
+  class MiniPanBoxController {
+    constructor(surface, rx, opts = {}) {
+      this.surface = surface;
+      this.rx = rx === 'B' ? 'B' : 'A';
+      this._onClose = typeof opts.onClose === 'function' ? opts.onClose : null;
+      this._onBringToFront =
+        typeof opts.onBringToFront === 'function' ? opts.onBringToFront : null;
+      this._destroyed = false;
+
+      const box = document.createElement('div');
+      box.className = 'k4-minipan-box';
+      box.dataset.rx = this.rx;
+      box.dataset.testid = this.rx === 'B' ? 'minipan-box-b' : 'minipan-box-a';
+      box.dataset.dragging = 'false';
+      box.style.display = 'none';
+      box.setAttribute('aria-label', 'Mini-Pan ' + this.rx);
+
+      const header = document.createElement('div');
+      header.className = 'k4-minipan-header k4-minipan-drag';
+      header.dataset.testid = this.rx === 'B' ? 'minipan-drag-b' : 'minipan-drag-a';
+      header.title = 'Drag to move Mini-Pan ' + this.rx + ' · Double-click to reset';
+
+      const titleEl = document.createElement('span');
+      titleEl.className = 'k4-minipan-title';
+      titleEl.textContent = 'Mini-Pan ' + this.rx;
+
+      const spanEl = document.createElement('span');
+      spanEl.className = 'k4-minipan-span';
+      spanEl.textContent = '10 kHz';
+
+      const closeBtn = document.createElement('button');
+      closeBtn.type = 'button';
+      closeBtn.className = 'k4-minipan-close';
+      closeBtn.dataset.testid = this.rx === 'B' ? 'minipan-close-b' : 'minipan-close-a';
+      closeBtn.setAttribute('aria-label', 'Close Mini-Pan ' + this.rx);
+      closeBtn.textContent = '×';
+
+      header.appendChild(titleEl);
+      header.appendChild(spanEl);
+      header.appendChild(closeBtn);
+
+      const canvas = document.createElement('canvas');
+      canvas.className = 'k4-minipan-canvas';
+      canvas.dataset.testid = this.rx === 'B' ? 'minipan-canvas-b' : 'minipan-canvas-a';
+
+      box.appendChild(header);
+      box.appendChild(canvas);
+      surface.appendChild(box);
+
+      this.box = box;
+      this.header = header;
+      this.titleEl = titleEl;
+      this.spanEl = spanEl;
+      this.closeBtn = closeBtn;
+      this.canvas = canvas;
+      this.ctx = canvas.getContext('2d', { alpha: true });
+
+      this._customPos = readMiniPanPos(this.rx);
+      box.dataset.docked = this._customPos ? 'false' : 'true';
+      this._visible = false;
+      this._lastCanvasSig = null;
+      this._lastSpanText = '10 kHz';
+      this._lastStyleKey = '';
+      this._bounds = { cssW: 0, cssH: 0, hudTopInset: 0 };
+      this._rect = { left: 0, top: 0, w: 208, h: 120 };
+      this._dragState = null;
+      this._snapTimer = null;
+
+      this._bindEvents();
+    }
+
+    _clampPos(rawLeft, rawTop, boxW, boxH, bounds) {
+      const cssW = bounds && bounds.cssW > 0 ? bounds.cssW : this.surface.clientWidth || 800;
+      const cssH = bounds && bounds.cssH > 0 ? bounds.cssH : this.surface.clientHeight || 400;
+      const topInset =
+        bounds && Number.isFinite(bounds.hudTopInset) ? Math.max(0, bounds.hudTopInset) : 0;
+
+      const minLeft = cssW >= boxW + 12 ? 6 : Math.max(0, Math.floor((cssW - boxW) * 0.5));
+      const maxLeft = Math.max(minLeft, cssW - boxW - 6);
+      const maxTop = Math.max(0, cssH - boxH - 6);
+      const desiredMinTop = Math.max(6, Math.round(topInset) + 4);
+      const minTop = Math.min(desiredMinTop, maxTop);
+
+      return {
+        left: Math.round(clamp(rawLeft, minLeft, maxLeft)),
+        top: Math.round(clamp(rawTop, minTop, maxTop)),
+      };
+    }
+
+    _computeBoxGeometry(layout, bounds, dualPanMode, subRxEnabled, avoidRect) {
+      const cssW = bounds.cssW || 800;
+      const cssH = bounds.cssH || 400;
+      const paneRect =
+        layout && layout.paneRect ? layout.paneRect : { x: 0, y: 0, w: cssW, h: cssH };
+      const specRect =
+        layout && layout.specRect ? layout.specRect : { x: 0, y: 0, w: cssW, h: Math.max(120, cssH - 26) };
+
+      const isCompact = cssW < 640 || paneRect.w < 440;
+      const twoVfosInPane = dualPanMode !== 2 && subRxEnabled;
+      const rightClear = isCompact ? 34 : 42;
+      const vfoClear = dualPanMode === 2 ? 22 : twoVfosInPane ? 40 : 24;
+
+      const maxBoxW = Math.max(
+        136,
+        Math.min(212, Math.floor(paneRect.w - rightClear - 16))
+      );
+      const boxW = isCompact
+        ? clamp(maxBoxW, 136, 178)
+        : clamp(maxBoxW, 168, 212);
+      const availH = Math.max(76, specRect.h - vfoClear - 6);
+      const idealH = Math.round(boxW * 0.58) + MINIPAN_HEADER_H;
+      const boxH = clamp(
+        idealH,
+        Math.min(82, availH),
+        Math.min(134, availH)
+      );
+
+      let defaultLeft = Math.round(
+        Math.max(paneRect.x + 6, paneRect.x + paneRect.w - rightClear - boxW)
+      );
+      let defaultTop = Math.round(specRect.y + vfoClear);
+
+      if (avoidRect && avoidRect.w > 0 && avoidRect.h > 0) {
+        const horizOverlap =
+          defaultLeft < avoidRect.left + avoidRect.w + 8 &&
+          defaultLeft + boxW + 8 > avoidRect.left;
+        const vertOverlap =
+          defaultTop < avoidRect.top + avoidRect.h + 8 &&
+          defaultTop + boxH + 8 > avoidRect.top;
+        if (horizOverlap && vertOverlap) {
+          const belowTop = avoidRect.top + avoidRect.h + 8;
+          if (belowTop + boxH <= specRect.y + specRect.h - 4) {
+            defaultTop = belowTop;
+          } else {
+            defaultLeft = Math.max(paneRect.x + 6, avoidRect.left - boxW - 8);
+          }
+        }
+      }
+
+      const docked = this._clampPos(defaultLeft, defaultTop, boxW, boxH, bounds);
+      return {
+        boxW,
+        boxH,
+        defaultLeft: docked.left,
+        defaultTop: docked.top,
+      };
+    }
+
+    _applyPositionDom(left, top, boxW, boxH, docked) {
+      this._rect.left = left;
+      this._rect.top = top;
+      this._rect.w = boxW;
+      this._rect.h = boxH;
+
+      const key = left + '|' + top + '|' + boxW + '|' + boxH + '|' + (docked ? 1 : 0);
+      if (key === this._lastStyleKey && this._visible) return;
+      this._lastStyleKey = key;
+
+      this.box.style.display = 'flex';
+      this.box.style.right = 'auto';
+      this.box.style.left = left + 'px';
+      this.box.style.top = top + 'px';
+      this.box.style.width = boxW + 'px';
+      this.box.style.height = boxH + 'px';
+      this.box.dataset.docked = docked ? 'true' : 'false';
+      this._visible = true;
+    }
+
+    clampToBounds(bounds) {
+      if (bounds) {
+        this._bounds = {
+          cssW: bounds.cssW || 0,
+          cssH: bounds.cssH || 0,
+          hudTopInset: bounds.hudTopInset || 0,
+        };
+      }
+      if (!this._visible) return;
+      const boxW = this._rect.w || 208;
+      const boxH = this._rect.h || 120;
+      const rawLeft = this._customPos ? this._customPos.left : this._rect.left;
+      const rawTop = this._customPos ? this._customPos.top : this._rect.top;
+      const clamped = this._clampPos(rawLeft, rawTop, boxW, boxH, this._bounds);
+      this._applyPositionDom(clamped.left, clamped.top, boxW, boxH, !this._customPos);
+    }
+
+    _bindEvents() {
+      const stopOnly = (e) => {
+        e.stopPropagation();
+      };
+      const stopAndPrevent = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+      };
+
+      const isoEvents = [
+        'pointerdown',
+        'pointermove',
+        'pointerup',
+        'pointercancel',
+        'mousedown',
+        'mouseup',
+        'click',
+        'dblclick',
+        'auxclick',
+      ];
+      for (let i = 0; i < isoEvents.length; i++) {
+        this.box.addEventListener(isoEvents[i], stopOnly);
+      }
+      this.box.addEventListener('wheel', stopAndPrevent, { passive: false });
+      this.box.addEventListener('contextmenu', stopAndPrevent);
+
+      this.closeBtn.addEventListener('pointerdown', (e) => {
+        e.stopPropagation();
+      });
+      this.closeBtn.addEventListener('mousedown', (e) => {
+        e.stopPropagation();
+      });
+      this.closeBtn.addEventListener('dblclick', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+      });
+      this.closeBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (this._onClose) this._onClose(this.rx);
+      });
+
+      this._onDragMove = (e) => {
+        if (!this._dragState) return;
+        if (this._dragState.isPointer) {
+          if (
+            e.pointerId !== undefined &&
+            this._dragState.pointerId !== null &&
+            e.pointerId !== this._dragState.pointerId
+          ) {
+            return;
+          }
+          if (e.type === 'mousemove') return;
+        }
+        if (typeof e.stopPropagation === 'function') e.stopPropagation();
+        const dx = e.clientX - this._dragState.startClientX;
+        const dy = e.clientY - this._dragState.startClientY;
+        if (!this._dragState.moved) {
+          if (dx === 0 && dy === 0) return;
+          this._dragState.moved = true;
+          this.box.dataset.dragging = 'true';
+          this.box.dataset.docked = 'false';
+        }
+        const next = this._clampPos(
+          this._dragState.startLeft + dx,
+          this._dragState.startTop + dy,
+          this._rect.w,
+          this._rect.h,
+          this._bounds
+        );
+        this._customPos = { left: next.left, top: next.top };
+        this._applyPositionDom(next.left, next.top, this._rect.w, this._rect.h, false);
+      };
+
+      this._onDragEnd = (e) => {
+        if (!this._dragState) return;
+        if (this._dragState.isPointer) {
+          if (
+            e.pointerId !== undefined &&
+            this._dragState.pointerId !== null &&
+            e.pointerId !== this._dragState.pointerId
+          ) {
+            return;
+          }
+          if (e.type === 'mouseup') return;
+        }
+        if (typeof e.stopPropagation === 'function') e.stopPropagation();
+        const st = this._dragState;
+        this._dragState = null;
+        this.box.dataset.dragging = 'false';
+
+        if (st.pointerId !== null && typeof this.header.releasePointerCapture === 'function') {
+          try {
+            if (
+              typeof this.header.hasPointerCapture === 'function' &&
+              this.header.hasPointerCapture(st.pointerId)
+            ) {
+              this.header.releasePointerCapture(st.pointerId);
+            }
+          } catch (_err) {
+            // Ignore release failures when pointer capture was synthetic
+          }
+        }
+        this._detachWindowDragListeners();
+
+        if (st.moved || this._customPos !== null) {
+          const next = this._clampPos(
+            this._customPos ? this._customPos.left : this._rect.left,
+            this._customPos ? this._customPos.top : this._rect.top,
+            this._rect.w,
+            this._rect.h,
+            this._bounds
+          );
+          this._customPos = { left: next.left, top: next.top };
+          writeMiniPanPos(this.rx, next.left, next.top);
+          this._applyPositionDom(next.left, next.top, this._rect.w, this._rect.h, false);
+        }
+      };
+
+      const startDrag = (e) => {
+        if (e.target && typeof e.target.closest === 'function' && e.target.closest('.k4-minipan-close')) {
+          return;
+        }
+        if (e.button !== undefined && e.button !== 0 && e.pointerType !== 'touch') {
+          return;
+        }
+        if (this._dragState) return;
+
+        e.preventDefault();
+        e.stopPropagation();
+
+        if (this._snapTimer) {
+          clearTimeout(this._snapTimer);
+          this._snapTimer = null;
+          delete this.box.dataset.snapping;
+        }
+
+        if (this._onBringToFront) this._onBringToFront(this.rx);
+
+        const isPointer = e.type === 'pointerdown' && e.pointerId !== undefined;
+        const pointerId = isPointer ? e.pointerId : null;
+        this._dragState = {
+          isPointer,
+          pointerId,
+          startClientX: e.clientX || 0,
+          startClientY: e.clientY || 0,
+          startLeft: this._rect.left,
+          startTop: this._rect.top,
+          moved: false,
+        };
+        if (this._customPos !== null) {
+          this.box.dataset.dragging = 'true';
+        }
+
+        if (pointerId !== null && typeof this.header.setPointerCapture === 'function') {
+          try {
+            this.header.setPointerCapture(pointerId);
+          } catch (_err) {
+            // Ignore synthetic pointers without active browser capture id
+          }
+        }
+        this._attachWindowDragListeners();
+      };
+
+      this.header.addEventListener('pointerdown', startDrag);
+      this.header.addEventListener('mousedown', startDrag);
+
+      this.header.addEventListener('dblclick', (e) => {
+        if (e.target && typeof e.target.closest === 'function' && e.target.closest('.k4-minipan-close')) {
+          return;
+        }
+        e.preventDefault();
+        e.stopPropagation();
+
+        this._customPos = null;
+        clearMiniPanPos(this.rx);
+        this.box.dataset.docked = 'true';
+        this.box.dataset.snapping = 'true';
+        if (this._snapTimer) clearTimeout(this._snapTimer);
+        this._snapTimer = setTimeout(() => {
+          this._snapTimer = null;
+          if (!this._destroyed && this.box) {
+            delete this.box.dataset.snapping;
+          }
+        }, 180);
+
+        if (this._lastDockPos) {
+          const clamped = this._clampPos(
+            this._lastDockPos.left,
+            this._lastDockPos.top,
+            this._rect.w,
+            this._rect.h,
+            this._bounds
+          );
+          this._applyPositionDom(clamped.left, clamped.top, this._rect.w, this._rect.h, true);
+        }
+      });
+    }
+
+    _attachWindowDragListeners() {
+      if (typeof globalThis.addEventListener !== 'function') return;
+      globalThis.addEventListener('pointermove', this._onDragMove, true);
+      globalThis.addEventListener('pointerup', this._onDragEnd, true);
+      globalThis.addEventListener('pointercancel', this._onDragEnd, true);
+      globalThis.addEventListener('mousemove', this._onDragMove, true);
+      globalThis.addEventListener('mouseup', this._onDragEnd, true);
+    }
+
+    _detachWindowDragListeners() {
+      if (typeof globalThis.removeEventListener !== 'function') return;
+      globalThis.removeEventListener('pointermove', this._onDragMove, true);
+      globalThis.removeEventListener('pointerup', this._onDragEnd, true);
+      globalThis.removeEventListener('pointercancel', this._onDragEnd, true);
+      globalThis.removeEventListener('mousemove', this._onDragMove, true);
+      globalThis.removeEventListener('mouseup', this._onDragEnd, true);
+    }
+
+    update({
+      visible,
+      bounds,
+      dpr,
+      layout,
+      avoidRect,
+      snapshot,
+      mp,
+      frameState,
+    }) {
+      if (this._destroyed) return null;
+      if (bounds) {
+        this._bounds = {
+          cssW: bounds.cssW || 0,
+          cssH: bounds.cssH || 0,
+          hudTopInset: bounds.hudTopInset || 0,
+        };
+      }
+
+      if (!visible) {
+        if (this._visible || this.box.style.display !== 'none') {
+          this.box.style.display = 'none';
+          this._visible = false;
+          this._lastStyleKey = '';
+          this._lastCanvasSig = null;
+        }
+        return null;
+      }
+
+      const dualPanMode = frameState ? frameState.dualPanMode : 0;
+      const subRxEnabled = Boolean(snapshot && snapshot.subRxEnabled);
+      const geom = this._computeBoxGeometry(
+        layout,
+        this._bounds,
+        dualPanMode,
+        subRxEnabled,
+        avoidRect
+      );
+      this._lastDockPos = { left: geom.defaultLeft, top: geom.defaultTop };
+
+      const targetPos = this._customPos
+        ? this._clampPos(
+            this._customPos.left,
+            this._customPos.top,
+            geom.boxW,
+            geom.boxH,
+            this._bounds
+          )
+        : { left: geom.defaultLeft, top: geom.defaultTop };
+
+      this._applyPositionDom(
+        targetPos.left,
+        targetPos.top,
+        geom.boxW,
+        geom.boxH,
+        !this._customPos
+      );
+
+      const rxState =
+        this.rx === 'B'
+          ? (snapshot && snapshot.rxB) || {}
+          : (snapshot && snapshot.rxA) || {};
+      const cwPitchHz =
+        snapshot && Number.isFinite(snapshot.cwPitchHz) ? snapshot.cwPitchHz : 500;
+      const spanKHz = (mp && mp.spanKHz) || 10;
+      const spanText = spanKHz + ' kHz';
+      if (spanText !== this._lastSpanText) {
+        this._lastSpanText = spanText;
+        this.spanEl.textContent = spanText;
+      }
+
+      const canvasW = Math.max(24, geom.boxW - 2);
+      const canvasH = Math.max(24, geom.boxH - 2 - MINIPAN_HEADER_H);
+      const centerHz =
+        (mp && Number.isFinite(mp.centerFreqHz) ? mp.centerFreqHz : null) ||
+        K4.SpectrumGeometry.displayMarkerHz(rxState, cwPitchHz);
+
+      const mpSig = [
+        dpr,
+        canvasW,
+        canvasH,
+        centerHz,
+        spanKHz,
+        mp ? mp.seq || 0 : 0,
+        mp && mp.dbmBins ? mp.dbmBins.length : 0,
+        rxState.freqHz || 0,
+        rxState.mode || 0,
+        rxState.dataSubMode || 0,
+        rxState.bwHz || 0,
+        rxState.ifShiftHz || 0,
+        Number.isFinite(rxState.panRefDbm) ? rxState.panRefDbm : -110,
+        Number.isFinite(rxState.panScaleDb) ? rxState.panScaleDb : 80,
+        cwPitchHz,
+      ].join('|');
+
+      if (mpSig !== this._lastCanvasSig) {
+        this._lastCanvasSig = mpSig;
+        drawMiniPanCanvas({
+          canvas: this.canvas,
+          ctx: this.ctx,
+          cssW: canvasW,
+          cssH: canvasH,
+          dpr,
+          rx: this.rx,
+          mp,
+          rxState,
+          cwPitchHz,
+        });
+      }
+
+      return this._rect;
+    }
+
+    destroy() {
+      if (this._destroyed) return;
+      this._destroyed = true;
+      this._dragState = null;
+      if (this._snapTimer) {
+        clearTimeout(this._snapTimer);
+        this._snapTimer = null;
+      }
+      this._detachWindowDragListeners();
+      if (this.box && this.box.parentNode) {
+        this.box.parentNode.removeChild(this.box);
+      }
+    }
+  }
+
+  class PanSurfaceController {
+    constructor({ container, paletteName, onHudInvalidate, onCloseMiniPan }) {
+      this.container = container;
+      const dom = ensureSurfaceDom(container);
+      this.surface = dom.surface;
+      this.glCanvas = dom.glCanvas;
+      this.overlayCanvas = dom.overlayCanvas;
+      this.overlayCtx = this.overlayCanvas.getContext('2d', { alpha: true });
+
+      this.paletteName = paletteName || 'obsidian';
+      this._onHudInvalidate =
+        typeof onHudInvalidate === 'function' ? onHudInvalidate : null;
+      this._onCloseMiniPan =
+        typeof onCloseMiniPan === 'function' ? onCloseMiniPan : null;
+
+      this.perf = createPerfCounters();
+      this.cssW = 0;
+      this.cssH = 0;
+      this.dpr = 1;
+      this._hudTopInset = 0;
+      this._layouts = [];
+      this._lastLayoutKey = '';
+      this._lastOverlaySig = null;
+      this._destroyed = false;
+
+      const bringToFront = (rx) => {
+        if (rx === 'B') {
+          this.miniPans.B.box.style.zIndex = '7';
+          this.miniPans.A.box.style.zIndex = '6';
+        } else {
+          this.miniPans.A.box.style.zIndex = '7';
+          this.miniPans.B.box.style.zIndex = '6';
+        }
+      };
+
+      this.miniPans = {
+        A: new MiniPanBoxController(this.surface, 'A', {
+          onClose: this._onCloseMiniPan,
+          onBringToFront: bringToFront,
+        }),
+        B: new MiniPanBoxController(this.surface, 'B', {
+          onClose: this._onCloseMiniPan,
+          onBringToFront: bringToFront,
+        }),
+      };
+
+      this._hudEl = null;
+      this._hudResizeObserver = null;
+      this._hudMutationObserver = null;
+      this._bindHudObservers();
+    }
+
+    _attachHudResizeObserver() {
+      const hud = this.container
+        ? this.container.querySelector(':scope > .k4-pan-hud-top')
+        : null;
+      if (hud === this._hudEl) return;
+      if (this._hudResizeObserver && this._hudEl) {
+        try {
+          this._hudResizeObserver.unobserve(this._hudEl);
+        } catch (_err) {
+          // Ignore already removed element
+        }
+      }
+      this._hudEl = hud;
+      if (hud && this._hudResizeObserver) {
+        this._hudResizeObserver.observe(hud);
+      }
+    }
+
+    _bindHudObservers() {
+      if (typeof globalThis.ResizeObserver === 'function') {
+        this._hudResizeObserver = new globalThis.ResizeObserver(() => {
+          this.invalidateHudLayout();
+        });
+        this._attachHudResizeObserver();
+      }
+      if (typeof globalThis.MutationObserver === 'function' && this.container) {
+        this._hudMutationObserver = new globalThis.MutationObserver(() => {
+          this._attachHudResizeObserver();
+          this.invalidateHudLayout();
+        });
+        this._hudMutationObserver.observe(this.container, { childList: true });
+      }
+      if (
+        typeof document !== 'undefined' &&
+        document.fonts &&
+        document.fonts.ready &&
+        typeof document.fonts.ready.then === 'function'
+      ) {
+        document.fonts.ready.then(() => {
+          if (!this._destroyed) this.invalidateHudLayout();
+        });
+      }
+    }
+
+    _measureHudInsetNow() {
+      const cssH =
+        this.cssH ||
+        Math.max(
+          0,
+          Math.floor(this.surface.clientHeight || this.container.clientHeight || 0)
+        );
+      if (cssH <= 0) return 0;
+      bumpPerf(this.perf, 'hudMeasures');
+      return measureHudTopInset(this.container, cssH);
+    }
+
+    invalidateHudLayout() {
+      if (this._destroyed) return this._hudTopInset;
+      this._attachHudResizeObserver();
+      const prev = this._hudTopInset;
+      this._hudTopInset = this._measureHudInsetNow();
+      this._lastLayoutKey = '';
+      this._lastOverlaySig = null;
+
+      const bounds = {
+        cssW: this.cssW,
+        cssH: this.cssH,
+        hudTopInset: this._hudTopInset,
+      };
+      this.miniPans.A.clampToBounds(bounds);
+      this.miniPans.B.clampToBounds(bounds);
+
+      if (this._hudTopInset !== prev && this._onHudInvalidate) {
+        this._onHudInvalidate();
+      }
+      return this._hudTopInset;
+    }
+
+    resize() {
+      if (this._destroyed) return false;
+      const dpr = Math.min(3, Math.max(1, globalThis.devicePixelRatio || 1));
+      const cssW = Math.max(
+        0,
+        Math.floor(this.surface.clientWidth || this.container.clientWidth || 0)
+      );
+      const cssH = Math.max(
+        0,
+        Math.floor(this.surface.clientHeight || this.container.clientHeight || 0)
+      );
+      const sizeChanged = cssW !== this.cssW || cssH !== this.cssH || dpr !== this.dpr;
+      this.dpr = dpr;
+      this.cssW = cssW;
+      this.cssH = cssH;
+
+      const devW = Math.round(cssW * dpr);
+      const devH = Math.round(cssH * dpr);
+      if (devW > 0 && devH > 0) {
+        if (this.glCanvas.width !== devW || this.glCanvas.height !== devH) {
+          this.glCanvas.width = devW;
+          this.glCanvas.height = devH;
+        }
+        if (this.overlayCanvas.width !== devW || this.overlayCanvas.height !== devH) {
+          this.overlayCanvas.width = devW;
+          this.overlayCanvas.height = devH;
+        }
+      }
+
+      if (cssH > 0) {
+        this._attachHudResizeObserver();
+        this._hudTopInset = this._measureHudInsetNow();
+      } else {
+        this._hudTopInset = 0;
+      }
+
+      if (sizeChanged) {
+        this._lastLayoutKey = '';
+        this._lastOverlaySig = null;
+      }
+
+      const bounds = {
+        cssW: this.cssW,
+        cssH: this.cssH,
+        hudTopInset: this._hudTopInset,
+      };
+      this.miniPans.A.clampToBounds(bounds);
+      this.miniPans.B.clampToBounds(bounds);
+      return sizeChanged;
+    }
+
+    getHudTopInset() {
+      return this._hudTopInset;
+    }
+
+    getLayouts(dualPanMode, snap) {
+      const dispMode =
+        snap && Number.isFinite(snap.displayMode) ? snap.displayMode : 1;
+      const wfPct =
+        snap && Number.isFinite(snap.waterfallHeightPct)
+          ? snap.waterfallHeightPct
+          : 62;
+      const key = `${this.cssW}|${this.cssH}|${dualPanMode || 0}|${this._hudTopInset}|${dispMode}|${wfPct}`;
+      if (key !== this._lastLayoutKey) {
+        this._lastLayoutKey = key;
+        this._layouts = computePaneLayouts(
+          this.cssW,
+          this.cssH,
+          dualPanMode || 0,
+          this._hudTopInset,
+          {
+            displayMode: dispMode,
+            waterfallHeightPct: wfPct,
+          }
+        );
+      }
+      return this._layouts;
+    }
+
+    _resolveMiniPanInputs(frameState, layouts) {
+      const snap = (frameState && frameState.snapshot) || {};
+      const rxA = snap.rxA || {};
+      const rxB = snap.rxB || {};
+      const aEnabled = Boolean(rxA.miniPan);
+      const bEnabled = Boolean(
+        snap.subRxEnabled && rxB.miniPan && rxB.miniPanAvailable !== false
+      );
+      const byRx = frameState && frameState.miniPanByRx;
+      const fallbackMp = frameState && frameState.miniPan;
+
+      let layoutA = layouts && layouts[0] ? layouts[0] : null;
+      let layoutB = layouts && layouts[0] ? layouts[0] : null;
+      if (layouts && layouts.length > 0) {
+        for (let i = 0; i < layouts.length; i++) {
+          if (layouts[i].rx === 'A') layoutA = layouts[i];
+          if (layouts[i].rx === 'B') layoutB = layouts[i];
+        }
+      }
+
+      return {
+        snap,
+        aEnabled,
+        bEnabled,
+        mpA: (byRx && byRx.A) || (aEnabled && !bEnabled ? fallbackMp : null),
+        mpB: (byRx && byRx.B) || (bEnabled && !aEnabled ? fallbackMp : null),
+        layoutA,
+        layoutB,
+      };
+    }
+
+    renderMiniPans(frameState, layouts) {
+      if (this._destroyed || this.cssW <= 0 || this.cssH <= 0) return;
+      const resolved = this._resolveMiniPanInputs(frameState, layouts || this._layouts);
+      const bounds = {
+        cssW: this.cssW,
+        cssH: this.cssH,
+        hudTopInset: this._hudTopInset,
+      };
+      const rectA = this.miniPans.A.update({
+        visible: resolved.aEnabled,
+        bounds,
+        dpr: this.dpr,
+        layout: resolved.layoutA,
+        avoidRect: null,
+        snapshot: resolved.snap,
+        mp: resolved.mpA,
+        frameState,
+      });
+      const samePaneAsA =
+        resolved.aEnabled &&
+        resolved.layoutA &&
+        resolved.layoutB &&
+        resolved.layoutA.rx === resolved.layoutB.rx;
+      this.miniPans.B.update({
+        visible: resolved.bEnabled,
+        bounds,
+        dpr: this.dpr,
+        layout: resolved.layoutB,
+        avoidRect: samePaneAsA ? rectA : null,
+        snapshot: resolved.snap,
+        mp: resolved.mpB,
+        frameState,
+      });
+    }
+
+    renderSingleMiniPan(rx, frameState) {
+      if (this._destroyed || this.cssW <= 0 || this.cssH <= 0 || isDocumentHidden()) return;
+      const dualPanMode = frameState ? frameState.dualPanMode : 0;
+      const snap = (frameState && frameState.snapshot) || {};
+      const layouts = this.getLayouts(dualPanMode, snap);
+      const resolved = this._resolveMiniPanInputs(frameState, layouts);
+      const bounds = {
+        cssW: this.cssW,
+        cssH: this.cssH,
+        hudTopInset: this._hudTopInset,
+      };
+      if (rx === 'B') {
+        const avoidRect =
+          resolved.aEnabled &&
+          resolved.layoutA &&
+          resolved.layoutB &&
+          resolved.layoutA.rx === resolved.layoutB.rx &&
+          this.miniPans.A._visible
+            ? this.miniPans.A._rect
+            : null;
+        this.miniPans.B.update({
+          visible: resolved.bEnabled,
+          bounds,
+          dpr: this.dpr,
+          layout: resolved.layoutB,
+          avoidRect,
+          snapshot: resolved.snap,
+          mp: resolved.mpB,
+          frameState,
+        });
+      } else {
+        this.miniPans.A.update({
+          visible: resolved.aEnabled,
+          bounds,
+          dpr: this.dpr,
+          layout: resolved.layoutA,
+          avoidRect: null,
+          snapshot: resolved.snap,
+          mp: resolved.mpA,
+          frameState,
+        });
+      }
+    }
+
+    renderOverlayAndMiniPans(frameState, layouts) {
+      if (this._destroyed || this.cssW <= 0 || this.cssH <= 0) return;
+      const sig = computeOverlaySignature({
+        frameState,
+        layouts,
+        cssW: this.cssW,
+        cssH: this.cssH,
+        dpr: this.dpr,
+        hudTopInset: this._hudTopInset,
+        paletteName: this.paletteName,
+      });
+      if (sig !== this._lastOverlaySig) {
+        this._lastOverlaySig = sig;
+        drawMainOverlay({
+          overlayCtx: this.overlayCtx,
+          cssW: this.cssW,
+          cssH: this.cssH,
+          dpr: this.dpr,
+          layouts,
+          frameState,
+        });
+        bumpPerf(this.perf, 'overlayDraws');
+      } else {
+        bumpPerf(this.perf, 'overlaySkips');
+      }
+      this.renderMiniPans(frameState, layouts);
+    }
+
+    setPalette(name) {
+      this.paletteName = name || 'obsidian';
+      this._lastOverlaySig = null;
+    }
+
+    destroy() {
+      if (this._destroyed) return;
+      this._destroyed = true;
+      if (this._hudResizeObserver) {
+        this._hudResizeObserver.disconnect();
+        this._hudResizeObserver = null;
+      }
+      if (this._hudMutationObserver) {
+        this._hudMutationObserver.disconnect();
+        this._hudMutationObserver = null;
+      }
+      this._hudEl = null;
+      this.miniPans.A.destroy();
+      this.miniPans.B.destroy();
+    }
   }
 
   function compileShader(gl, type, src) {
@@ -1639,11 +2725,15 @@ void main() {
     constructor(container, opts = {}) {
       this.type = 'webgl2';
       this.container = container;
-      const dom = ensureSurfaceDom(container);
-      this.surface = dom.surface;
-      this.glCanvas = dom.glCanvas;
-      this.overlayCanvas = dom.overlayCanvas;
-      this.miniPanBox = dom.miniPanBox;
+      this._ctrl = new PanSurfaceController({
+        container,
+        paletteName: opts.palette || 'obsidian',
+        onHudInvalidate: opts.onHudInvalidate,
+        onCloseMiniPan: opts.onCloseMiniPan,
+      });
+      this.surface = this._ctrl.surface;
+      this.glCanvas = this._ctrl.glCanvas;
+      this.overlayCanvas = this._ctrl.overlayCanvas;
 
       const gl =
         opts.glContext ||
@@ -1653,12 +2743,12 @@ void main() {
           preserveDrawingBuffer: true,
         });
       if (!gl) {
+        this._ctrl.destroy();
         throw new Error('WebGL2 context unavailable');
       }
 
       this.gl = gl;
-      this.overlayCtx = this.overlayCanvas.getContext('2d', { alpha: true });
-      this.miniCtx = this.miniPanBox.getContext('2d', { alpha: true });
+      this.overlayCtx = this._ctrl.overlayCtx;
       this.paletteName = opts.palette || 'obsidian';
       this.layouts = [];
       this.cssW = 0;
@@ -1667,6 +2757,20 @@ void main() {
       this._destroyed = false;
       this._contextLost = false;
       this._specVerts = new Float32Array(DEFAULT_BINS * 2 * 3);
+      this._specViewNeeded = null;
+      this._zeroWfClearBuf = null;
+      this._cropScratch = {
+        tierSpanHz: 48000,
+        spanRatio: 1,
+        leftRatio: 0,
+        rightRatio: 1,
+      };
+      this._wfCropScratch = {
+        tierSpanHz: 48000,
+        spanRatio: 1,
+        leftRatio: 0,
+        rightRatio: 1,
+      };
 
       this._onContextLost = (e) => {
         e.preventDefault();
@@ -1696,6 +2800,12 @@ void main() {
         rowCenters: new Float64Array(RING_HEIGHT),
         rowTierSpans: new Float64Array(RING_HEIGHT),
         metaUpload: new Float32Array(RING_HEIGHT * 2),
+        metaViewKey: '',
+        metaFullDirty: true,
+        metaUploaded: false,
+        metaRowDirty: new Uint8Array(RING_HEIGHT),
+        metaDirtyRows: new Int16Array(RING_HEIGHT),
+        metaDirtyCount: 0,
         wfTex: null,
         metaTex: null,
       };
@@ -1830,6 +2940,7 @@ void main() {
     setPalette(name) {
       this.paletteName = name || 'obsidian';
       this._uploadPalette();
+      this._ctrl.setPalette(this.paletteName);
     }
 
     pushWaterfallRow(uint8Row, meta = {}, paneKey = 'A') {
@@ -1844,16 +2955,22 @@ void main() {
         ring.binCount = uint8Row.length;
         ring.writeRow = 0;
         ring.filledRows = 0;
+        ring.metaFullDirty = true;
+        ring.metaUploaded = false;
+        ring.metaViewKey = '';
+        ring.metaRowDirty.fill(0);
+        ring.metaDirtyCount = 0;
         this._initPaneTextures(ring);
       }
 
+      const w = ring.writeRow;
       gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
       gl.bindTexture(gl.TEXTURE_2D, ring.wfTex);
       gl.texSubImage2D(
         gl.TEXTURE_2D,
         0,
         0,
-        ring.writeRow,
+        w,
         ring.binCount,
         1,
         gl.RED,
@@ -1861,14 +2978,29 @@ void main() {
         uint8Row
       );
 
-      ring.rowCenters[ring.writeRow] =
+      const nextCenter =
         meta && Number.isFinite(meta.centerFreqHz) ? meta.centerFreqHz : 0;
-      ring.rowTierSpans[ring.writeRow] =
+      const nextSpan =
         meta && Number.isFinite(meta.tierSpanHz) && meta.tierSpanHz > 0
           ? meta.tierSpanHz
           : 0;
+      if (
+        !ring.metaUploaded ||
+        ring.rowCenters[w] !== nextCenter ||
+        ring.rowTierSpans[w] !== nextSpan
+      ) {
+        if (!ring.metaRowDirty[w]) {
+          ring.metaRowDirty[w] = 1;
+          if (ring.metaDirtyCount < RING_HEIGHT) {
+            ring.metaDirtyRows[ring.metaDirtyCount] = w;
+          }
+          ring.metaDirtyCount++;
+        }
+      }
+      ring.rowCenters[w] = nextCenter;
+      ring.rowTierSpans[w] = nextSpan;
 
-      ring.writeRow = (ring.writeRow + 1) % RING_HEIGHT;
+      ring.writeRow = (w + 1) % RING_HEIGHT;
       if (ring.filledRows < RING_HEIGHT) {
         ring.filledRows++;
       }
@@ -1883,7 +3015,16 @@ void main() {
         ring.filledRows = 0;
         ring.rowCenters.fill(0);
         ring.rowTierSpans.fill(0);
+        ring.metaFullDirty = true;
+        ring.metaUploaded = false;
+        ring.metaViewKey = '';
+        ring.metaRowDirty.fill(0);
+        ring.metaDirtyCount = 0;
         if (!this._contextLost && gl && ring.wfTex) {
+          const neededBytes = ring.binCount * RING_HEIGHT;
+          if (!this._zeroWfClearBuf || this._zeroWfClearBuf.length !== neededBytes) {
+            this._zeroWfClearBuf = new Uint8Array(neededBytes);
+          }
           gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
           gl.bindTexture(gl.TEXTURE_2D, ring.wfTex);
           gl.texImage2D(
@@ -1895,7 +3036,7 @@ void main() {
             0,
             gl.RED,
             gl.UNSIGNED_BYTE,
-            new Uint8Array(ring.binCount * RING_HEIGHT)
+            this._zeroWfClearBuf
           );
         }
       }
@@ -1903,31 +3044,35 @@ void main() {
 
     resize() {
       if (this._destroyed) return;
-      const dpr = Math.min(3, Math.max(1, globalThis.devicePixelRatio || 1));
-      const cssW = Math.max(
-        0,
-        Math.floor(this.surface.clientWidth || this.container.clientWidth || 0)
-      );
-      const cssH = Math.max(
-        0,
-        Math.floor(this.surface.clientHeight || this.container.clientHeight || 0)
-      );
-      this.dpr = dpr;
-      this.cssW = cssW;
-      this.cssH = cssH;
+      this._ctrl.resize();
+      this.dpr = this._ctrl.dpr;
+      this.cssW = this._ctrl.cssW;
+      this.cssH = this._ctrl.cssH;
 
-      const devW = Math.round(cssW * dpr);
-      const devH = Math.round(cssH * dpr);
+      const devW = Math.round(this.cssW * this.dpr);
+      const devH = Math.round(this.cssH * this.dpr);
       if (devW > 0 && devH > 0) {
         if (this.glCanvas.width !== devW || this.glCanvas.height !== devH) {
           this.glCanvas.width = devW;
           this.glCanvas.height = devH;
         }
-        if (this.overlayCanvas.width !== devW || this.overlayCanvas.height !== devH) {
-          this.overlayCanvas.width = devW;
-          this.overlayCanvas.height = devH;
-        }
       }
+    }
+
+    invalidateHudLayout() {
+      return this._ctrl.invalidateHudLayout();
+    }
+
+    getHudTopInset() {
+      return this._ctrl.getHudTopInset();
+    }
+
+    getPerfCounters() {
+      return Object.assign({}, this._ctrl.perf);
+    }
+
+    renderMiniPan(rx, frameState) {
+      this._ctrl.renderSingleMiniPan(rx, frameState);
     }
 
     getLayouts() {
@@ -1956,11 +3101,13 @@ void main() {
       const needed = n * 2 * 3;
       if (this._specVerts.length < needed) {
         this._specVerts = new Float32Array(needed);
+        this._specViewNeeded = null;
         gl.bindBuffer(gl.ARRAY_BUFFER, this.specBuf);
         gl.bufferData(gl.ARRAY_BUFFER, this._specVerts.byteLength, gl.DYNAMIC_DRAW);
       }
 
-      const crop = K4.SpectrumGeometry.computeViewportCrop(
+      const crop = computeViewportCropInto(
+        this._cropScratch,
         pane.panCenterHz,
         pane.userSpanHz,
         pane.streamCenterHz,
@@ -1978,11 +3125,14 @@ void main() {
 
       // 1. Filled Gradient Strip
       const v = this._specVerts;
+      const invNMinus1 = 1 / (n - 1);
+      const invSpanRatio = 1 / crop.spanRatio;
+      const invScaleDb = 1 / scaleDb;
       for (let i = 0; i < n; i++) {
-        const uTier = i / (n - 1);
-        const uView = (uTier - crop.leftRatio) / crop.spanRatio;
+        const uTier = i * invNMinus1;
+        const uView = (uTier - crop.leftRatio) * invSpanRatio;
         const ndcX = uView * 2.0 - 1.0;
-        const yNorm = clamp((bins[i] - minDbm) / scaleDb, 0, 1);
+        const yNorm = clamp((bins[i] - minDbm) * invScaleDb, 0, 1);
         const ndcY = yNorm * 2.0 - 1.0;
 
         const base = i * 6;
@@ -1995,7 +3145,19 @@ void main() {
         v[base + 5] = 0.02;
       }
 
-      gl.bufferSubData(gl.ARRAY_BUFFER, 0, v.subarray(0, needed));
+      let uploadView = v;
+      if (v.length !== needed) {
+        if (
+          !this._specViewNeeded ||
+          this._specViewNeeded.length !== needed ||
+          this._specViewNeeded.buffer !== v.buffer
+        ) {
+          this._specViewNeeded = v.subarray(0, needed);
+        }
+        uploadView = this._specViewNeeded;
+      }
+
+      gl.bufferSubData(gl.ARRAY_BUFFER, 0, uploadView);
       gl.uniform4f(this.specLoc.u_color, accentRgb[0], accentRgb[1], accentRgb[2], 0.58);
       gl.drawArrays(gl.TRIANGLE_STRIP, 0, n * 2);
 
@@ -2008,19 +3170,19 @@ void main() {
         const iPrev = i > 0 ? i - 1 : 0;
         const iNext = i < n - 1 ? i + 1 : n - 1;
 
-        const u0 = ((iPrev / (n - 1)) - crop.leftRatio) / crop.spanRatio;
-        const u1 = ((iNext / (n - 1)) - crop.leftRatio) / crop.spanRatio;
-        const u = ((i / (n - 1)) - crop.leftRatio) / crop.spanRatio;
+        const u0 = ((iPrev * invNMinus1) - crop.leftRatio) * invSpanRatio;
+        const u1 = ((iNext * invNMinus1) - crop.leftRatio) * invSpanRatio;
+        const u = ((i * invNMinus1) - crop.leftRatio) * invSpanRatio;
 
-        const yNormPrev = clamp((bins[iPrev] - minDbm) / scaleDb, 0, 1);
-        const yNormNext = clamp((bins[iNext] - minDbm) / scaleDb, 0, 1);
-        const yNorm = clamp((bins[i] - minDbm) / scaleDb, 0, 1);
+        const yNormPrev = clamp((bins[iPrev] - minDbm) * invScaleDb, 0, 1);
+        const yNormNext = clamp((bins[iNext] - minDbm) * invScaleDb, 0, 1);
+        const yNorm = clamp((bins[i] - minDbm) * invScaleDb, 0, 1);
 
         const px = u * wCss;
         const py = (1 - yNorm) * hCss;
         const tx = (u1 - u0) * wCss;
         const ty = ((1 - yNormNext) - (1 - yNormPrev)) * hCss;
-        const len = Math.hypot(tx, ty) || 1;
+        const len = Math.sqrt(tx * tx + ty * ty) || 1;
         const nx = (-ty / len) * halfThick;
         const ny = (tx / len) * halfThick;
 
@@ -2034,7 +3196,7 @@ void main() {
         v[base + 5] = 1.0;
       }
 
-      gl.bufferSubData(gl.ARRAY_BUFFER, 0, v.subarray(0, needed));
+      gl.bufferSubData(gl.ARRAY_BUFFER, 0, uploadView);
       gl.uniform4f(this.specLoc.u_color, accentRgb[0], accentRgb[1], accentRgb[2], 0.96);
       gl.drawArrays(gl.TRIANGLE_STRIP, 0, n * 2);
 
@@ -2055,40 +3217,132 @@ void main() {
           : 48000;
       const tierKHz =
         paneState && Number.isFinite(paneState.tierKHz) ? paneState.tierKHz : 48;
-      const crop = K4.SpectrumGeometry.computeViewportCrop(
+      const streamCenterHz =
+        paneState && Number.isFinite(paneState.streamCenterHz)
+          ? paneState.streamCenterHz
+          : 0;
+      const crop = computeViewportCropInto(
+        this._wfCropScratch,
         viewCenterHz,
         userSpanHz,
         paneState && paneState.streamCenterHz,
         tierKHz
       );
       const viewLeftHz = viewCenterHz - userSpanHz * 0.5;
-
-      // Compute Float64 -> normalized Float32 per-row horizontal projections
+      const viewKey = `${viewCenterHz}|${userSpanHz}|${streamCenterHz}|${tierKHz}`;
       const meta = ring.metaUpload;
-      for (let r = 0; r < RING_HEIGHT; r++) {
-        const rSpan = ring.rowTierSpans[r];
-        if (rSpan > 0) {
-          const rLeft = ring.rowCenters[r] - rSpan * 0.5;
-          meta[r * 2] = (viewLeftHz - rLeft) / rSpan;
-          meta[r * 2 + 1] = userSpanHz / rSpan;
+
+      if (!ring.metaUploaded || ring.metaFullDirty || ring.metaViewKey !== viewKey) {
+        // Recompute Float64 -> Float32 per-row projection only when view bounds or full ring reset change
+        for (let r = 0; r < RING_HEIGHT; r++) {
+          const rSpan = ring.rowTierSpans[r];
+          if (rSpan > 0) {
+            const rLeft = ring.rowCenters[r] - rSpan * 0.5;
+            meta[r * 2] = (viewLeftHz - rLeft) / rSpan;
+            meta[r * 2 + 1] = userSpanHz / rSpan;
+          } else {
+            meta[r * 2] = crop.leftRatio;
+            meta[r * 2 + 1] = crop.spanRatio;
+          }
+        }
+        ring.metaRowDirty.fill(0);
+        ring.metaDirtyCount = 0;
+        ring.metaFullDirty = false;
+        ring.metaUploaded = true;
+        ring.metaViewKey = viewKey;
+
+        gl.bindTexture(gl.TEXTURE_2D, ring.metaTex);
+        gl.texSubImage2D(
+          gl.TEXTURE_2D,
+          0,
+          0,
+          0,
+          1,
+          RING_HEIGHT,
+          gl.RG,
+          gl.FLOAT,
+          meta
+        );
+        bumpPerf(this._ctrl.perf, 'metaTexUploads');
+      } else if (ring.metaDirtyCount > 0) {
+        if (ring.metaDirtyCount > 16) {
+          let anyChanged = false;
+          for (let r = 0; r < RING_HEIGHT; r++) {
+            const rSpan = ring.rowTierSpans[r];
+            let u0;
+            let u1;
+            if (rSpan > 0) {
+              const rLeft = ring.rowCenters[r] - rSpan * 0.5;
+              u0 = Math.fround((viewLeftHz - rLeft) / rSpan);
+              u1 = Math.fround(userSpanHz / rSpan);
+            } else {
+              u0 = Math.fround(crop.leftRatio);
+              u1 = Math.fround(crop.spanRatio);
+            }
+            if (meta[r * 2] !== u0 || meta[r * 2 + 1] !== u1) {
+              meta[r * 2] = u0;
+              meta[r * 2 + 1] = u1;
+              anyChanged = true;
+            }
+          }
+          ring.metaRowDirty.fill(0);
+          ring.metaDirtyCount = 0;
+          if (anyChanged) {
+            gl.bindTexture(gl.TEXTURE_2D, ring.metaTex);
+            gl.texSubImage2D(
+              gl.TEXTURE_2D,
+              0,
+              0,
+              0,
+              1,
+              RING_HEIGHT,
+              gl.RG,
+              gl.FLOAT,
+              meta
+            );
+            bumpPerf(this._ctrl.perf, 'metaTexUploads');
+          }
         } else {
-          meta[r * 2] = crop.leftRatio;
-          meta[r * 2 + 1] = crop.spanRatio;
+          let boundMetaTex = false;
+          for (let i = 0; i < ring.metaDirtyCount; i++) {
+            const r = ring.metaDirtyRows[i];
+            ring.metaRowDirty[r] = 0;
+            const rSpan = ring.rowTierSpans[r];
+            let u0;
+            let u1;
+            if (rSpan > 0) {
+              const rLeft = ring.rowCenters[r] - rSpan * 0.5;
+              u0 = Math.fround((viewLeftHz - rLeft) / rSpan);
+              u1 = Math.fround(userSpanHz / rSpan);
+            } else {
+              u0 = Math.fround(crop.leftRatio);
+              u1 = Math.fround(crop.spanRatio);
+            }
+            if (meta[r * 2] !== u0 || meta[r * 2 + 1] !== u1) {
+              meta[r * 2] = u0;
+              meta[r * 2 + 1] = u1;
+              if (!boundMetaTex) {
+                gl.bindTexture(gl.TEXTURE_2D, ring.metaTex);
+                boundMetaTex = true;
+              }
+              gl.texSubImage2D(
+                gl.TEXTURE_2D,
+                0,
+                0,
+                r,
+                1,
+                1,
+                gl.RG,
+                gl.FLOAT,
+                meta,
+                r * 2
+              );
+              bumpPerf(this._ctrl.perf, 'metaTexUploads');
+            }
+          }
+          ring.metaDirtyCount = 0;
         }
       }
-
-      gl.bindTexture(gl.TEXTURE_2D, ring.metaTex);
-      gl.texSubImage2D(
-        gl.TEXTURE_2D,
-        0,
-        0,
-        0,
-        1,
-        RING_HEIGHT,
-        gl.RG,
-        gl.FLOAT,
-        meta
-      );
 
       this._setScissorRect(wfRect, devW, devH);
       gl.disable(gl.BLEND);
@@ -2121,20 +3375,10 @@ void main() {
     }
 
     render(frameState) {
-      if (this._destroyed) return;
+      if (this._destroyed || isDocumentHidden()) return;
       const dualPanMode = frameState ? frameState.dualPanMode : 0;
       const snap = (frameState && frameState.snapshot) || {};
-      const topInset = measureHudTopInset(this.container, this.cssH);
-      this.layouts = computePaneLayouts(
-        this.cssW,
-        this.cssH,
-        dualPanMode,
-        topInset,
-        {
-          displayMode: snap.displayMode,
-          waterfallHeightPct: snap.waterfallHeightPct,
-        }
-      );
+      this.layouts = this._ctrl.getLayouts(dualPanMode, snap);
 
       const devW = this.glCanvas.width;
       const devH = this.glCanvas.height;
@@ -2154,10 +3398,7 @@ void main() {
           const layout = this.layouts[i];
           const paneState =
             frameState && frameState.panes ? frameState.panes[layout.rx] : null;
-          const accent =
-            layout.rx === 'B'
-              ? [245 / 255, 158 / 255, 11 / 255]
-              : [56 / 255, 189 / 255, 248 / 255];
+          const accent = layout.rx === 'B' ? ACCENT_RGB_B : ACCENT_RGB_A;
 
           this._drawSpectrumGl(layout.specRect, paneState, accent, devW, devH);
           if (layout.wfRect.h > 0) {
@@ -2168,16 +3409,8 @@ void main() {
         gl.disable(gl.SCISSOR_TEST);
       }
 
-      drawOverlayAndMiniPan({
-        overlayCtx: this.overlayCtx,
-        miniPanBox: this.miniPanBox,
-        miniCtx: this.miniCtx,
-        cssW: this.cssW,
-        cssH: this.cssH,
-        dpr: this.dpr,
-        layouts: this.layouts,
-        frameState,
-      });
+      this._ctrl.renderOverlayAndMiniPans(frameState, this.layouts);
+      bumpPerf(this._ctrl.perf, 'panFrames');
     }
 
     destroy() {
@@ -2201,6 +3434,7 @@ void main() {
           if (r.metaTex) gl.deleteTexture(r.metaTex);
         });
       }
+      this._ctrl.destroy();
     }
   }
 
@@ -2208,15 +3442,18 @@ void main() {
     constructor(container, opts = {}) {
       this.type = 'canvas2d';
       this.container = container;
-      const dom = ensureSurfaceDom(container);
-      this.surface = dom.surface;
-      this.glCanvas = dom.glCanvas;
-      this.overlayCanvas = dom.overlayCanvas;
-      this.miniPanBox = dom.miniPanBox;
+      this._ctrl = new PanSurfaceController({
+        container,
+        paletteName: opts.palette || 'obsidian',
+        onHudInvalidate: opts.onHudInvalidate,
+        onCloseMiniPan: opts.onCloseMiniPan,
+      });
+      this.surface = this._ctrl.surface;
+      this.glCanvas = this._ctrl.glCanvas;
+      this.overlayCanvas = this._ctrl.overlayCanvas;
 
       this.ctx = this.glCanvas.getContext('2d', { alpha: false });
-      this.overlayCtx = this.overlayCanvas.getContext('2d', { alpha: true });
-      this.miniCtx = this.miniPanBox.getContext('2d', { alpha: true });
+      this.overlayCtx = this._ctrl.overlayCtx;
 
       this.paletteName = opts.palette || 'obsidian';
       this._updatePackedLut();
@@ -2226,6 +3463,12 @@ void main() {
       this.cssH = 0;
       this.dpr = 1;
       this._destroyed = false;
+      this._cropScratch = {
+        tierSpanHz: 48000,
+        spanRatio: 1,
+        leftRatio: 0,
+        rightRatio: 1,
+      };
 
       this._panes = {
         A: this._createPaneRing(),
@@ -2280,6 +3523,7 @@ void main() {
       this._updatePackedLut();
       this._panes.A.dirty = true;
       this._panes.B.dirty = true;
+      this._ctrl.setPalette(this.paletteName);
     }
 
     pushWaterfallRow(uint8Row, meta = {}, paneKey = 'A') {
@@ -2324,33 +3568,37 @@ void main() {
 
     resize() {
       if (this._destroyed) return;
-      const dpr = Math.min(3, Math.max(1, globalThis.devicePixelRatio || 1));
-      const cssW = Math.max(
-        0,
-        Math.floor(this.surface.clientWidth || this.container.clientWidth || 0)
-      );
-      const cssH = Math.max(
-        0,
-        Math.floor(this.surface.clientHeight || this.container.clientHeight || 0)
-      );
-      this.dpr = dpr;
-      this.cssW = cssW;
-      this.cssH = cssH;
+      this._ctrl.resize();
+      this.dpr = this._ctrl.dpr;
+      this.cssW = this._ctrl.cssW;
+      this.cssH = this._ctrl.cssH;
 
-      const devW = Math.round(cssW * dpr);
-      const devH = Math.round(cssH * dpr);
+      const devW = Math.round(this.cssW * this.dpr);
+      const devH = Math.round(this.cssH * this.dpr);
       if (devW > 0 && devH > 0) {
         if (this.glCanvas.width !== devW || this.glCanvas.height !== devH) {
           this.glCanvas.width = devW;
           this.glCanvas.height = devH;
         }
-        if (this.overlayCanvas.width !== devW || this.overlayCanvas.height !== devH) {
-          this.overlayCanvas.width = devW;
-          this.overlayCanvas.height = devH;
-        }
       }
       this._panes.A.dirty = true;
       this._panes.B.dirty = true;
+    }
+
+    invalidateHudLayout() {
+      return this._ctrl.invalidateHudLayout();
+    }
+
+    getHudTopInset() {
+      return this._ctrl.getHudTopInset();
+    }
+
+    getPerfCounters() {
+      return Object.assign({}, this._ctrl.perf);
+    }
+
+    renderMiniPan(rx, frameState) {
+      this._ctrl.renderSingleMiniPan(rx, frameState);
     }
 
     getLayouts() {
@@ -2363,7 +3611,8 @@ void main() {
 
       const ctx = this.ctx;
       const n = bins.length;
-      const crop = K4.SpectrumGeometry.computeViewportCrop(
+      const crop = computeViewportCropInto(
+        this._cropScratch,
         pane.panCenterHz,
         pane.userSpanHz,
         pane.streamCenterHz,
@@ -2465,7 +3714,8 @@ void main() {
         const px32 = ring.wfPixels32;
         const packed = this._packedLut;
         const bgColor = packed[0];
-        const crop = K4.SpectrumGeometry.computeViewportCrop(
+        const crop = computeViewportCropInto(
+          this._cropScratch,
           viewCenterHz,
           userSpanHz,
           paneState && paneState.streamCenterHz,
@@ -2524,20 +3774,10 @@ void main() {
     }
 
     render(frameState) {
-      if (this._destroyed) return;
+      if (this._destroyed || isDocumentHidden()) return;
       const dualPanMode = frameState ? frameState.dualPanMode : 0;
       const snap = (frameState && frameState.snapshot) || {};
-      const topInset = measureHudTopInset(this.container, this.cssH);
-      this.layouts = computePaneLayouts(
-        this.cssW,
-        this.cssH,
-        dualPanMode,
-        topInset,
-        {
-          displayMode: snap.displayMode,
-          waterfallHeightPct: snap.waterfallHeightPct,
-        }
-      );
+      this.layouts = this._ctrl.getLayouts(dualPanMode, snap);
 
       if (this.cssW <= 0 || this.cssH <= 0 || !this.ctx) {
         return;
@@ -2564,20 +3804,14 @@ void main() {
         }
       }
 
-      drawOverlayAndMiniPan({
-        overlayCtx: this.overlayCtx,
-        miniPanBox: this.miniPanBox,
-        miniCtx: this.miniCtx,
-        cssW: this.cssW,
-        cssH: this.cssH,
-        dpr: this.dpr,
-        layouts: this.layouts,
-        frameState,
-      });
+      this._ctrl.renderOverlayAndMiniPans(frameState, this.layouts);
+      bumpPerf(this._ctrl.perf, 'panFrames');
     }
 
     destroy() {
+      if (this._destroyed) return;
       this._destroyed = true;
+      this._ctrl.destroy();
     }
   }
 

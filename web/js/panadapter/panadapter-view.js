@@ -54,6 +54,17 @@
     };
   }
 
+  const IGNORED_STATE_KEYS = new Set([
+    'rxA.sMeterDbm',
+    'rxB.sMeterDbm',
+    'telemetry',
+    'connection.rttMs',
+    'rxA.panMeta',
+    'rxB.panMeta',
+    'audio.rxGain',
+    'spotTone',
+  ]);
+
   class PanadapterView {
     constructor({
       container,
@@ -101,9 +112,14 @@
         }
       }
 
+      this._miniPanRafId = 0;
+      this._miniPanDirtyRx = { A: false, B: false };
+
       this._renderer = K4.createPanRenderer(container, {
         renderer,
         palette: this._palette,
+        onHudInvalidate: () => this._scheduleRender(),
+        onCloseMiniPan: (rx) => this.closeMiniPan(rx),
       });
 
       this._panes = {
@@ -117,6 +133,7 @@
           centerFreqHz: 14074000,
           spanKHz: 10,
           dbmBins: null,
+          seq: 0,
           rawDbmScratch: new Float32Array(1024),
         },
         B: {
@@ -124,6 +141,7 @@
           centerFreqHz: 14025000,
           spanKHz: 10,
           dbmBins: null,
+          seq: 0,
           rawDbmScratch: new Float32Array(1024),
         },
       };
@@ -146,25 +164,46 @@
 
       this._unsubState = null;
       if (this._state && typeof this._state.on === 'function') {
-        this._unsubState = this._state.on('change', (snap) => {
-          this._onStateChange(snap);
+        this._unsubState = this._state.on('change', (snap, changedKey, changedKeysSet) => {
+          this._onStateChange(snap, changedKey, changedKeysSet);
         });
       }
+      this._bookmarksRev = 0;
+      this._cachedBookmarks =
+        K4.BookmarkStore && typeof K4.BookmarkStore.list === 'function'
+          ? K4.BookmarkStore.list()
+          : [];
       this._unsubBookmarks =
         K4.BookmarkStore && typeof K4.BookmarkStore.subscribe === 'function'
-          ? K4.BookmarkStore.subscribe(() => this._scheduleRender())
+          ? K4.BookmarkStore.subscribe((next) => {
+              this._cachedBookmarks = Array.isArray(next)
+                ? next
+                : K4.BookmarkStore.list();
+              this._bookmarksRev++;
+              this._scheduleRender();
+            })
           : null;
 
       this._resizeObserver = null;
-      this._onWindowResize = null;
       if (typeof globalThis.ResizeObserver === 'function') {
         this._resizeObserver = new globalThis.ResizeObserver(() => {
           this.resize();
         });
         this._resizeObserver.observe(container);
-      } else {
-        this._onWindowResize = () => this.resize();
+      }
+      this._onWindowResize = () => this.resize();
+      if (typeof globalThis.addEventListener === 'function') {
         globalThis.addEventListener('resize', this._onWindowResize);
+      }
+
+      this._onVisibilityChange = () => {
+        if (!this._destroyed && typeof document !== 'undefined' && !document.hidden) {
+          this._renderer.resize();
+          this._renderNow(false);
+        }
+      };
+      if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
+        document.addEventListener('visibilitychange', this._onVisibilityChange);
       }
 
       // Draw initial clean grid/needles at framesRendered = 0 and schedule a rAF pass
@@ -182,6 +221,7 @@
         shownDbm: null,
         peakDbm: null,
         binsReady: false,
+        binSeq: 0,
         lastTierKHz: null,
         lastCenterHz: null,
         panCenterHz: null,
@@ -204,8 +244,31 @@
       return createDefaultSnapshot();
     }
 
-    _onStateChange(snap) {
+    _onStateChange(snap, changedKey, changedKeysSet) {
       if (this._destroyed || !snap) return;
+      if (changedKeysSet && changedKeysSet.size > 0) {
+        let relevant = false;
+        for (const k of changedKeysSet) {
+          if (k === 'txMeters') {
+            if (snap.atuTuning) {
+              relevant = true;
+              break;
+            }
+            continue;
+          }
+          if (!IGNORED_STATE_KEYS.has(k)) {
+            relevant = true;
+            break;
+          }
+        }
+        if (!relevant) return;
+      } else if (
+        changedKey &&
+        (IGNORED_STATE_KEYS.has(changedKey) ||
+          (changedKey === 'txMeters' && !snap.atuTuning))
+      ) {
+        return;
+      }
       if (!snap.fixedTune) {
         this._autoFixedTuneFromDrag = false;
       }
@@ -467,6 +530,7 @@
 
     _scheduleRender() {
       if (this._destroyed || this._rafId) return;
+      if (typeof document !== 'undefined' && document.hidden === true) return;
       if (typeof globalThis.requestAnimationFrame === 'function') {
         this._rafId = globalThis.requestAnimationFrame(() => {
           this._rafId = 0;
@@ -477,8 +541,46 @@
       }
     }
 
+    _scheduleMiniPanRender(rx) {
+      if (this._destroyed) return;
+      if (typeof document !== 'undefined' && document.hidden === true) return;
+      if (
+        !this._renderer ||
+        typeof this._renderer.renderMiniPan !== 'function'
+      ) {
+        this._scheduleRender();
+        return;
+      }
+      const key = rx === 'B' ? 'B' : 'A';
+      this._miniPanDirtyRx[key] = true;
+      if (this._miniPanRafId || this._rafId) return;
+      const flush = () => {
+        this._miniPanRafId = 0;
+        if (this._destroyed || this._rafId) return;
+        const doA = this._miniPanDirtyRx.A;
+        const doB = this._miniPanDirtyRx.B;
+        this._miniPanDirtyRx.A = false;
+        this._miniPanDirtyRx.B = false;
+        if (!doA && !doB) return;
+        const frameState = this.getFrameState();
+        if (doA) this._renderer.renderMiniPan('A', frameState);
+        if (doB) this._renderer.renderMiniPan('B', frameState);
+      };
+      if (typeof globalThis.requestAnimationFrame === 'function') {
+        this._miniPanRafId = globalThis.requestAnimationFrame(flush);
+      } else {
+        flush();
+      }
+    }
+
     _renderNow(countFrame) {
       if (this._destroyed) return;
+      this._miniPanDirtyRx.A = false;
+      this._miniPanDirtyRx.B = false;
+      if (this._miniPanRafId && typeof globalThis.cancelAnimationFrame === 'function') {
+        globalThis.cancelAnimationFrame(this._miniPanRafId);
+        this._miniPanRafId = 0;
+      }
       const frameState = this.getFrameState();
       this._renderer.render(frameState);
       if (countFrame) {
@@ -506,6 +608,7 @@
         return {
           rx: rxKey,
           binsReady: p.binsReady,
+          binSeq: p.binSeq,
           avgDbm: p.avgDbm,
           shownDbm: p.shownDbm,
           peakDbm: p.peakDbm,
@@ -547,7 +650,12 @@
         peakHold: this._peakHold,
         palette: this._palette,
         hover: this._hoverState,
-        bookmarks: K4.BookmarkStore ? K4.BookmarkStore.list() : [],
+        dragState:
+          this._interaction && this._interaction._dragMode
+            ? this._interaction._dragMode
+            : '',
+        bookmarks: this._cachedBookmarks,
+        bookmarksRev: this._bookmarksRev,
       };
     }
 
@@ -642,6 +750,7 @@
         rx
       );
 
+      pane.binSeq = (pane.binSeq + 1) | 0;
       this._renderNow(true);
     }
 
@@ -669,6 +778,7 @@
       buf.spanKHz =
         Number.isFinite(rawSpanKHz) && rawSpanKHz > 0 ? rawSpanKHz : 10;
       buf.dbmBins = dbm;
+      buf.seq = (buf.seq + 1) | 0;
 
       const rxSnap = rx === 'B' ? snap.rxB : snap.rxA;
       const mpEnabled = Boolean(
@@ -677,7 +787,7 @@
           (rx === 'A' || (snap.subRxEnabled && rxSnap.miniPanAvailable !== false))
       );
       if (mpEnabled) {
-        this._scheduleRender();
+        this._scheduleMiniPanRender(rx);
       }
     }
 
@@ -784,6 +894,49 @@
       };
     }
 
+    closeMiniPan(rx) {
+      if (this._destroyed) return;
+      const target = rx === 'B' ? 'B' : 'A';
+      if (this._client && typeof this._client.setDisplay === 'function') {
+        this._client.setDisplay(target, { miniPan: false });
+      }
+      const snap = this._getSnapshot();
+      const rxSnap = target === 'B' ? snap.rxB : snap.rxA;
+      if (
+        rxSnap &&
+        rxSnap.miniPan &&
+        this._state &&
+        typeof this._state.updateRx === 'function'
+      ) {
+        this._state.updateRx(
+          target,
+          { miniPan: false },
+          target === 'B' ? 'rxB.miniPan' : 'rxA.miniPan'
+        );
+      }
+      this._scheduleRender();
+    }
+
+    invalidateHudLayout() {
+      if (
+        this._destroyed ||
+        !this._renderer ||
+        typeof this._renderer.invalidateHudLayout !== 'function'
+      ) {
+        return 0;
+      }
+      const inset = this._renderer.invalidateHudLayout();
+      this._scheduleRender();
+      return inset;
+    }
+
+    getPerfCounters() {
+      if (!this._renderer || typeof this._renderer.getPerfCounters !== 'function') {
+        return Object.assign({}, globalThis.__k4Perf || {});
+      }
+      return this._renderer.getPerfCounters();
+    }
+
     resize() {
       if (this._destroyed) return;
       this._renderer.resize();
@@ -797,6 +950,10 @@
         globalThis.cancelAnimationFrame(this._rafId);
         this._rafId = 0;
       }
+      if (this._miniPanRafId && typeof globalThis.cancelAnimationFrame === 'function') {
+        globalThis.cancelAnimationFrame(this._miniPanRafId);
+        this._miniPanRafId = 0;
+      }
       if (this._unsubState) {
         this._unsubState();
         this._unsubState = null;
@@ -809,9 +966,17 @@
         this._resizeObserver.disconnect();
         this._resizeObserver = null;
       }
-      if (this._onWindowResize) {
+      if (this._onWindowResize && typeof globalThis.removeEventListener === 'function') {
         globalThis.removeEventListener('resize', this._onWindowResize);
         this._onWindowResize = null;
+      }
+      if (
+        this._onVisibilityChange &&
+        typeof document !== 'undefined' &&
+        typeof document.removeEventListener === 'function'
+      ) {
+        document.removeEventListener('visibilitychange', this._onVisibilityChange);
+        this._onVisibilityChange = null;
       }
       if (this._interaction) {
         this._interaction.destroy();
