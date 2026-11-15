@@ -222,6 +222,18 @@
       this._clearTotTimer();
       const snap = this.state ? this.state.getSnapshot() : {};
       const wasActive = Boolean(snap.pttHeld || snap.txActive || snap.atuTuning);
+      const wasTestPosture = this._txPosture === 'tx-test' || Boolean(snap.txTestMode);
+
+      let cleanupSent = false;
+      if (!silentCat && wasTestPosture && isWsOpen(this._ws)) {
+        const stopPrefix = snap.atuTuning ? 'TU0;RX;' : (wasActive || sendDisconnectRx ? 'RX;' : '');
+        try {
+          this.sendCat(`${stopPrefix}TS0;`);
+          cleanupSent = true;
+        } catch (_) {
+          // Ignore teardown errors.
+        }
+      }
 
       this.gate.setPolicy('rx-only');
       this.gate.setTxAudioAllowed(false);
@@ -229,15 +241,18 @@
 
       if (this.state && typeof this.state.updateTxSafety === 'function') {
         this.state.updateTxSafety(
-          {
-            operatingPolicy: 'rx-only',
-            txPosture: 'rx-only',
-            pttHeld: false,
-            txStartedAt: null,
-            txActive: false,
-            atuTuning: false,
-            atuTuneKind: null,
-          },
+          Object.assign(
+            {
+              operatingPolicy: 'rx-only',
+              txPosture: 'rx-only',
+              pttHeld: false,
+              txStartedAt: null,
+              txActive: false,
+              atuTuning: false,
+              atuTuneKind: null,
+            },
+            wasTestPosture ? { txTestMode: false } : null
+          ),
           'txPosture'
         );
       }
@@ -250,7 +265,7 @@
         });
       }
 
-      if (!silentCat && (wasActive || sendDisconnectRx) && isWsOpen(this._ws)) {
+      if (!silentCat && !cleanupSent && (wasActive || sendDisconnectRx) && isWsOpen(this._ws)) {
         try {
           this.sendCat(snap.atuTuning ? 'TU0;RX;' : 'RX;');
         } catch (_) {

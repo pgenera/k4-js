@@ -841,7 +841,7 @@
         if (this.client && typeof this.client.setTxPosture === 'function') {
           this.client.setTxPosture('tx-test');
         }
-        this.toast('TX TEST (0W) active — zero RF output', 'info');
+        this.toast('K4 TX TEST (TS1) active — RF inhibited, PC unchanged', 'info');
         this._render();
         return;
       }

@@ -347,7 +347,7 @@ void main() {
       (snapshot.txActive || snapshot.txPosture === 'tx-test')
     ) {
       pills.push({
-        text: 'TX TEST · 0W',
+        text: 'TX TEST',
         fill: 'rgba(245, 158, 11, 0.24)',
         stroke: 'rgba(245, 158, 11, 0.85)',
         textColor: '#FEF3C7',

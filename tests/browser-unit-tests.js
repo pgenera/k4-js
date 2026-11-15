@@ -2108,6 +2108,29 @@
     assertEqual(gate.isTxAudioAllowed(), false, 'disarm clears txAudioAllowed');
     assertEqual(gate.inspectBinary(0x01), false, '0x01 re-blocked after disarm');
     assertEqual(gate.inspectCat('TX;').blocked.length, 1, 'TX; re-blocked after disarm');
+
+    // Client.setTxPosture('tx-test') uses native TS1; without altering PC, and disarming sends TS0; first
+    const client = new globalThis.K4.Client();
+    const wireFramer = new globalThis.K4.PacketFramer();
+    const wireCats = [];
+    client._ws = {
+      readyState: 1,
+      send(chunk) {
+        const pkts = wireFramer.push(chunk);
+        for (const p of pkts) {
+          wireCats.push(globalThis.K4.BinaryPackets.parseCat(p).text);
+        }
+      },
+    };
+    const enterTest = client.setTxPosture('tx-test');
+    assertEqual(enterTest.sent, true, 'tx-test posture sent CAT');
+    assertEqual(wireCats[0], 'TS1;TM1;PO1;', 'tx-test emits TS1; without PC changes');
+    assert(!wireCats.some((c) => /PC\d/.test(c)), 'tx-test never changes PC output power');
+
+    client.setTxPosture('rx-only');
+    assertEqual(client.gate.getPolicy(), 'rx-only', 'rx-only re-locks gate after tx-test');
+    assertEqual(client.state.getSnapshot().txTestMode, false, 'rx-only clears txTestMode');
+    assertEqual(wireCats[1], 'TS0;', 'leaving tx-test -> rx-only emits TS0; before locking gate');
   });
 
   // 26. RadioState: TX/ATU/sensor transitions (TM L/H scaling, TX->RX peakHold, SIFP/SIRF/SIDU, atuMatchedSwr)

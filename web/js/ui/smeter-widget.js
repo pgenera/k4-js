@@ -271,7 +271,7 @@
           this.txHeadTag.textContent = 'ATU TUNE';
           this.txHeadTag.className = 'k4-tx-meter-tag is-test';
         } else if (snapshot.txActive && isTest) {
-          this.txHeadTag.textContent = 'TEST 0W';
+          this.txHeadTag.textContent = 'TX TEST';
           this.txHeadTag.className = 'k4-tx-meter-tag is-test';
         } else if (snapshot.txActive) {
           this.txHeadTag.textContent = 'ON AIR';

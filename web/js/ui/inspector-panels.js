@@ -1732,7 +1732,7 @@
       const postureBtns = {};
       const postureSpecs = [
         { id: 'rx-only', label: 'RX ONLY' },
-        { id: 'tx-test', label: 'TEST 0W' },
+        { id: 'tx-test', label: 'TX TEST' },
         { id: 'tx-armed', label: 'ARM TX' },
       ];
       for (let i = 0; i < postureSpecs.length; i++) {
@@ -2888,9 +2888,9 @@
           b.dataset.state = 'tuning';
           this._refs.txStatusBadge.textContent = 'ATU';
         } else if (txActive && isTest) {
-          b.textContent = 'TX TEST ACTIVE (0 W Output · Meters/Keyer Live)';
+          b.textContent = 'K4 TX TEST (TS1) ACTIVE — RF inhibited, ALC/keyer live (PC unchanged)';
           b.dataset.state = 'tuning';
-          this._refs.txStatusBadge.textContent = 'TEST 0W';
+          this._refs.txStatusBadge.textContent = 'TX TEST';
         } else if (txActive) {
           b.textContent = 'TRANSMITTING LIVE RF — Press Esc for immediate RX drop';
           b.dataset.state = 'warn';
@@ -2900,9 +2900,9 @@
           b.dataset.state = 'matched';
           this._refs.txStatusBadge.textContent = 'ARMED';
         } else if (posture === 'tx-test') {
-          b.textContent = 'TX TEST (0W) ARMED — Safe local keyer, audio & meter test';
+          b.textContent = 'K4 TX TEST (TS1) — Off-air audio, ALC & keyer check (PC unchanged)';
           b.dataset.state = 'tuning';
-          this._refs.txStatusBadge.textContent = 'TEST 0W';
+          this._refs.txStatusBadge.textContent = 'TX TEST';
         } else {
           b.textContent = 'Receive-Only Firewall Active — TX / ATU / Power locked';
           b.dataset.state = 'idle';
