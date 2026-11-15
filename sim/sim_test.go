@@ -123,10 +123,10 @@ func TestSynthPANMiniPANAndAudioScale(t *testing.T) {
 	rx := NewRadio().RxB // 14.025 MHz, CW mode, 500 Hz BW
 	rng := rand.New(rand.NewSource(1))
 	centerHz, tierKHz, nfRaw, bins := SynthPAN(rx, 500, 0.0, rng)
-	if centerHz != 14025500 {
-		t.Fatalf("CW PAN centerHz = %d, want 14025500", centerHz)
+	if centerHz != 14025000 {
+		t.Fatalf("CW PAN centerHz = %d, want 14025000", centerHz)
 	}
-	if tierKHz != 48 || nfRaw != -1200 || len(bins) != 1024 {
+	if tierKHz != 96 || nfRaw != -1200 || len(bins) != 1024 {
 		t.Fatalf("unexpected PAN params tier=%d nf=%d len=%d", tierKHz, nfRaw, len(bins))
 	}
 	// Peak near 14.025 MHz should be significantly above -120 dBm noise floor (byte 42)
@@ -142,7 +142,7 @@ func TestSynthPANMiniPANAndAudioScale(t *testing.T) {
 	}
 
 	mcHz, mSpan, mBins := SynthMiniPAN(rx, 500, 0.0, rng)
-	if mcHz != 14025500 || mSpan != 24 || len(mBins) != 1024 {
+	if mcHz != 14025500 || mSpan != 6 || len(mBins) != 1024 {
 		t.Fatalf("unexpected MiniPAN params center=%d span=%d len=%d", mcHz, mSpan, len(mBins))
 	}
 	maxMini := -200.0
@@ -177,6 +177,20 @@ func TestSynthPANMiniPANAndAudioScale(t *testing.T) {
 		t.Fatalf("expected K4 1/32 scaled S16 peak in [200, 1500], got %d", peakS16)
 	}
 
+	// Test EM1 FT8 10-tone cluster RMS after browser *32.0 gain matches real K4 (~0.12..0.15)
+	ft8Rx := NewRadio().RxA
+	ft8Synth := NewAudioSynth()
+	ft8Pcm := ft8Synth.SynthAudio(ft8Rx, ft8Rx, false, 500, 1, 2400, 1.0)
+	var sumSq float64
+	for i := 0; i < 2400; i++ {
+		s := float64(int16(binary.LittleEndian.Uint16(ft8Pcm[i*4:i*4+2]))) / 32768.0 * 32.0
+		sumSq += s * s
+	}
+	rms32x := math.Sqrt(sumSq / 2400.0)
+	if rms32x < 0.11 || rms32x > 0.16 {
+		t.Fatalf("expected FT8 EM1 boosted 32x RMS in [0.11, 0.16], got %.4f", rms32x)
+	}
+
 	// Test EM0 S32LE (24-bit in 32-bit container)
 	pcm0 := synth.SynthAudio(rx, rx, false, 500, 0, 240, 0.0)
 	if len(pcm0) != 240*8 {
@@ -192,7 +206,7 @@ func TestSynthPANMiniPANAndAudioScale(t *testing.T) {
 			peakS32 = s
 		}
 	}
-	// 24-bit scale: ~900 * 256 = 230400
+	// 24-bit scale: ~300 * 256 = 76800
 	if math.Abs(float64(peakS32)) < 50000 {
 		t.Fatalf("expected EM0 S32 peak >= 50000, got %d", peakS32)
 	}
@@ -262,7 +276,7 @@ func TestSimServerAuthStreamAndDebugStats(t *testing.T) {
 				case TypeCAT:
 					sawCat = true
 					txt := string(p[3:])
-					if strings.Contains(txt, "PONG12345;") {
+					if strings.Contains(txt, "PONG;") {
 						sawPong = true
 					}
 					for _, f := range SplitCATFrames(txt) {
@@ -271,10 +285,22 @@ func TestSimServerAuthStreamAndDebugStats(t *testing.T) {
 						}
 					}
 				case TypeAudio:
+					if p[1] != 0x01 {
+						t.Fatalf("expected 0x01 audio header version=1, got %d", p[1])
+					}
 					sawAudio = true
 				case TypePAN:
+					if p[1] != 0x00 {
+						t.Fatalf("expected 0x02 PAN header version=0, got %d", p[1])
+					}
 					sawPan = true
 				case TypeMiniPAN:
+					if p[1] != 0x00 {
+						t.Fatalf("expected 0x03 MiniPAN header version=0, got %d", p[1])
+					}
+					if f23 := int32(binary.LittleEndian.Uint32(p[23:27])); f23 <= 0 {
+						t.Fatalf("expected positive MiniPAN field23, got %d", f23)
+					}
 					sawMiniPan = true
 				}
 			}
@@ -345,5 +371,284 @@ func TestControlHTTPDebugStatsEndpoint(t *testing.T) {
 	}
 	if st.FaHz != 14074000 || st.FbHz != 14025000 || st.ModeA != ModeDATA || st.ModeB != ModeCW {
 		t.Fatalf("unexpected default radio stats: %+v", st)
+	}
+}
+
+func TestSpectrumTierHysteresis5Tier(t *testing.T) {
+	// Up-and-down sweep matching real K4 5-tier hysteresis probe sequence + mid-band checks
+	seq := []struct {
+		spanHz   int
+		wantTier int
+	}{
+		{12000, 24},
+		{19000, 24},
+		{19500, 24}, // holds 24 inside [19001..19999] going up
+		{20000, 48},
+		{19500, 48}, // holds 48 inside [19001..19999] coming down
+		{19000, 24},
+		{36000, 48},
+		{36500, 48}, // holds 48 inside [36001..36999] going up
+		{37000, 96},
+		{36500, 96}, // holds 96 inside [36001..36999] coming down
+		{36000, 48},
+		{82000, 96},
+		{82500, 96}, // holds 96 inside [82001..82999] going up
+		{83000, 192},
+		{82500, 192}, // holds 192 inside [82001..82999] coming down
+		{82000, 96},
+		{172000, 192},
+		{174000, 192}, // holds 192 inside [172001..175999] going up
+		{176000, 384},
+		{174000, 384}, // holds 384 inside [172001..175999] coming down
+		{172000, 192},
+		{200000, 384},
+	}
+
+	prev := 0
+	r := NewRadio()
+	rng := rand.New(rand.NewSource(9))
+	for _, tc := range seq {
+		got := SpectrumTierKHzWithHysteresis(tc.spanHz, prev)
+		if got != tc.wantTier {
+			t.Fatalf("SpectrumTierKHzWithHysteresis(%d, prev=%d) = %d, want %d", tc.spanHz, prev, got, tc.wantTier)
+		}
+		prev = got
+
+		r.HandleCAT("#SPN"+itoa(tc.spanHz)+";", 0.0)
+		_, tierKHz, _, _ := SynthPAN(r.RxA, r.CwPitchHz, 0.0, rng)
+		if int(tierKHz) != tc.wantTier {
+			t.Fatalf("Radio #SPN%d -> SynthPAN tier = %d, want %d", tc.spanHz, tierKHz, tc.wantTier)
+		}
+	}
+}
+
+func itoa(v int) string {
+	if v == 0 {
+		return "0"
+	}
+	neg := false
+	if v < 0 {
+		neg = true
+		v = -v
+	}
+	var buf [20]byte
+	i := len(buf)
+	for v > 0 {
+		i--
+		buf[i] = byte('0' + v%10)
+		v /= 10
+	}
+	if neg {
+		i--
+		buf[i] = '-'
+	}
+	return string(buf[i:])
+}
+
+func TestPANAndMiniPANModes(t *testing.T) {
+	rng := rand.New(rand.NewSource(7))
+	cwPitch := 500
+	baseFreq := int64(14025000)
+
+	cases := []struct {
+		mode           int
+		wantPanCenter  int64
+		wantMiniCenter int64
+		wantMiniSpan   int32
+	}{
+		{ModeCW, baseFreq, baseFreq + 500, 6},
+		{ModeCWR, baseFreq, baseFreq - 500, 6},
+		{ModeUSB, baseFreq, baseFreq, 12},
+		{ModeDATA, baseFreq, baseFreq, 12},
+	}
+
+	for _, tc := range cases {
+		rx := RxState{FreqHz: baseFreq, Mode: tc.mode, PanSpanHz: 48000, PanTierKHz: 96}
+		panCenter, _, _, _ := SynthPAN(rx, cwPitch, 0.0, rng)
+		if panCenter != tc.wantPanCenter {
+			t.Fatalf("mode %d PAN center = %d, want %d", tc.mode, panCenter, tc.wantPanCenter)
+		}
+		miniCenter, miniSpan, _ := SynthMiniPAN(rx, cwPitch, 0.0, rng)
+		if miniCenter != tc.wantMiniCenter || miniSpan != tc.wantMiniSpan {
+			t.Fatalf("mode %d MiniPAN = (center=%d span=%d), want (%d, %d)",
+				tc.mode, miniCenter, miniSpan, tc.wantMiniCenter, tc.wantMiniSpan)
+		}
+	}
+}
+
+func TestCATHardwareParityCommands(t *testing.T) {
+	r := NewRadio()
+
+	// PING -> bare PONG;
+	if rep, _ := r.HandleCAT("PING1700000000;", 0.0); rep != "PONG;" {
+		t.Fatalf("PING reply = %q, want PONG;", rep)
+	}
+
+	// OM bitmap keeping Sub-RX + Dual-Pan active
+	if rep, _ := r.HandleCAT("OM;", 0.0); rep != "OM AP-S----4---;" {
+		t.Fatalf("OM reply = %q, want 'OM AP-S----4---;'", rep)
+	}
+
+	// RV -> 12 modules ending in RV.R-R40.B1;
+	rvRep, _ := r.HandleCAT("RV;", 0.0)
+	rvTokens := SplitCATFrames(rvRep)
+	if len(rvTokens) != 12 || rvTokens[len(rvTokens)-1] != "RV.R-R40.B1" {
+		t.Fatalf("RV tokens = %v (len %d), want 12 ending in RV.R-R40.B1", rvTokens, len(rvTokens))
+	}
+
+	// IF -> exact 38-char Elecraft IF response
+	r.HandleCAT("FA00007074000;MD6;RT1;RO+0150;FT1;", 0.0)
+	ifRep, _ := r.HandleCAT("IF;", 0.0)
+	if len(ifRep) != 38 {
+		t.Fatalf("IF len = %d (%q), want 38", len(ifRep), ifRep)
+	}
+	wantIF := "IF00007074000     +015010 0006001001 ;"
+	if ifRep != wantIF {
+		t.Fatalf("IF = %q, want %q", ifRep, wantIF)
+	}
+
+	// AN; GET allowed vs AN<n>; SET blocked as TX/relay-unsafe
+	if rep, _ := r.HandleCAT("AN;", 0.0); rep != "AN1;" {
+		t.Fatalf("AN; reply = %q, want AN1;", rep)
+	}
+	beforeBlocked := r.Stats().TxBlockedViolations
+	if rep, _ := r.HandleCAT("AN2;", 0.0); rep != "?;" {
+		t.Fatalf("AN2; SET reply = %q, want ?;", rep)
+	}
+	if r.Stats().TxBlockedViolations != beforeBlocked+1 {
+		t.Fatalf("expected TxBlockedViolations increment for AN2;")
+	}
+
+	// OV / OV$
+	if rep, _ := r.HandleCAT("OV;OV$;", 0.0); rep != "OV00;OV$00;" {
+		t.Fatalf("OV reply = %q, want OV00;OV$00;", rep)
+	}
+
+	// #FXT and unsupported $ queries
+	if rep, _ := r.HandleCAT("#FXT;", 0.0); rep != "#FXT0;" {
+		t.Fatalf("#FXT; reply = %q, want #FXT0;", rep)
+	}
+	if rep, _ := r.HandleCAT("#FXT1;", 0.0); rep != "#FXT1;" {
+		t.Fatalf("#FXT1; reply = %q, want #FXT1;", rep)
+	}
+	if rep, _ := r.HandleCAT("#SCL$;#WBS$;#AR$;#FXT$;", 0.0); rep != "#SCL?;#WBS?;#AR?;#FXT?;" {
+		t.Fatalf("unsupported $ queries = %q, want #SCL?;#WBS?;#AR?;#FXT?;", rep)
+	}
+
+	// NB 4-digit, VT 2-digit, RG negative dB, BN without forced FA/FB, #AR formatting
+	if rep, _ := r.HandleCAT("NB;NB$;NB0051;NB;", 0.0); rep != "NB0000;NB$0000;NB0051;NB0051;" {
+		t.Fatalf("NB replies = %q", rep)
+	}
+	if rep, _ := r.HandleCAT("VT;VT$;VT24;", 0.0); rep != "VT16;VT$13;VT24;" {
+		t.Fatalf("VT replies = %q", rep)
+	}
+	if rep, _ := r.HandleCAT("RG;RG$;RG-06;", 0.0); rep != "RG-00;RG$-00;RG-06;" {
+		t.Fatalf("RG replies = %q", rep)
+	}
+	if rep, _ := r.HandleCAT("BN;BN$;BN05;", 0.0); rep != "BN03;BN$05;BN05;" {
+		t.Fatalf("BN replies = %q, want BN03;BN$05;BN05;", rep)
+	}
+	if rep, _ := r.HandleCAT("#AR;#AR0;#AR;", 0.0); rep != "#AR1206-021;#AR1206-020;#AR1206-020;" {
+		t.Fatalf("#AR replies = %q", rep)
+	}
+
+	// RDY; -> switches to AI4, emits OM, RV, state snapshot, and sample MEDF entries ending with MEDF0000;
+	rdyRep, _ := r.HandleCAT("RDY;", 0.0)
+	if !strings.Contains(rdyRep, "OM AP-S----4---;") || !strings.Contains(rdyRep, "RV.R-R40.B1;") || !strings.Contains(rdyRep, "MEDF0001,") || !strings.Contains(rdyRep, "MEDF0000;") {
+		t.Fatalf("RDY snapshot missing OM/RV/MEDF markers")
+	}
+	if strings.Contains(rdyRep, "#SCL$") || strings.Contains(rdyRep, "#WBS$") {
+		t.Fatalf("RDY snapshot should not emit unsupported #SCL$/#WBS$")
+	}
+	// Under AI4, client SETs suppress self-echo while GET queries still reply
+	if rep, _ := r.HandleCAT("FA00014074010;", 0.0); rep != "" {
+		t.Fatalf("under AI4, SET should suppress self-echo, got %q", rep)
+	}
+	if rep, _ := r.HandleCAT("FA;", 0.0); rep != "FA00014074010;" {
+		t.Fatalf("under AI4, GET must still reply, got %q", rep)
+	}
+	// AI5; enables SET echoes again
+	if rep, _ := r.HandleCAT("AI5;FA00014074020;", 0.0); rep != "AI5;FA00014074020;" {
+		t.Fatalf("under AI5, SET must echo, got %q", rep)
+	}
+}
+
+func TestOpusAudioEncodingAndMultiFrameTOCs(t *testing.T) {
+	r := NewRadio()
+	if !OpusAvailable() {
+		rep, _ := r.HandleCAT("EM2;EM3;", 0.0)
+		if rep != "EM1;EM1;" {
+			t.Fatalf("without libopus expected EM1 fallback, got %q", rep)
+		}
+		t.Skip("libopus.so.0 not available under current build tags (no-cgo fallback verified)")
+	}
+
+	if rep, _ := r.HandleCAT("EM2;EM3;", 0.0); rep != "EM2;EM3;" {
+		t.Fatalf("with libopus expected EM2;EM3;, got %q", rep)
+	}
+
+	synth := NewAudioSynth()
+	rxA := NewRadio().RxA
+	rxB := NewRadio().RxB
+
+	// Encode across SL0 (1 frame), SL2 (2 frames), SL3 (3 frames), SL6 (6 frames) for EM2 & EM3
+	for _, tc := range []struct {
+		em        int
+		bitrate   int
+		sl        int
+		wantCount int
+	}{
+		{2, 64000, 0, 1},
+		{2, 64000, 2, 2},
+		{3, 96000, 0, 1},
+		{3, 96000, 2, 2},
+		{3, 96000, 3, 3},
+		{3, 96000, 6, 6},
+	} {
+		enc, err := NewOpusStreamEncoder(tc.bitrate)
+		if err != nil {
+			t.Fatalf("NewOpusStreamEncoder(%d): %v", tc.bitrate, err)
+		}
+		samplesPerCh := SLFramesTable[tc.sl] * 240
+		f32 := synth.SynthAudioFloat(rxA, rxB, false, 500, samplesPerCh, 0.5)
+		pkt, err := enc.Encode12kStereo(f32, tc.bitrate)
+		enc.Close()
+		if err != nil {
+			t.Fatalf("Encode12kStereo(em=%d sl=%d): %v", tc.em, tc.sl, err)
+		}
+		if len(pkt) < 2 {
+			t.Fatalf("short Opus packet len=%d", len(pkt))
+		}
+		toc := pkt[0]
+		code := toc & 0x03
+		if tc.wantCount == 1 {
+			if code != 0 {
+				t.Fatalf("SL0 TOC=0x%02x expected code=0 (1 frame), got %d", toc, code)
+			}
+		} else if tc.wantCount == 2 {
+			if code != 1 && code != 2 && code != 3 {
+				t.Fatalf("SL2 TOC=0x%02x expected 2-frame packing code 1..3, got %d", toc, code)
+			}
+		} else {
+			if code != 3 {
+				t.Fatalf("SL%d (%d frames) TOC=0x%02x expected code=3, got %d", tc.sl, tc.wantCount, toc, code)
+			}
+			frameCount := int(pkt[1] & 0x3F)
+			if frameCount != tc.wantCount {
+				t.Fatalf("SL%d RFC6716 frame count = %d, want %d", tc.sl, frameCount, tc.wantCount)
+			}
+		}
+
+		// Verify EncodeAudio produces version=1 header
+		framed := EncodeAudio(1, uint8(tc.em), uint16(samplesPerCh), AudioSampleRate12k, pkt)
+		framer := &StreamFramer{}
+		pkts := framer.Push(framed)
+		if len(pkts) != 1 || pkts[0][0] != TypeAudio || pkts[0][1] != 0x01 || pkts[0][3] != uint8(tc.em) {
+			t.Fatalf("unexpected framed Opus packet header: len=%d", len(pkts))
+		}
+		gotSamples := int(binary.LittleEndian.Uint16(pkts[0][4:6]))
+		if gotSamples != samplesPerCh {
+			t.Fatalf("EncodeAudio frameSamplesPerCh = %d, want %d", gotSamples, samplesPerCh)
+		}
 	}
 }

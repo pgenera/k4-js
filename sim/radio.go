@@ -57,35 +57,52 @@ var blockedTxPrefixes = []string{
 	"KP", "KS", "ES", "DW", "DR", "AT",
 }
 
+const (
+	omOptionModuleStr = "OM AP-S----4---;"
+	rvModulesStr      = "RV.DDC0-00.65 (0:35);RV.DUC-00.45 (1:18);RV.FP-03.57;RV.DSP-01.69;RV.RFB-00.78;RV.REF-00.20;RV.DAP-00.29;RV.KSRV-2016;RV.KUI-1801;RV.KUP-646;RV.KCFG-78;RV.R-R40.B1;"
+	medfSampleStr     = "MEDF0001,Speaker%2C Internal,AUDIO,BIN,0,0,1,1,0,1,OFF,ON;" +
+		"MEDF0002,TX ALC,TX,BIN,1,0,1,1,1,1,OFF,ON;" +
+		"MEDF0004,KAT4 ATU Option,TX,DEC,1,0,3,2,2,1,NOT_INST,BYPASS,AUTO,TEST;" +
+		"MEDF0005,KRX4 2ND RX Option,RX,BIN,1,0,1,0,0,1,NOT_INST,ENABLED;" +
+		"MEDF0006,KPA4 PA Option,TX,DEC,1,0,2,2,2,1,NOT_INST,BYPASS,ENABLED;" +
+		"MEDF0034,Radio Type,SYSTEM,DEC,2,0,2,0,0,1,K4,K4D,K4HD;" +
+		"MEDF0105,RX Audio Mix with Sub ON,RX,DEC,1,0,9,0,0,1,L=A%2CR=B,L=AB%2CR=AB,L=A%2CR=-A,L=A%2CR=AB,L=AB%2CR=B,L=AB%2CR=A,L=B%2CR=AB,L=B%2CR=B,L=B%2CR=A,L=A%2CR=A,;" +
+		"MEDF0113,RX Audio Gain Boost,RX,DEC,1,-10,6,0,0,1;" +
+		"MEDF0000;"
+)
+
 type RxState struct {
-	FreqHz      int64
-	Mode        int
-	DataSubMode int
-	BwHz        int
-	IfShiftHz   int
-	StepIdx     int
-	Locked      bool
-	Preamp      int
-	PreampOn    bool
-	AttenDb     int
-	AttenOn     bool
-	AfGain      int
-	RfGainDb    int
-	Squelch     int
-	NbOn        bool
-	NbLevel     int
-	NrOn        bool
-	NrLevel     int
-	NotchOn     bool
-	NotchHz     int
-	Agc         int
-	ApfOn       bool
-	ApfBwIdx    int
-	PanSpanHz   int
-	PanRefDbm   int
-	PanScaleDb  int
+	FreqHz            int64
+	Mode              int
+	DataSubMode       int
+	BwHz              int
+	IfShiftHz         int
+	StepIdx           int
+	StepMode          int
+	Locked            bool
+	Preamp            int
+	PreampOn          bool
+	AttenDb           int
+	AttenOn           bool
+	AfGain            int
+	RfGainDb          int
+	Squelch           int
+	NbOn              bool
+	NbLevel           int
+	NrOn              bool
+	NrLevel           int
+	NotchOn           bool
+	NotchHz           int
+	Agc               int
+	ApfOn             bool
+	ApfBwIdx          int
+	PanSpanHz         int
+	PanTierKHz        int
+	PanRefDbm         int
+	PanScaleDb        int
 	WfBlack           int
 	AutoRef           bool
+	FixedTune         bool
 	MiniPan           bool
 	RitOn             bool
 	RitOffsetHz       int
@@ -138,26 +155,31 @@ func NewRadio() *Radio {
 		DataSubMode: 0,
 		BwHz:        2700,
 		IfShiftHz:   1500,
-		StepIdx:     2,
+		StepIdx:     1,
+		StepMode:    6,
 		Preamp:      0,
 		AttenDb:     0,
 		AfGain:      30,
 		RfGainDb:    0,
 		Squelch:     0,
-		NbLevel:     5,
+		NbLevel:     0,
 		NrLevel:     4,
 		NotchHz:     750,
 		Agc:         1,
 		PanSpanHz:   48000,
+		PanTierKHz:  SpectrumTierKHzWithHysteresis(48000, 0),
 		PanRefDbm:   -50,
 		PanScaleDb:  80,
 		WfBlack:     14,
+		AutoRef:     true,
+		FixedTune:   false,
 	}
 	baseB := baseA
 	baseB.FreqHz = 14025000
 	baseB.Mode = ModeCW
 	baseB.BwHz = 500
 	baseB.IfShiftHz = 500
+	baseB.StepMode = 3
 
 	return &Radio{
 		RxA:              baseA,
@@ -216,6 +238,10 @@ func (r *Radio) Stats() DebugStats {
 }
 
 func isBlockedTxCommand(upper string) bool {
+	// AN; is an allowed antenna-selected GET query, whereas AN<n>; switches relays and is blocked.
+	if strings.HasPrefix(upper, "AN") && upper != "AN" {
+		return true
+	}
 	for _, p := range blockedTxPrefixes {
 		if strings.HasPrefix(upper, p) {
 			return true
@@ -262,6 +288,13 @@ func (r *Radio) HandleCAT(raw string, tSec float64) (reply string, closeConn boo
 
 func (r *Radio) fullSnapshotLocked(tSec float64) string {
 	var sb strings.Builder
+	sb.WriteString("IDK4-SIM;")
+	sb.WriteString(omOptionModuleStr)
+	sb.WriteString(rvModulesStr)
+	sb.WriteString("SN00421;")
+	sb.WriteString(fmt.Sprintf("SL%d;", r.StreamingLatency))
+	sb.WriteString("AN1;")
+	sb.WriteString("OV00;OV$00;")
 	sb.WriteString(fmt.Sprintf("FA%011d;", r.RxA.FreqHz))
 	sb.WriteString(fmt.Sprintf("FB%011d;", r.RxB.FreqHz))
 	sb.WriteString(fmt.Sprintf("MD%d;", r.RxA.Mode))
@@ -273,8 +306,8 @@ func (r *Radio) fullSnapshotLocked(tSec float64) string {
 	sb.WriteString(fmt.Sprintf("IS%04d;", r.RxA.IfShiftHz/10))
 	sb.WriteString(fmt.Sprintf("IS$%04d;", r.RxB.IfShiftHz/10))
 	sb.WriteString(fmt.Sprintf("CW%02d;", r.CwPitchHz/10))
-	sb.WriteString(fmt.Sprintf("VT%d;", r.RxA.StepIdx))
-	sb.WriteString(fmt.Sprintf("VT$%d;", r.RxB.StepIdx))
+	sb.WriteString(fmt.Sprintf("VT%d%d;", r.RxA.StepIdx, r.RxA.StepMode))
+	sb.WriteString(fmt.Sprintf("VT$%d%d;", r.RxB.StepIdx, r.RxB.StepMode))
 	sb.WriteString(fmt.Sprintf("LK%d;", bool01(r.RxA.Locked)))
 	sb.WriteString(fmt.Sprintf("LK$%d;", bool01(r.RxB.Locked)))
 	sb.WriteString(fmt.Sprintf("SB%d;", bool01(r.SubRxEnabled)))
@@ -285,14 +318,22 @@ func (r *Radio) fullSnapshotLocked(tSec float64) string {
 	sb.WriteString(formatPA("PA$", r.RxB))
 	sb.WriteString(formatRA("RA", r.RxA))
 	sb.WriteString(formatRA("RA$", r.RxB))
-	sb.WriteString(fmt.Sprintf("NB%02d%d;", r.RxA.NbLevel, bool01(r.RxA.NbOn)))
-	sb.WriteString(fmt.Sprintf("NB$%02d%d;", r.RxB.NbLevel, bool01(r.RxB.NbOn)))
+	sb.WriteString(fmt.Sprintf("AG%03d;", r.RxA.AfGain))
+	sb.WriteString(fmt.Sprintf("AG$%03d;", r.RxB.AfGain))
+	sb.WriteString(fmt.Sprintf("RG-%02d;", -r.RxA.RfGainDb))
+	sb.WriteString(fmt.Sprintf("RG$-%02d;", -r.RxB.RfGainDb))
+	sb.WriteString(fmt.Sprintf("SQ%03d;", r.RxA.Squelch))
+	sb.WriteString(fmt.Sprintf("SQ$%03d;", r.RxB.Squelch))
+	sb.WriteString(fmt.Sprintf("NB%03d%d;", r.RxA.NbLevel, bool01(r.RxA.NbOn)))
+	sb.WriteString(fmt.Sprintf("NB$%03d%d;", r.RxB.NbLevel, bool01(r.RxB.NbOn)))
 	sb.WriteString(fmt.Sprintf("NR%02d%d;", r.RxA.NrLevel, bool01(r.RxA.NrOn)))
 	sb.WriteString(fmt.Sprintf("NR$%02d%d;", r.RxB.NrLevel, bool01(r.RxB.NrOn)))
 	sb.WriteString(fmt.Sprintf("NM%04d%d;", r.RxA.NotchHz, bool01(r.RxA.NotchOn)))
 	sb.WriteString(fmt.Sprintf("NM$%04d%d;", r.RxB.NotchHz, bool01(r.RxB.NotchOn)))
 	sb.WriteString(fmt.Sprintf("GT%d;", r.RxA.Agc))
 	sb.WriteString(fmt.Sprintf("GT$%d;", r.RxB.Agc))
+	sb.WriteString(fmt.Sprintf("AP%d%d;", bool01(r.RxA.ApfOn), r.RxA.ApfBwIdx))
+	sb.WriteString(fmt.Sprintf("AP$%d%d;", bool01(r.RxB.ApfOn), r.RxB.ApfBwIdx))
 	sb.WriteString(fmt.Sprintf("SMH%+04d;", MeasurePassbandDbm(r.RxA, r.CwPitchHz, tSec)))
 	sb.WriteString(fmt.Sprintf("SMH$%+04d;", MeasurePassbandDbm(r.RxB, r.CwPitchHz, tSec)))
 	sb.WriteString(fmt.Sprintf("#SPN%d;", r.RxA.PanSpanHz))
@@ -300,60 +341,70 @@ func (r *Radio) fullSnapshotLocked(tSec float64) string {
 	sb.WriteString(fmt.Sprintf("#REF%d;", r.RxA.PanRefDbm))
 	sb.WriteString(fmt.Sprintf("#REF$%d;", r.RxB.PanRefDbm))
 	sb.WriteString(fmt.Sprintf("#SCL%d;", r.RxA.PanScaleDb))
-	sb.WriteString(fmt.Sprintf("#SCL$%d;", r.RxB.PanScaleDb))
 	sb.WriteString(fmt.Sprintf("#AVG%02d;", r.PanAvg))
 	sb.WriteString(fmt.Sprintf("#WBS%d;", r.RxA.WfBlack))
-	sb.WriteString(fmt.Sprintf("#WBS$%d;", r.RxB.WfBlack))
-	sb.WriteString(fmt.Sprintf("#AR0000+00%d;", bool01(r.RxA.AutoRef)))
-	sb.WriteString(fmt.Sprintf("#AR$0000+00%d;", bool01(r.RxB.AutoRef)))
+	sb.WriteString(fmt.Sprintf("#AR1206-02%d;", bool01(r.RxA.AutoRef)))
+	sb.WriteString(fmt.Sprintf("#FXT%d;", bool01(r.RxA.FixedTune)))
 	sb.WriteString(fmt.Sprintf("#DPM%d;", r.DualPanMode))
 	sb.WriteString(fmt.Sprintf("#MP%d;", bool01(r.RxA.MiniPan)))
 	sb.WriteString(fmt.Sprintf("#MP$%d;", bool01(r.RxB.MiniPan)))
+	sb.WriteString(fmt.Sprintf("#FRZ%d;", bool01(r.PanFrozen)))
 	sb.WriteString(fmt.Sprintf("MX%s;", r.AudioMix))
 	sb.WriteString(fmt.Sprintf("EM%d;", r.EncodeMode))
-	sb.WriteString("IDK4-SIM;OMAP01;SN00421;")
+	sb.WriteString(medfSampleStr)
 	return sb.String()
 }
 
 func (r *Radio) execSingleLocked(orig, upper string, tSec float64) string {
+	var resp string
+	var isSet bool
+
 	switch {
 	case upper == "RDY":
+		r.AiMode = 4
 		return r.fullSnapshotLocked(tSec)
 	case upper == "RX":
 		return ""
 	case upper == "ID":
 		return "IDK4-SIM;"
 	case upper == "OM":
-		return "OMAP01;"
+		return omOptionModuleStr
 	case upper == "SN":
 		return "SN00421;"
 	case upper == "RV":
-		return "RV.M-01.00;RV.D-01.00;"
+		return rvModulesStr
 	case upper == "TQ":
 		return "TQ0;"
+	case upper == "AN":
+		return "AN1;"
+	case upper == "OV":
+		return "OV00;"
+	case upper == "OV$":
+		return "OV$00;"
 	case upper == "IF":
+		ritOff := clampInt(r.RxA.RitOffsetHz, -9999, 9999)
+		dataSub := 0
+		if r.RxA.Mode == ModeDATA {
+			dataSub = r.RxA.DataSubMode
+		}
 		return fmt.Sprintf(
-			"IF%011d     %+05d%d00000%d%d0%d0%d0;",
+			"IF%011d     %+05d%d0 000%d00%d0%d1 ;",
 			r.RxA.FreqHz,
-			r.RxA.RitOffsetHz,
+			ritOff,
 			bool01(r.RxA.RitOn),
 			r.RxA.Mode,
 			bool01(r.SplitEnabled),
-			r.RxA.DataSubMode,
-			0,
+			dataSub,
 		)
 	case strings.HasPrefix(upper, "PING"):
-		ts := strings.TrimPrefix(upper, "PING")
-		if ts == "" {
-			ts = "0"
-		}
-		return "PONG" + ts + ";"
+		return "PONG;"
 	case strings.HasPrefix(upper, "K4"):
 		arg := strings.TrimPrefix(upper, "K4")
 		if arg == "0" || arg == "1" {
+			isSet = true
 			r.K4Mode, _ = strconv.Atoi(arg)
 		}
-		return fmt.Sprintf("K4%d;", r.K4Mode)
+		resp = fmt.Sprintf("K4%d;", r.K4Mode)
 	case strings.HasPrefix(upper, "ER"):
 		arg := strings.TrimPrefix(upper, "ER")
 		if arg == "0" || arg == "1" {
@@ -364,93 +415,111 @@ func (r *Radio) execSingleLocked(orig, upper string, tSec float64) string {
 		return fmt.Sprintf("ER%d;", r.ErMode)
 	case strings.HasPrefix(upper, "AI"):
 		arg := strings.TrimPrefix(upper, "AI")
-		if v, err := strconv.Atoi(arg); err == nil && v >= 0 && v <= 5 {
-			r.AiMode = v
+		if arg != "" {
+			isSet = true
+			if v, err := strconv.Atoi(arg); err == nil && v >= 0 && v <= 5 {
+				r.AiMode = v
+			}
 		}
-		return fmt.Sprintf("AI%d;", r.AiMode)
+		resp = fmt.Sprintf("AI%d;", r.AiMode)
 	case strings.HasPrefix(upper, "FA"):
 		arg := strings.TrimPrefix(upper, "FA")
 		if arg != "" {
+			isSet = true
 			if hz, err := strconv.ParseInt(arg, 10, 64); err == nil {
 				r.RxA.FreqHz = clampInt64(hz, 100000, 54000000)
 			}
 		}
-		return fmt.Sprintf("FA%011d;", r.RxA.FreqHz)
+		resp = fmt.Sprintf("FA%011d;", r.RxA.FreqHz)
 	case strings.HasPrefix(upper, "FB"):
 		arg := strings.TrimPrefix(upper, "FB")
 		if arg != "" {
+			isSet = true
 			if hz, err := strconv.ParseInt(arg, 10, 64); err == nil {
 				r.RxB.FreqHz = clampInt64(hz, 100000, 54000000)
 			}
 		}
-		return fmt.Sprintf("FB%011d;", r.RxB.FreqHz)
+		resp = fmt.Sprintf("FB%011d;", r.RxB.FreqHz)
 	case strings.HasPrefix(upper, "MD"):
 		rx, prefix, arg := splitSubRx(upper, "MD")
 		target := r.rxPtr(rx)
 		if arg != "" {
+			isSet = true
 			if m, err := strconv.Atoi(arg); err == nil && validMode(m) {
 				target.Mode = m
 			}
 		}
-		return fmt.Sprintf("%s%d;", prefix, target.Mode)
+		resp = fmt.Sprintf("%s%d;", prefix, target.Mode)
 	case strings.HasPrefix(upper, "DT"):
 		rx, prefix, arg := splitSubRx(upper, "DT")
 		target := r.rxPtr(rx)
 		if arg != "" {
+			isSet = true
 			if d, err := strconv.Atoi(arg); err == nil && d >= 0 && d <= 3 {
 				target.DataSubMode = d
 			}
 		}
-		return fmt.Sprintf("%s%d;", prefix, target.DataSubMode)
+		resp = fmt.Sprintf("%s%d;", prefix, target.DataSubMode)
 	case strings.HasPrefix(upper, "BW"):
 		rx, prefix, arg := splitSubRx(upper, "BW")
 		target := r.rxPtr(rx)
 		if arg != "" {
+			isSet = true
 			if v, err := strconv.Atoi(arg); err == nil {
 				target.BwHz = clampInt(v*10, 50, 5000)
 			}
 		}
-		return fmt.Sprintf("%s%04d;", prefix, target.BwHz/10)
+		resp = fmt.Sprintf("%s%04d;", prefix, target.BwHz/10)
 	case strings.HasPrefix(upper, "IS"):
 		rx, prefix, arg := splitSubRx(upper, "IS")
 		target := r.rxPtr(rx)
 		arg = strings.TrimSpace(arg)
 		if arg != "" {
+			isSet = true
 			if v, err := strconv.Atoi(arg); err == nil {
 				target.IfShiftHz = clampInt(v*10, 0, 5000)
 			}
 		}
-		return fmt.Sprintf("%s%04d;", prefix, target.IfShiftHz/10)
+		resp = fmt.Sprintf("%s%04d;", prefix, target.IfShiftHz/10)
 	case strings.HasPrefix(upper, "CW"):
 		arg := strings.TrimPrefix(upper, "CW")
 		if arg != "" {
+			isSet = true
 			if v, err := strconv.Atoi(arg); err == nil {
 				r.CwPitchHz = clampInt(v*10, 250, 950)
 			}
 		}
-		return fmt.Sprintf("CW%02d;", r.CwPitchHz/10)
+		resp = fmt.Sprintf("CW%02d;", r.CwPitchHz/10)
 	case strings.HasPrefix(upper, "VT"):
 		rx, prefix, arg := splitSubRx(upper, "VT")
 		target := r.rxPtr(rx)
-		if len(arg) >= 1 {
+		if arg != "" {
+			isSet = true
 			if idx, err := strconv.Atoi(arg[:1]); err == nil && idx >= 0 && idx <= 6 {
 				target.StepIdx = idx
 			}
+			if len(arg) >= 2 {
+				if mode, err := strconv.Atoi(arg[1:2]); err == nil && mode >= 0 && mode <= 9 {
+					target.StepMode = mode
+				}
+			}
 		}
-		return fmt.Sprintf("%s%d;", prefix, target.StepIdx)
+		resp = fmt.Sprintf("%s%d%d;", prefix, target.StepIdx, target.StepMode)
 	case strings.HasPrefix(upper, "LK"):
 		rx, prefix, arg := splitSubRx(upper, "LK")
 		target := r.rxPtr(rx)
 		if arg == "0" || arg == "1" {
+			isSet = true
 			target.Locked = arg == "1"
 		}
-		return fmt.Sprintf("%s%d;", prefix, bool01(target.Locked))
+		resp = fmt.Sprintf("%s%d;", prefix, bool01(target.Locked))
 	case strings.HasPrefix(upper, "SB"):
 		arg := strings.TrimPrefix(upper, "SB")
 		if arg == "0" || arg == "1" {
+			isSet = true
 			r.SubRxEnabled = arg == "1"
 		}
-		return fmt.Sprintf("SB%d;", bool01(r.SubRxEnabled))
+		resp = fmt.Sprintf("SB%d;", bool01(r.SubRxEnabled))
 	case upper == "SP0":
 		return "SP0;"
 	case strings.HasPrefix(upper, "SP"):
@@ -458,6 +527,9 @@ func (r *Radio) execSingleLocked(orig, upper string, tSec float64) string {
 		return "?;"
 	case strings.HasPrefix(upper, "DV"):
 		arg := strings.TrimPrefix(upper, "DV")
+		if arg != "" {
+			isSet = true
+		}
 		switch arg {
 		case "0":
 			r.DiversityEnabled = false
@@ -470,20 +542,23 @@ func (r *Radio) execSingleLocked(orig, upper string, tSec float64) string {
 				r.SubRxEnabled = true
 			}
 		}
-		return fmt.Sprintf("DV%d;", bool01(r.DiversityEnabled))
+		resp = fmt.Sprintf("DV%d;", bool01(r.DiversityEnabled))
 	case strings.HasPrefix(upper, "FC"):
 		rx, _, arg := splitSubRx(upper, "FC")
 		target := r.rxPtr(rx)
 		if arg == "" {
 			target.PanCenterOffsetHz = 0
-		} else if off, err := strconv.ParseInt(arg, 10, 64); err == nil {
-			target.PanCenterOffsetHz = clampInt64(off, -200000, 200000)
+		} else {
+			isSet = true
+			if off, err := strconv.ParseInt(arg, 10, 64); err == nil {
+				target.PanCenterOffsetHz = clampInt64(off, -200000, 200000)
+			}
 		}
 		fiPrefix := "FI"
 		if rx == 'B' {
 			fiPrefix = "FI$"
 		}
-		return fmt.Sprintf("%s%011d;", fiPrefix, clampInt64(target.FreqHz+target.PanCenterOffsetHz, 100000, 54000000))
+		resp = fmt.Sprintf("%s%011d;", fiPrefix, clampInt64(target.FreqHz+target.PanCenterOffsetHz, 100000, 54000000))
 	case strings.HasPrefix(upper, "FI"):
 		rx, prefix, _ := splitSubRx(upper, "FI")
 		target := r.rxPtr(rx)
@@ -491,6 +566,9 @@ func (r *Radio) execSingleLocked(orig, upper string, tSec float64) string {
 	case strings.HasPrefix(upper, "RT"):
 		rx, prefix, arg := splitSubRx(upper, "RT")
 		target := r.rxPtr(rx)
+		if arg != "" {
+			isSet = true
+		}
 		switch arg {
 		case "0":
 			target.RitOn = false
@@ -499,33 +577,37 @@ func (r *Radio) execSingleLocked(orig, upper string, tSec float64) string {
 		case "/":
 			target.RitOn = !target.RitOn
 		}
-		return fmt.Sprintf("%s%d;", prefix, bool01(target.RitOn))
+		resp = fmt.Sprintf("%s%d;", prefix, bool01(target.RitOn))
 	case strings.HasPrefix(upper, "RO"):
 		rx, prefix, arg := splitSubRx(upper, "RO")
 		target := r.rxPtr(rx)
 		if arg != "" {
+			isSet = true
 			if v, err := strconv.Atoi(arg); err == nil {
 				target.RitOffsetHz = clampInt(v, -9999, 9999)
 			}
 		}
-		return fmt.Sprintf("%s%+05d;", prefix, target.RitOffsetHz)
+		resp = fmt.Sprintf("%s%+05d;", prefix, target.RitOffsetHz)
 	case strings.HasPrefix(upper, "FT"):
 		arg := strings.TrimPrefix(upper, "FT")
 		if arg == "0" || arg == "1" {
+			isSet = true
 			r.SplitEnabled = arg == "1"
 		}
-		return fmt.Sprintf("FT%d;", bool01(r.SplitEnabled))
+		resp = fmt.Sprintf("FT%d;", bool01(r.SplitEnabled))
 	case strings.HasPrefix(upper, "LN"):
 		arg := strings.TrimPrefix(upper, "LN")
 		if arg == "0" || arg == "1" {
+			isSet = true
 			r.VfoLinked = arg == "1"
 		}
-		return fmt.Sprintf("LN%d;", bool01(r.VfoLinked))
+		resp = fmt.Sprintf("LN%d;", bool01(r.VfoLinked))
 	case strings.HasPrefix(upper, "BN"):
 		rx, prefix, arg := splitSubRx(upper, "BN")
 		target := r.rxPtr(rx)
 		bnCode := bandCodeForFreq(target.FreqHz)
 		if arg != "" {
+			isSet = true
 			if bn, err := strconv.Atoi(arg); err == nil {
 				if hz, ok := bandDefaults[bn]; ok {
 					target.FreqHz = hz
@@ -533,133 +615,162 @@ func (r *Radio) execSingleLocked(orig, upper string, tSec float64) string {
 				}
 			}
 		}
-		vfo := "FA"
-		if rx == 'B' {
-			vfo = "FB"
-		}
-		return fmt.Sprintf("%s%02d;%s%011d;", prefix, bnCode, vfo, target.FreqHz)
+		resp = fmt.Sprintf("%s%02d;", prefix, bnCode)
 	case strings.HasPrefix(upper, "PA"):
 		rx, prefix, arg := splitSubRx(upper, "PA")
 		target := r.rxPtr(rx)
-		if len(arg) == 2 {
-			lvl, err1 := strconv.Atoi(arg[:1])
-			on, err2 := strconv.Atoi(arg[1:2])
-			if err1 == nil && err2 == nil {
-				target.PreampOn = on == 1 && lvl > 0
-				if target.PreampOn {
-					target.Preamp = clampInt(lvl, 0, 3)
-				} else {
-					target.Preamp = 0
+		if arg != "" {
+			isSet = true
+			if len(arg) == 2 {
+				lvl, err1 := strconv.Atoi(arg[:1])
+				on, err2 := strconv.Atoi(arg[1:2])
+				if err1 == nil && err2 == nil {
+					target.PreampOn = on == 1 && lvl > 0
+					if target.PreampOn {
+						target.Preamp = clampInt(lvl, 0, 3)
+					} else {
+						target.Preamp = 0
+					}
 				}
 			}
 		}
-		return formatPA(prefix, *target)
+		resp = formatPA(prefix, *target)
 	case strings.HasPrefix(upper, "RA"):
 		rx, prefix, arg := splitSubRx(upper, "RA")
 		target := r.rxPtr(rx)
-		if len(arg) == 3 {
-			db, err1 := strconv.Atoi(arg[:2])
-			on, err2 := strconv.Atoi(arg[2:3])
-			if err1 == nil && err2 == nil {
-				target.AttenOn = on == 1 && db > 0
-				if target.AttenOn {
-					target.AttenDb = clampInt(db, 0, 21)
-				} else {
-					target.AttenDb = 0
+		if arg != "" {
+			isSet = true
+			if len(arg) == 3 {
+				db, err1 := strconv.Atoi(arg[:2])
+				on, err2 := strconv.Atoi(arg[2:3])
+				if err1 == nil && err2 == nil {
+					target.AttenOn = on == 1 && db > 0
+					if target.AttenOn {
+						target.AttenDb = clampInt(db, 0, 21)
+					} else {
+						target.AttenDb = 0
+					}
 				}
 			}
 		}
-		return formatRA(prefix, *target)
+		resp = formatRA(prefix, *target)
 	case strings.HasPrefix(upper, "AG"):
 		rx, prefix, arg := splitSubRx(upper, "AG")
 		target := r.rxPtr(rx)
 		if arg != "" {
+			isSet = true
 			if v, err := strconv.Atoi(arg); err == nil {
 				target.AfGain = clampInt(v, 0, 60)
 			}
 		}
-		return fmt.Sprintf("%s%03d;", prefix, target.AfGain)
+		resp = fmt.Sprintf("%s%03d;", prefix, target.AfGain)
 	case strings.HasPrefix(upper, "RG"):
 		rx, prefix, arg := splitSubRx(upper, "RG")
 		target := r.rxPtr(rx)
 		if arg != "" {
+			isSet = true
 			if v, err := strconv.Atoi(arg); err == nil {
+				if v > 0 {
+					v = -v
+				}
 				target.RfGainDb = clampInt(v, -60, 0)
 			}
 		}
-		return fmt.Sprintf("%s%03d;", prefix, target.RfGainDb)
+		resp = fmt.Sprintf("%s-%02d;", prefix, -target.RfGainDb)
 	case strings.HasPrefix(upper, "SQ"):
 		rx, prefix, arg := splitSubRx(upper, "SQ")
 		target := r.rxPtr(rx)
 		if arg != "" {
+			isSet = true
 			if v, err := strconv.Atoi(arg); err == nil {
 				target.Squelch = clampInt(v, 0, 40)
 			}
 		}
-		return fmt.Sprintf("%s%03d;", prefix, target.Squelch)
+		resp = fmt.Sprintf("%s%03d;", prefix, target.Squelch)
 	case strings.HasPrefix(upper, "NB"):
 		rx, prefix, arg := splitSubRx(upper, "NB")
 		target := r.rxPtr(rx)
-		if len(arg) == 3 {
-			lvl, err1 := strconv.Atoi(arg[:2])
-			on, err2 := strconv.Atoi(arg[2:3])
-			if err1 == nil && err2 == nil {
-				target.NbLevel = clampInt(lvl, 0, 15)
-				target.NbOn = on == 1
+		if arg != "" {
+			isSet = true
+			switch len(arg) {
+			case 4:
+				lvl, err1 := strconv.Atoi(arg[:3])
+				on, err2 := strconv.Atoi(arg[3:4])
+				if err1 == nil && err2 == nil {
+					target.NbLevel = clampInt(lvl, 0, 15)
+					target.NbOn = on == 1
+				}
+			case 3:
+				lvl, err1 := strconv.Atoi(arg[:2])
+				on, err2 := strconv.Atoi(arg[2:3])
+				if err1 == nil && err2 == nil {
+					target.NbLevel = clampInt(lvl, 0, 15)
+					target.NbOn = on == 1
+				}
+			case 1:
+				target.NbOn = arg == "1"
 			}
-		} else if len(arg) == 1 {
-			target.NbOn = arg == "1"
 		}
-		return fmt.Sprintf("%s%02d%d;", prefix, target.NbLevel, bool01(target.NbOn))
+		resp = fmt.Sprintf("%s%03d%d;", prefix, target.NbLevel, bool01(target.NbOn))
 	case strings.HasPrefix(upper, "NR"):
 		rx, prefix, arg := splitSubRx(upper, "NR")
 		target := r.rxPtr(rx)
-		if len(arg) == 3 {
-			lvl, err1 := strconv.Atoi(arg[:2])
-			on, err2 := strconv.Atoi(arg[2:3])
-			if err1 == nil && err2 == nil {
-				target.NrLevel = clampInt(lvl, 0, 10)
-				target.NrOn = on == 1
+		if arg != "" {
+			isSet = true
+			if len(arg) == 3 {
+				lvl, err1 := strconv.Atoi(arg[:2])
+				on, err2 := strconv.Atoi(arg[2:3])
+				if err1 == nil && err2 == nil {
+					target.NrLevel = clampInt(lvl, 0, 10)
+					target.NrOn = on == 1
+				}
+			} else if len(arg) == 1 {
+				target.NrOn = arg == "1"
 			}
-		} else if len(arg) == 1 {
-			target.NrOn = arg == "1"
 		}
-		return fmt.Sprintf("%s%02d%d;", prefix, target.NrLevel, bool01(target.NrOn))
+		resp = fmt.Sprintf("%s%02d%d;", prefix, target.NrLevel, bool01(target.NrOn))
 	case strings.HasPrefix(upper, "NM"):
 		rx, prefix, arg := splitSubRx(upper, "NM")
 		target := r.rxPtr(rx)
-		if len(arg) == 5 {
-			hz, err1 := strconv.Atoi(arg[:4])
-			on, err2 := strconv.Atoi(arg[4:5])
-			if err1 == nil && err2 == nil {
-				target.NotchHz = clampInt(hz, 150, 5000)
-				target.NotchOn = on == 1
+		if arg != "" {
+			isSet = true
+			if len(arg) == 5 {
+				hz, err1 := strconv.Atoi(arg[:4])
+				on, err2 := strconv.Atoi(arg[4:5])
+				if err1 == nil && err2 == nil {
+					target.NotchHz = clampInt(hz, 150, 5000)
+					target.NotchOn = on == 1
+				}
+			} else if len(arg) == 1 {
+				target.NotchOn = arg == "1"
 			}
-		} else if len(arg) == 1 {
-			target.NotchOn = arg == "1"
 		}
-		return fmt.Sprintf("%s%04d%d;", prefix, target.NotchHz, bool01(target.NotchOn))
+		resp = fmt.Sprintf("%s%04d%d;", prefix, target.NotchHz, bool01(target.NotchOn))
 	case strings.HasPrefix(upper, "GT"):
 		rx, prefix, arg := splitSubRx(upper, "GT")
 		target := r.rxPtr(rx)
 		if arg != "" {
+			isSet = true
 			if v, err := strconv.Atoi(arg); err == nil && v >= 0 && v <= 2 {
 				target.Agc = v
 			}
 		}
-		return fmt.Sprintf("%s%d;", prefix, target.Agc)
+		resp = fmt.Sprintf("%s%d;", prefix, target.Agc)
 	case strings.HasPrefix(upper, "AP"):
 		rx, prefix, arg := splitSubRx(upper, "AP")
 		target := r.rxPtr(rx)
-		if len(arg) == 2 {
-			on, err1 := strconv.Atoi(arg[:1])
-			bw, err2 := strconv.Atoi(arg[1:2])
-			if err1 == nil && err2 == nil {
-				target.ApfOn = on == 1
-				target.ApfBwIdx = clampInt(bw, 0, 2)
+		if arg != "" {
+			isSet = true
+			if len(arg) == 2 {
+				on, err1 := strconv.Atoi(arg[:1])
+				bw, err2 := strconv.Atoi(arg[1:2])
+				if err1 == nil && err2 == nil {
+					target.ApfOn = on == 1
+					target.ApfBwIdx = clampInt(bw, 0, 2)
+				}
 			}
 		}
-		return fmt.Sprintf("%s%d%d;", prefix, bool01(target.ApfOn), target.ApfBwIdx)
+		resp = fmt.Sprintf("%s%d%d;", prefix, bool01(target.ApfOn), target.ApfBwIdx)
 	case strings.HasPrefix(upper, "SMH"):
 		rx, prefix, _ := splitSubRx(upper, "SMH")
 		target := r.rxPtr(rx)
@@ -674,78 +785,107 @@ func (r *Radio) execSingleLocked(orig, upper string, tSec float64) string {
 		rx, prefix, arg := splitSubRx(upper, "#SPN")
 		target := r.rxPtr(rx)
 		if arg != "" {
+			isSet = true
 			if v, err := strconv.Atoi(arg); err == nil {
 				if v < 1000 {
 					v *= 1000
 				}
 				target.PanSpanHz = clampInt(v, 6000, 368000)
+				target.PanTierKHz = SpectrumTierKHzWithHysteresis(target.PanSpanHz, target.PanTierKHz)
 			}
 		}
-		return fmt.Sprintf("%s%d;", prefix, target.PanSpanHz)
+		resp = fmt.Sprintf("%s%d;", prefix, target.PanSpanHz)
 	case strings.HasPrefix(upper, "#REF"):
 		rx, prefix, arg := splitSubRx(upper, "#REF")
 		target := r.rxPtr(rx)
 		if arg != "" {
+			isSet = true
 			if v, err := strconv.Atoi(arg); err == nil {
 				target.PanRefDbm = clampInt(v, -200, 60)
 			}
 		}
-		return fmt.Sprintf("%s%d;", prefix, target.PanRefDbm)
+		resp = fmt.Sprintf("%s%d;", prefix, target.PanRefDbm)
+	case strings.HasPrefix(upper, "#SCL$"):
+		return "#SCL?;"
 	case strings.HasPrefix(upper, "#SCL"):
-		rx, prefix, arg := splitSubRx(upper, "#SCL")
-		target := r.rxPtr(rx)
+		arg := strings.TrimPrefix(upper, "#SCL")
 		if arg != "" {
+			isSet = true
 			if v, err := strconv.Atoi(arg); err == nil {
-				target.PanScaleDb = clampInt(v, 10, 150)
+				r.RxA.PanScaleDb = clampInt(v, 10, 150)
 			}
 		}
-		return fmt.Sprintf("%s%d;", prefix, target.PanScaleDb)
+		resp = fmt.Sprintf("#SCL%d;", r.RxA.PanScaleDb)
 	case strings.HasPrefix(upper, "#AVG"):
 		arg := strings.TrimPrefix(upper, "#AVG")
 		if arg != "" {
+			isSet = true
 			if v, err := strconv.Atoi(arg); err == nil {
 				r.PanAvg = clampInt(v, 1, 20)
 			}
 		}
-		return fmt.Sprintf("#AVG%02d;", r.PanAvg)
+		resp = fmt.Sprintf("#AVG%02d;", r.PanAvg)
+	case strings.HasPrefix(upper, "#WBS$"):
+		return "#WBS?;"
 	case strings.HasPrefix(upper, "#WBS"):
-		rx, prefix, arg := splitSubRx(upper, "#WBS")
-		target := r.rxPtr(rx)
+		arg := strings.TrimPrefix(upper, "#WBS")
 		if arg != "" {
+			isSet = true
 			if v, err := strconv.Atoi(arg); err == nil {
-				target.WfBlack = clampInt(v, 5, 30)
+				r.RxA.WfBlack = clampInt(v, 5, 30)
 			}
 		}
-		return fmt.Sprintf("%s%d;", prefix, target.WfBlack)
+		resp = fmt.Sprintf("#WBS%d;", r.RxA.WfBlack)
+	case strings.HasPrefix(upper, "#AR$"):
+		return "#AR?;"
 	case strings.HasPrefix(upper, "#AR"):
-		rx, prefix, arg := splitSubRx(upper, "#AR")
-		target := r.rxPtr(rx)
+		arg := strings.TrimPrefix(upper, "#AR")
 		if arg != "" {
+			isSet = true
 			last := arg[len(arg)-1]
-			if last == 'A' || last == '1' {
-				target.AutoRef = true
-			} else if last == 'M' || last == '0' {
-				target.AutoRef = false
+			switch last {
+			case 'A', '1':
+				r.RxA.AutoRef = true
+			case 'M', '0':
+				r.RxA.AutoRef = false
+			case '/':
+				r.RxA.AutoRef = !r.RxA.AutoRef
 			}
 		}
-		return fmt.Sprintf("%s0000+00%d;", prefix, bool01(target.AutoRef))
+		resp = fmt.Sprintf("#AR1206-02%d;", bool01(r.RxA.AutoRef))
+	case strings.HasPrefix(upper, "#FXT$"):
+		return "#FXT?;"
+	case strings.HasPrefix(upper, "#FXT"):
+		arg := strings.TrimPrefix(upper, "#FXT")
+		if arg != "" {
+			isSet = true
+			if arg == "0" || arg == "1" {
+				r.RxA.FixedTune = arg == "1"
+			}
+		}
+		resp = fmt.Sprintf("#FXT%d;", bool01(r.RxA.FixedTune))
 	case strings.HasPrefix(upper, "#DPM"):
 		arg := strings.TrimPrefix(upper, "#DPM")
 		if arg != "" {
+			isSet = true
 			if v, err := strconv.Atoi(arg); err == nil && v >= 0 && v <= 2 {
 				r.DualPanMode = v
 			}
 		}
-		return fmt.Sprintf("#DPM%d;", r.DualPanMode)
+		resp = fmt.Sprintf("#DPM%d;", r.DualPanMode)
 	case strings.HasPrefix(upper, "#MP"):
 		rx, prefix, arg := splitSubRx(upper, "#MP")
 		target := r.rxPtr(rx)
 		if arg == "0" || arg == "1" {
+			isSet = true
 			target.MiniPan = arg == "1"
 		}
-		return fmt.Sprintf("%s%d;", prefix, bool01(target.MiniPan))
+		resp = fmt.Sprintf("%s%d;", prefix, bool01(target.MiniPan))
 	case strings.HasPrefix(upper, "#FRZ"):
 		arg := strings.TrimPrefix(upper, "#FRZ")
+		if arg != "" {
+			isSet = true
+		}
 		switch arg {
 		case "0":
 			r.PanFrozen = false
@@ -754,25 +894,28 @@ func (r *Radio) execSingleLocked(orig, upper string, tSec float64) string {
 		case "/":
 			r.PanFrozen = !r.PanFrozen
 		}
-		return fmt.Sprintf("#FRZ%d;", bool01(r.PanFrozen))
+		resp = fmt.Sprintf("#FRZ%d;", bool01(r.PanFrozen))
 	case strings.HasPrefix(upper, "MX"):
 		arg := strings.TrimPrefix(upper, "MX")
-		if arg != "" && validAudioMixes[arg] {
-			r.AudioMix = arg
+		if arg != "" {
+			isSet = true
+			if validAudioMixes[arg] {
+				r.AudioMix = arg
+			}
 		}
-		return fmt.Sprintf("MX%s;", r.AudioMix)
+		resp = fmt.Sprintf("MX%s;", r.AudioMix)
 	case strings.HasPrefix(upper, "EM"):
 		arg := strings.TrimPrefix(upper, "EM")
 		if arg != "" {
+			isSet = true
 			if v, err := strconv.Atoi(arg); err == nil && v >= 0 && v <= 3 {
-				// Simulator only synthesizes PCM (EM0/EM1); downgrade EM2/EM3 cleanly.
-				if v >= 2 {
+				if v >= 2 && !OpusAvailable() {
 					v = 1
 				}
 				r.EncodeMode = v
 			}
 		}
-		return fmt.Sprintf("EM%d;", r.EncodeMode)
+		resp = fmt.Sprintf("EM%d;", r.EncodeMode)
 	case strings.HasPrefix(upper, "SL"):
 		arg := strings.TrimPrefix(upper, "SL")
 		if arg == "" {
@@ -786,6 +929,11 @@ func (r *Radio) execSingleLocked(orig, upper string, tSec float64) string {
 	default:
 		return "?;"
 	}
+
+	if isSet && r.AiMode != 5 {
+		return ""
+	}
+	return resp
 }
 
 func bandCodeForFreq(hz int64) int {

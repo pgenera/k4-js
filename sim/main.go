@@ -199,7 +199,7 @@ func (s *SimServer) handleConn(ctx context.Context, conn net.Conn) {
 				}
 				if rxA.MiniPan {
 					mcHz, mSpanKHz, mBins := SynthMiniPAN(rxA, cwPitchHz, tSec, rng)
-					if err := writePacket(EncodePAN(TypeMiniPAN, seqA, 0, 0, mcHz, mSpanKHz, 0, mBins)); err != nil {
+					if err := writePacket(EncodePAN(TypeMiniPAN, seqA, 0, 0, mcHz, mSpanKHz, 285, mBins)); err != nil {
 						cancelConn()
 						return
 					}
@@ -214,7 +214,7 @@ func (s *SimServer) handleConn(ctx context.Context, conn net.Conn) {
 					}
 					if rxB.MiniPan {
 						mcHzB, mSpanKHzB, mBinsB := SynthMiniPAN(rxB, cwPitchHz, tSec, rng)
-						if err := writePacket(EncodePAN(TypeMiniPAN, seqB, 0, 1, mcHzB, mSpanKHzB, 0, mBinsB)); err != nil {
+						if err := writePacket(EncodePAN(TypeMiniPAN, seqB, 0, 1, mcHzB, mSpanKHzB, 285, mBinsB)); err != nil {
 							cancelConn()
 							return
 						}
@@ -225,10 +225,16 @@ func (s *SimServer) handleConn(ctx context.Context, conn net.Conn) {
 		}
 	}()
 
-	// 2. 12 kHz stereo PCM audio loop synced to SL tier
+	// 2. 12 kHz stereo PCM / 48 kHz Opus audio loop synced to SL tier
 	go func() {
 		defer streamWg.Done()
 		audioSynth := NewAudioSynth()
+		var opusEnc *OpusStreamEncoder
+		defer func() {
+			if opusEnc != nil {
+				opusEnc.Close()
+			}
+		}()
 		var audioSeq uint8
 		for {
 			rxA, rxB, subRx, cwPitchHz, encodeMode, sl, _ := s.radio.Snapshot()
@@ -244,12 +250,44 @@ func (s *SimServer) handleConn(ctx context.Context, conn net.Conn) {
 				return
 			case now := <-time.After(interval):
 				tSec := now.Sub(s.startAt).Seconds()
-				em := uint8(1)
-				if encodeMode == 0 {
-					em = 0
+				f32 := audioSynth.SynthAudioFloat(rxA, rxB, subRx, cwPitchHz, samplesPerCh, tSec)
+
+				outEM := uint8(1)
+				var audioPayload []byte
+				switch encodeMode {
+				case 0:
+					outEM = 0
+					audioPayload = QuantizeFloatToPCM(f32, 0)
+				case 2, 3:
+					bitrate := 64000
+					if encodeMode == 3 {
+						bitrate = 96000
+					}
+					if OpusAvailable() {
+						if opusEnc == nil {
+							enc, err := NewOpusStreamEncoder(bitrate)
+							if err == nil {
+								opusEnc = enc
+							}
+						}
+						if opusEnc != nil {
+							pkt, err := opusEnc.Encode12kStereo(f32, bitrate)
+							if err == nil {
+								outEM = uint8(encodeMode)
+								audioPayload = pkt
+							}
+						}
+					}
+					if audioPayload == nil {
+						outEM = 1
+						audioPayload = QuantizeFloatToPCM(f32, 1)
+					}
+				default:
+					outEM = 1
+					audioPayload = QuantizeFloatToPCM(f32, 1)
 				}
-				pcm := audioSynth.SynthAudio(rxA, rxB, subRx, cwPitchHz, em, samplesPerCh, tSec)
-				if err := writePacket(EncodeAudio(audioSeq, em, uint16(samplesPerCh), AudioSampleRate12k, pcm)); err != nil {
+
+				if err := writePacket(EncodeAudio(audioSeq, outEM, uint16(samplesPerCh), AudioSampleRate12k, audioPayload)); err != nil {
 					cancelConn()
 					return
 				}

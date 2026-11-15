@@ -64,7 +64,7 @@ func EncodeCAT(catText string) []byte {
 func EncodeAudio(seq uint8, encodeMode uint8, frameSamplesPerCh uint16, sampleRateCode uint8, audioData []byte) []byte {
 	payload := make([]byte, 7+len(audioData))
 	payload[0] = TypeAudio
-	payload[1] = 0x00
+	payload[1] = 0x01
 	payload[2] = seq
 	payload[3] = encodeMode
 	binary.LittleEndian.PutUint16(payload[4:6], frameSamplesPerCh)
@@ -74,7 +74,9 @@ func EncodeAudio(seq uint8, encodeMode uint8, frameSamplesPerCh uint16, sampleRa
 }
 
 // EncodePAN encodes a 1024-bin PAN (0x02) or MiniPAN (0x03) framed packet.
-func EncodePAN(packetType uint8, seq uint8, panType uint8, receiver uint8, centerFreqHz int64, spanOrRateKHz int32, noiseFloorRaw int32, bins []byte) []byte {
+// For 0x02 PAN, field23 carries noiseFloorRaw (e.g., -1200 for -120.0 dBm * 10);
+// for 0x03 MiniPAN, field23 carries the positive K4 MiniPAN [23..26] field (~285).
+func EncodePAN(packetType uint8, seq uint8, panType uint8, receiver uint8, centerFreqHz int64, spanOrRateKHz int32, field23 int32, bins []byte) []byte {
 	payload := make([]byte, 27+len(bins))
 	payload[0] = packetType
 	payload[1] = 0x00
@@ -85,7 +87,7 @@ func EncodePAN(packetType uint8, seq uint8, panType uint8, receiver uint8, cente
 	binary.LittleEndian.PutUint32(payload[7:11], 0)
 	binary.LittleEndian.PutUint64(payload[11:19], uint64(centerFreqHz))
 	binary.LittleEndian.PutUint32(payload[19:23], uint32(spanOrRateKHz))
-	binary.LittleEndian.PutUint32(payload[23:27], uint32(noiseFloorRaw))
+	binary.LittleEndian.PutUint32(payload[23:27], uint32(field23))
 	copy(payload[27:], bins)
 	return EncodeFrame(payload)
 }

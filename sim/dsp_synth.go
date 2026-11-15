@@ -11,7 +11,7 @@ const (
 	PanByteOffset     = 162.0
 	MiniPanByteOffset = 118.0
 	AudioSampleRate   = 12000.0
-	K4AudioBasePeak   = 900.0 // 900 / 32768 * 32 = 0.879 (just under 0.9 softClip)
+	K4AudioBasePeak   = 410.0 // normalized ~0.12-0.15 RMS after client *32 gain
 )
 
 type synthSignal struct {
@@ -66,15 +66,50 @@ var simSignals = func() []synthSignal {
 	return sigs
 }()
 
-// SpectrumTierKHz picks the smallest K4 hardware sample-rate tier covering userSpanHz.
-func SpectrumTierKHz(userSpanHz int) int {
-	tiers := []int{24, 48, 96, 192, 384}
-	for _, t := range tiers {
-		if userSpanHz <= t*1000 {
-			return t
+// SpectrumTierKHzWithHysteresis picks the K4 5-tier hardware sample rate (kHz)
+// matching real-K4 hysteresis transition bands:
+//
+//	<=19000 -> 24, 20000..36000 -> 48, 37000..82000 -> 96,
+//	83000..172000 -> 192, >=176000 -> 384, holding prevTierKHz inside
+//	[19001..19999], [36001..36999], [82001..82999], [172001..175999] when bordering.
+func SpectrumTierKHzWithHysteresis(userSpanHz, prevTierKHz int) int {
+	switch {
+	case userSpanHz <= 19000:
+		return 24
+	case userSpanHz < 20000:
+		if prevTierKHz == 24 || prevTierKHz == 48 {
+			return prevTierKHz
 		}
+		return 24
+	case userSpanHz <= 36000:
+		return 48
+	case userSpanHz < 37000:
+		if prevTierKHz == 48 || prevTierKHz == 96 {
+			return prevTierKHz
+		}
+		return 48
+	case userSpanHz <= 82000:
+		return 96
+	case userSpanHz < 83000:
+		if prevTierKHz == 96 || prevTierKHz == 192 {
+			return prevTierKHz
+		}
+		return 96
+	case userSpanHz <= 172000:
+		return 192
+	case userSpanHz < 176000:
+		if prevTierKHz == 192 || prevTierKHz == 384 {
+			return prevTierKHz
+		}
+		return 192
+	default:
+		return 384
 	}
-	return 384
+}
+
+// SpectrumTierKHz picks the K4 hardware sample-rate tier covering userSpanHz with no prior state.
+func SpectrumTierKHz(userSpanHz int) int {
+	return SpectrumTierKHzWithHysteresis(userSpanHz, 0)
 }
 
 // DisplayMarkerHz computes the K4 panadapter center RF frequency for rxState.
@@ -231,24 +266,22 @@ func synthBins(centerHz int64, totalSpanHz float64, byteOffset float64, tSec flo
 	return bins
 }
 
-// SynthPAN builds a 1024-bin 0x02 PAN spectrum around rx's display center.
+// SynthPAN builds a 1024-bin 0x02 PAN spectrum centered on rx.FreqHz (VFO RF in all modes).
 func SynthPAN(rx RxState, cwPitchHz int, tSec float64, rng *rand.Rand) (centerHz int64, tierKHz int32, noiseFloorRaw int32, bins []byte) {
-	centerHz = DisplayMarkerHz(rx.FreqHz, rx.Mode, cwPitchHz)
-	tier := SpectrumTierKHz(rx.PanSpanHz)
+	centerHz = rx.FreqHz
+	tier := SpectrumTierKHzWithHysteresis(rx.PanSpanHz, rx.PanTierKHz)
 	tierKHz = int32(tier)
 	noiseFloorRaw = -1200 // -120.0 dBm * 10
 	bins = synthBins(centerHz, float64(tier)*1000.0, PanByteOffset, tSec, rng)
 	return
 }
 
-// SynthMiniPAN builds a 1024-bin 0x03 MiniPAN zoomed loupe spectrum.
+// SynthMiniPAN builds a 1024-bin 0x03 MiniPAN zoomed loupe centered on DisplayMarkerHz
+// with 6 kHz span in CW/CW-R and 12 kHz span in all other modes.
 func SynthMiniPAN(rx RxState, cwPitchHz int, tSec float64, rng *rand.Rand) (centerHz int64, spanKHz int32, bins []byte) {
 	centerHz = DisplayMarkerHz(rx.FreqHz, rx.Mode, cwPitchHz)
-	span := rx.PanSpanHz / 1000
-	if span > 24 {
-		span = 24
-	}
-	if span < 6 {
+	span := 12
+	if rx.Mode == ModeCW || rx.Mode == ModeCWR {
 		span = 6
 	}
 	spanKHz = int32(span)
@@ -353,34 +386,20 @@ func signalAudioGain(peakDbm float64) float64 {
 	return norm * 0.75
 }
 
-// SynthAudio synthesizes 12 kHz stereo PCM audio at K4 1/32 scale (EM1 S16LE or EM0 S32LE).
-func (a *AudioSynth) SynthAudio(rxA, rxB RxState, subRxEnabled bool, cwPitchHz int, encodeMode uint8, samplesPerCh int, tSec float64) []byte {
+// SynthAudioFloat synthesizes 12 kHz interleaved stereo float32 PCM at K4 1/32 scale.
+func (a *AudioSynth) SynthAudioFloat(rxA, rxB RxState, subRxEnabled bool, cwPitchHz int, samplesPerCh int, tSec float64) []float32 {
 	type activeTone struct {
 		idx     int
 		audioHz float64
 		amp     float64
 	}
-	lowA, highA := PassbandRangeHz(rxA, cwPitchHz)
-	var tonesA []activeTone
-	for idx, s := range simSignals {
-		if s.freqHz >= lowA-150 && s.freqHz <= highA+150 {
-			if af, ok := rxAudioFreqHz(rxA, s.freqHz); ok {
-				tonesA = append(tonesA, activeTone{
-					idx:     idx,
-					audioHz: af,
-					amp:     signalAudioGain(s.peakDbm) * signalEnvelope(s, tSec),
-				})
-			}
-		}
-	}
-
-	var tonesB []activeTone
-	if subRxEnabled {
-		lowB, highB := PassbandRangeHz(rxB, cwPitchHz)
+	collectTones := func(rx RxState) []activeTone {
+		low, high := PassbandRangeHz(rx, cwPitchHz)
+		var tones []activeTone
 		for idx, s := range simSignals {
-			if s.freqHz >= lowB-150 && s.freqHz <= highB+150 {
-				if af, ok := rxAudioFreqHz(rxB, s.freqHz); ok {
-					tonesB = append(tonesB, activeTone{
+			if s.freqHz >= low-150 && s.freqHz <= high+150 {
+				if af, ok := rxAudioFreqHz(rx, s.freqHz); ok {
+					tones = append(tones, activeTone{
 						idx:     idx,
 						audioHz: af,
 						amp:     signalAudioGain(s.peakDbm) * signalEnvelope(s, tSec),
@@ -388,8 +407,83 @@ func (a *AudioSynth) SynthAudio(rxA, rxB RxState, subRxEnabled bool, cwPitchHz i
 				}
 			}
 		}
+		return tones
 	}
 
+	tonesA := collectTones(rxA)
+	scaleA := 1.0
+	if len(tonesA) > 1 {
+		scaleA = 1.0 / math.Sqrt(float64(len(tonesA)))
+	}
+
+	var tonesB []activeTone
+	scaleB := 1.0
+	if subRxEnabled {
+		tonesB = collectTones(rxB)
+		if len(tonesB) > 1 {
+			scaleB = 1.0 / math.Sqrt(float64(len(tonesB)))
+		}
+	}
+
+	out := make([]float32, samplesPerCh*2)
+	const scaleFloat = K4AudioBasePeak / 32768.0
+
+	for i := 0; i < samplesPerCh; i++ {
+		var sigA float64
+		for _, t := range tonesA {
+			sigA += math.Sin(a.phasesA[t.idx]) * t.amp
+			a.phasesA[t.idx] += 2.0 * math.Pi * t.audioHz / AudioSampleRate
+			if a.phasesA[t.idx] > 2.0*math.Pi {
+				a.phasesA[t.idx] -= 2.0 * math.Pi
+			}
+		}
+		sampleA := a.nextNoise()*0.04 + sigA*scaleA
+
+		var sampleB float64
+		if subRxEnabled {
+			var sigB float64
+			for _, t := range tonesB {
+				sigB += math.Sin(a.phasesB[t.idx]) * t.amp
+				a.phasesB[t.idx] += 2.0 * math.Pi * t.audioHz / AudioSampleRate
+				if a.phasesB[t.idx] > 2.0*math.Pi {
+					a.phasesB[t.idx] -= 2.0 * math.Pi
+				}
+			}
+			sampleB = a.nextNoise()*0.04 + sigB*scaleB
+		}
+
+		out[i*2] = float32(clampFloat(sampleA, -1.0, 1.0) * scaleFloat)
+		out[i*2+1] = float32(clampFloat(sampleB, -1.0, 1.0) * scaleFloat)
+	}
+	return out
+}
+
+// Upsample4xStereo linearly upsamples 12 kHz interleaved stereo float32 PCM 4x to 48 kHz,
+// carrying prev across packet boundaries to eliminate clicks.
+func Upsample4xStereo(pcm12k []float32, prev [2]float32) ([]float32, [2]float32) {
+	frames := len(pcm12k) / 2
+	out := make([]float32, frames*8)
+	prevL, prevR := prev[0], prev[1]
+	for i := 0; i < frames; i++ {
+		curL := pcm12k[i*2]
+		curR := pcm12k[i*2+1]
+		base := i * 8
+		out[base+0] = 0.75*prevL + 0.25*curL
+		out[base+1] = 0.75*prevR + 0.25*curR
+		out[base+2] = 0.50*prevL + 0.50*curL
+		out[base+3] = 0.50*prevR + 0.50*curR
+		out[base+4] = 0.25*prevL + 0.75*curL
+		out[base+5] = 0.25*prevR + 0.75*curR
+		out[base+6] = curL
+		out[base+7] = curR
+		prevL, prevR = curL, curR
+	}
+	return out, [2]float32{prevL, prevR}
+}
+
+// QuantizeFloatToPCM packs interleaved stereo float32 samples into EM0 (S32LE 24-in-32) or EM1 (S16LE).
+func QuantizeFloatToPCM(f32 []float32, encodeMode uint8) []byte {
+	samplesPerCh := len(f32) / 2
 	bytesPerFrame := 4
 	if encodeMode == 0 {
 		bytesPerFrame = 8
@@ -397,30 +491,8 @@ func (a *AudioSynth) SynthAudio(rxA, rxB RxState, subRxEnabled bool, cwPitchHz i
 	out := make([]byte, samplesPerCh*bytesPerFrame)
 
 	for i := 0; i < samplesPerCh; i++ {
-		sampleA := a.nextNoise() * 0.04
-		for _, t := range tonesA {
-			sampleA += math.Sin(a.phasesA[t.idx]) * t.amp
-			a.phasesA[t.idx] += 2.0 * math.Pi * t.audioHz / AudioSampleRate
-			if a.phasesA[t.idx] > 2.0*math.Pi {
-				a.phasesA[t.idx] -= 2.0 * math.Pi
-			}
-		}
-
-		var sampleB float64
-		if subRxEnabled {
-			sampleB = a.nextNoise() * 0.04
-			for _, t := range tonesB {
-				sampleB += math.Sin(a.phasesB[t.idx]) * t.amp
-				a.phasesB[t.idx] += 2.0 * math.Pi * t.audioHz / AudioSampleRate
-				if a.phasesB[t.idx] > 2.0*math.Pi {
-					a.phasesB[t.idx] -= 2.0 * math.Pi
-				}
-			}
-		}
-
-		// Scale at K4 1/32 amplitude (~900 peak in S16LE)
-		valA := int32(math.Round(clampFloat(sampleA, -1.0, 1.0) * K4AudioBasePeak))
-		valB := int32(math.Round(clampFloat(sampleB, -1.0, 1.0) * K4AudioBasePeak))
+		valA := int32(math.Round(float64(f32[i*2]) * 32768.0))
+		valB := int32(math.Round(float64(f32[i*2+1]) * 32768.0))
 
 		if encodeMode == 0 {
 			off := i * 8
@@ -433,6 +505,12 @@ func (a *AudioSynth) SynthAudio(rxA, rxB RxState, subRxEnabled bool, cwPitchHz i
 		}
 	}
 	return out
+}
+
+// SynthAudio synthesizes 12 kHz stereo PCM audio at K4 1/32 scale (EM1 S16LE or EM0 S32LE).
+func (a *AudioSynth) SynthAudio(rxA, rxB RxState, subRxEnabled bool, cwPitchHz int, encodeMode uint8, samplesPerCh int, tSec float64) []byte {
+	f32 := a.SynthAudioFloat(rxA, rxB, subRxEnabled, cwPitchHz, samplesPerCh, tSec)
+	return QuantizeFloatToPCM(f32, encodeMode)
 }
 
 func clampFloat(x, lo, hi float64) float64 {
