@@ -326,9 +326,8 @@
   display: flex;
   flex-direction: column;
   justify-content: center;
-  gap: 3px;
-  min-width: 184px;
-  width: auto;
+  gap: 2px;
+  width: 236px;
   flex: 0 0 auto;
   padding: 3px 7px;
   border-radius: var(--radius-sm);
@@ -336,12 +335,84 @@
   background: rgba(17, 24, 39, 0.55);
 }
 
+.k4-smeter-slot.is-dual-rx {
+  width: 392px;
+}
+
+.k4-smeter-blocks {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 2px;
+  width: 100%;
+  min-width: 0;
+}
+
+.k4-smeter-slot.is-dual-rx .k4-smeter-blocks {
+  grid-template-columns: minmax(0, 1.48fr) minmax(0, 1fr);
+  gap: 5px;
+  align-items: center;
+}
+
+.k4-smeter-slot.is-dual-rx .k4-smeter-head {
+  gap: 3px;
+}
+
+.k4-smeter-block {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.k4-smeter-slot.is-dual-rx .k4-smeter-block-b {
+  padding-left: 6px;
+  border-left: 1px solid var(--border-hairline);
+}
+
 .k4-smeter-head {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 4px;
+  justify-content: flex-start;
+  gap: 3px;
   white-space: nowrap;
+  min-width: 0;
+}
+
+.k4-smeter-vfo-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  border-radius: 3px;
+  border: 1px solid transparent;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 800;
+  line-height: 1;
+  flex: 0 0 auto;
+}
+
+.k4-smeter-vfo-badge--a {
+  color: var(--accent-vfo-a);
+  background: var(--accent-vfo-a-soft);
+  border-color: var(--accent-vfo-a-border);
+}
+
+.k4-smeter-vfo-badge--b {
+  color: var(--accent-vfo-b);
+  background: var(--accent-vfo-b-soft);
+  border-color: var(--accent-vfo-b-border);
+}
+
+.k4-smeter-block.is-target .k4-smeter-vfo-badge--a {
+  background: rgba(56, 189, 248, 0.28);
+  border-color: var(--accent-vfo-a);
+}
+
+.k4-smeter-block.is-target .k4-smeter-vfo-badge--b {
+  background: rgba(245, 158, 11, 0.28);
+  border-color: var(--accent-vfo-b);
 }
 
 @keyframes k4-tx-icon-flash {
@@ -393,6 +464,10 @@
 }
 
 .k4-smeter-dbm {
+  display: inline-flex;
+  align-items: baseline;
+  justify-content: flex-end;
+  margin-left: auto;
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
   font-size: 10px;
@@ -402,10 +477,36 @@
   flex: 0 0 auto;
 }
 
+.k4-smeter-slot.is-dual-rx .k4-smeter-dbm {
+  font-size: 9px;
+}
+
+.k4-smeter-sunit {
+  display: inline-block;
+  width: 5.2ch;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.k4-smeter-sep {
+  display: inline-block;
+  width: 1.8ch;
+  text-align: center;
+  white-space: nowrap;
+  color: var(--text-dim);
+}
+
+.k4-smeter-dbm-num {
+  display: inline-block;
+  width: 8.2ch;
+  text-align: right;
+  white-space: nowrap;
+}
+
 .k4-smeter-track {
   position: relative;
   width: 100%;
-  height: 6px;
+  height: 5px;
   border-radius: 3px;
   background: rgba(148, 163, 184, 0.14);
   overflow: hidden;
@@ -420,6 +521,10 @@
   border-radius: 3px;
   background: linear-gradient(90deg, #10B981 0%, #38BDF8 55%, #F59E0B 72%, #F43F5E 100%);
   transition: width 70ms linear;
+}
+
+.k4-smeter-fill--b {
+  background: linear-gradient(90deg, #F59E0B 0%, #FBBF24 58%, #FB923C 76%, #F43F5E 100%);
 }
 
 .k4-smeter-peak {
@@ -447,25 +552,9 @@
   display: flex;
   justify-content: space-between;
   font-family: var(--font-mono);
-  font-size: 9px;
+  font-size: 8.5px;
   color: var(--text-dim);
   line-height: 1;
-}
-
-.k4-smeter-sub {
-  position: relative;
-  width: 100%;
-  height: 2px;
-  border-radius: 2px;
-  background: rgba(245, 158, 11, 0.15);
-  overflow: hidden;
-}
-
-.k4-smeter-sub-fill {
-  height: 100%;
-  width: 0%;
-  background: var(--accent-vfo-b);
-  transition: width 70ms linear;
 }
 
 @media (min-width: 1160px) and (max-width: 1379px) {
@@ -474,8 +563,34 @@
   }
 
   .k4-smeter-slot {
-    min-width: 146px;
-    width: auto;
+    width: 216px;
+  }
+
+  .k4-smeter-slot.is-dual-rx {
+    width: 364px;
+    padding: 3px 6px;
+  }
+
+  .k4-smeter-slot.is-dual-rx .k4-smeter-block-b {
+    padding-left: 5px;
+  }
+
+  .k4-smeter-slot.is-dual-rx .k4-smeter-head {
+    gap: 2px;
+  }
+
+  .k4-smeter-slot.is-dual-rx .k4-smeter-dbm {
+    font-size: 8.5px;
+  }
+
+  .k4-smeter-slot.is-dual-rx .k4-tx-vfo-ind {
+    font-size: 9px;
+  }
+
+  .k4-smeter-slot.is-dual-rx .k4-smeter-mode-btn,
+  .k4-smeter-slot.is-dual-rx .k4-smeter-ovf-badge {
+    padding: 0 3px;
+    font-size: 8px;
   }
 }
 
@@ -489,17 +604,65 @@
   }
 
   .k4-smeter-slot {
-    min-width: 112px;
-    width: 120px;
+    width: 204px;
+  }
+
+  .k4-smeter-slot.is-dual-rx {
+    width: 364px;
+    padding: 3px 6px;
+  }
+
+  .k4-smeter-slot.is-dual-rx .k4-smeter-block-b {
+    padding-left: 5px;
+  }
+
+  .k4-smeter-slot.is-dual-rx .k4-smeter-head {
+    gap: 2px;
+  }
+
+  .k4-smeter-slot.is-dual-rx .k4-smeter-dbm {
+    font-size: 8.5px;
+  }
+
+  .k4-smeter-slot.is-dual-rx .k4-tx-vfo-ind {
+    font-size: 9px;
+  }
+
+  .k4-smeter-slot.is-dual-rx .k4-smeter-mode-btn,
+  .k4-smeter-slot.is-dual-rx .k4-smeter-ovf-badge {
+    padding: 0 3px;
+    font-size: 8px;
   }
 }
 
 @media (max-width: 959px) {
-  .k4-smeter-slot {
-    min-width: 82px;
-    width: auto;
+  .k4-smeter-slot,
+  .k4-smeter-slot.is-dual-rx {
+    width: 196px;
     padding: 2px 5px;
     flex: 0 0 auto;
+  }
+
+  .k4-smeter-slot.is-dual-rx .k4-smeter-blocks {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 3px;
+  }
+
+  .k4-smeter-slot.is-dual-rx .k4-smeter-block-b {
+    padding-left: 0;
+    border-left: none;
+    padding-top: 2px;
+    border-top: 1px solid var(--border-hairline);
+  }
+
+  .k4-smeter-vfo-badge {
+    width: 13px;
+    height: 13px;
+    font-size: 8.5px;
+  }
+
+  .k4-smeter-track {
+    height: 4px;
   }
 
   .k4-tx-vfo-ind {
@@ -525,14 +688,25 @@
     font-size: 13px;
   }
 
-  .k4-smeter-slot {
-    min-width: 78px;
+  .k4-smeter-slot,
+  .k4-smeter-slot.is-dual-rx {
+    width: 164px;
     padding: 2px 4px;
   }
 
+  .k4-smeter-vfo-badge {
+    width: 12px;
+    height: 12px;
+    font-size: 8px;
+  }
+
+  .k4-tx-vfo-ind {
+    font-size: 8.5px;
+  }
+
   .k4-smeter-dbm {
-    font-size: 9px;
-    letter-spacing: -0.03em;
+    font-size: 8.5px;
+    letter-spacing: -0.01em;
   }
 }
 
@@ -809,12 +983,13 @@
 
 .k4-ticker-select {
   height: 20px;
-  max-width: 112px;
+  max-width: 132px;
   padding: 0 4px;
   border-radius: var(--radius-xs);
   border: 1px solid var(--border-hairline);
-  background: var(--bg-control);
-  color: var(--text-secondary);
+  background-color: #111827;
+  color: #F1F5F9;
+  color-scheme: dark;
   font-size: 10px;
   font-weight: 600;
   cursor: pointer;
@@ -1590,6 +1765,24 @@
   font-size: 13px;
 }
 
+.k4-select {
+  background-color: #111827;
+  color: #F1F5F9;
+  color-scheme: dark;
+}
+
+.k4-select option,
+.k4-ticker-select option {
+  background-color: #111827;
+  color: #F1F5F9;
+}
+
+.k4-select option:disabled,
+.k4-ticker-select option:disabled {
+  background-color: #0E131D;
+  color: #64748B;
+}
+
 .k4-input:focus,
 .k4-select:focus {
   outline: none;
@@ -1745,15 +1938,18 @@
 .k4-smeter-ovf {
   display: inline-flex;
   align-items: center;
-  padding: 1px 6px;
-  margin-right: 6px;
-  border-radius: 4px;
+  justify-content: center;
+  height: 14px;
+  padding: 0 4px;
+  border-radius: 3px;
   border: 1px solid var(--accent-danger-border);
   background: var(--accent-danger-soft);
   color: #FFE4E6;
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.05em;
+  font-size: 8.5px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  line-height: 1;
+  flex: 0 0 auto;
 }
 
 .k4-vfo-rit-badge {
@@ -2267,7 +2463,7 @@
    Dual-Mode S-Meter / TX Meter Cluster
    ========================================================================= */
 .k4-meter-mode-btn {
-  height: 14px;
+  height: 13px;
   padding: 0 4px;
   border-radius: var(--radius-pill);
   border: 1px solid var(--border-subtle);
@@ -2292,7 +2488,8 @@
   color: #FDA4AF;
 }
 
-.k4-smeter-rx-pane[hidden],
+.k4-smeter-blocks[hidden],
+.k4-smeter-block[hidden],
 .k4-tx-meter-cluster[hidden] {
   display: none !important;
 }
@@ -2300,22 +2497,29 @@
 .k4-tx-meter-cluster {
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  min-width: 136px;
+  gap: 1px;
+  width: 100%;
+  min-width: 0;
 }
 
 .k4-tx-meter-head {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 6px;
+  justify-content: flex-start;
+  gap: 4px;
+  min-width: 0;
+  line-height: 1;
+  white-space: nowrap;
 }
 
 .k4-tx-meter-tag {
-  font-size: 9px;
+  margin-left: auto;
+  font-size: 8.5px;
   font-weight: 800;
-  letter-spacing: 0.07em;
+  letter-spacing: 0.06em;
+  line-height: 1;
   color: #FDA4AF;
+  white-space: nowrap;
 }
 
 .k4-tx-meter-tag.is-test {
@@ -2325,24 +2529,25 @@
 .k4-tx-meter-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 3px 8px;
+  gap: 1px 6px;
 }
 
 .k4-tx-bar-cell {
   display: flex;
   flex-direction: column;
   gap: 1px;
+  min-width: 0;
 }
 
 .k4-tx-bar-meta {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  gap: 4px;
+  gap: 3px;
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
-  font-size: 9.5px;
-  line-height: 1.1;
+  font-size: 8.5px;
+  line-height: 1;
 }
 
 .k4-tx-bar-lbl {
@@ -2351,14 +2556,18 @@
 }
 
 .k4-tx-bar-val {
+  display: inline-block;
+  width: 6.2ch;
+  text-align: right;
+  white-space: nowrap;
   color: var(--text-primary);
   font-weight: 700;
 }
 
 .k4-tx-bar-track {
   position: relative;
-  height: 5px;
-  border-radius: 3px;
+  height: 3px;
+  border-radius: 2px;
   background: rgba(255, 255, 255, 0.08);
   overflow: hidden;
 }
@@ -2666,14 +2875,6 @@
   width: 100%;
 }
 
-.k4-sensor-tile-hint {
-  font-size: 9px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: rgba(125, 211, 252, 0.65);
-}
-
 .k4-sensor-tile-lbl {
   font-size: 10px;
   font-weight: 600;
@@ -2795,7 +2996,7 @@
   color: #7DD3FC;
 }
 
-@media (max-width: 1480px) {
+@media (max-width: 1660px) {
   .k4-tx-posture-bar .k4-rx-badge-text {
     display: none;
   }
@@ -2809,6 +3010,18 @@
     min-width: 36px;
     padding: 0 6px;
     font-size: 9.5px;
+  }
+}
+
+@media (max-width: 440px) {
+  .k4-meter-mode-btn {
+    height: 13px;
+    padding: 0 3px;
+    font-size: 8px;
+  }
+
+  .k4-tx-bar-meta {
+    font-size: 8.5px;
   }
 }
 
