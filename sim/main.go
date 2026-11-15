@@ -14,6 +14,7 @@ import (
 	"os/signal"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -23,14 +24,16 @@ type ServerConfig struct {
 	Password    string
 	FPS         int
 	ControlHTTP string
+	RxOnly      bool
 }
 
 type SimServer struct {
-	cfg      ServerConfig
-	radio    *Radio
-	listener net.Listener
-	httpSrv  *http.Server
-	startAt  time.Time
+	cfg         ServerConfig
+	radio       *Radio
+	listener    net.Listener
+	httpSrv     *http.Server
+	startAt     time.Time
+	activeConns int64
 }
 
 func NewSimServer(cfg ServerConfig) (*SimServer, error) {
@@ -44,9 +47,13 @@ func NewSimServer(cfg ServerConfig) (*SimServer, error) {
 	if err != nil {
 		return nil, err
 	}
+	radio := NewRadio()
+	if cfg.RxOnly {
+		radio.AllowTx = false
+	}
 	s := &SimServer{
 		cfg:      cfg,
-		radio:    NewRadio(),
+		radio:    radio,
 		listener: ln,
 		startAt:  time.Now(),
 	}
@@ -157,6 +164,13 @@ func (s *SimServer) handleConn(ctx context.Context, conn net.Conn) {
 	s.radio.RecordAuthResult(true)
 	_ = conn.SetReadDeadline(time.Time{})
 
+	atomic.AddInt64(&s.activeConns, 1)
+	defer func() {
+		if atomic.AddInt64(&s.activeConns, -1) == 0 {
+			s.radio.ForceRx()
+		}
+	}()
+
 	var writeMu sync.Mutex
 	writePacket := func(pkt []byte) error {
 		writeMu.Lock()
@@ -173,9 +187,9 @@ func (s *SimServer) handleConn(ctx context.Context, conn net.Conn) {
 	// even before RDY; finishes, or when RDY; arrives right after.
 	_ = writePacket(EncodeCAT("IDK4-SIM;"))
 
-	// Start PAN/MiniPAN, Audio, S-meter, and TB$ streaming loops
+	// Start PAN/MiniPAN, Audio, S-meter, TB$, and 10 Hz TX/ATU streaming loops
 	var streamWg sync.WaitGroup
-	streamWg.Add(3)
+	streamWg.Add(4)
 
 	// 1. PAN + MiniPAN loop at configured FPS (dynamically honors #FPS and #FRZ)
 	go func() {
@@ -335,13 +349,16 @@ func (s *SimServer) handleConn(ctx context.Context, conn net.Conn) {
 					sb.WriteString(fmt.Sprintf("OV$%d0;", ovB))
 				}
 				// Emit TB/TB$ quickly at startup (tick 2) and every 2.5s thereafter when near beacon
+				txBufDigit := s.radio.TxBufferDigit()
 				if tickCount == 2 || tickCount%10 == 0 {
 					if NearBeacon(rxA.FreqHz) {
-						sb.WriteString("TB020CQ DE W6ELE K ; 73 ;;")
+						sb.WriteString(fmt.Sprintf("TB%d20CQ DE W6ELE K ; 73 ;;", txBufDigit))
 					}
 					if NearBeacon(rxB.FreqHz) {
-						sb.WriteString("TB$020CQ DE W6ELE K ; 73 ;;")
+						sb.WriteString(fmt.Sprintf("TB$%d20CQ DE W6ELE K ; 73 ;;", txBufDigit))
 					}
+				}
+				if tickCount == 2 || tickCount%4 == 0 || s.radio.IsTxOrAtuActive() {
 					if siCat := s.radio.PeriodicSystemInfoCAT(tSec); siCat != "" {
 						sb.WriteString(siCat)
 					}
@@ -354,7 +371,28 @@ func (s *SimServer) handleConn(ctx context.Context, conn net.Conn) {
 		}
 	}()
 
-	// Reader loop: parse incoming framed CAT packets
+	// 4. TX/ATU/Keyer/Telemetry loop at 10 Hz
+	go func() {
+		defer streamWg.Done()
+		ticker := time.NewTicker(100 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-connCtx.Done():
+				return
+			case <-ticker.C:
+				tSec := time.Since(s.startAt).Seconds()
+				if txCat := s.radio.StepTx(tSec); txCat != "" {
+					if err := writePacket(EncodeCAT(txCat)); err != nil {
+						cancelConn()
+						return
+					}
+				}
+			}
+		}
+	}()
+
+	// Reader loop: parse incoming framed CAT and TX audio packets
 	framer := &StreamFramer{}
 	readBuf := make([]byte, 4096)
 	for {
@@ -363,22 +401,30 @@ func (s *SimServer) handleConn(ctx context.Context, conn net.Conn) {
 			payloads := framer.Push(readBuf[:n])
 			tSec := time.Since(s.startAt).Seconds()
 			for _, p := range payloads {
-				if len(p) < 3 || p[0] != TypeCAT {
+				if len(p) < 1 {
 					continue
 				}
-				catASCII := string(p[3:])
-				reply, closeRequested := s.radio.HandleCAT(catASCII, tSec)
-				if reply != "" {
-					if werr := writePacket(EncodeCAT(reply)); werr != nil {
+				switch p[0] {
+				case TypeAudio:
+					s.radio.HandleInboundAudio(p, tSec)
+				case TypeCAT:
+					if len(p) < 3 {
+						continue
+					}
+					catASCII := string(p[3:])
+					reply, closeRequested := s.radio.HandleCAT(catASCII, tSec)
+					if reply != "" {
+						if werr := writePacket(EncodeCAT(reply)); werr != nil {
+							cancelConn()
+							streamWg.Wait()
+							return
+						}
+					}
+					if closeRequested {
 						cancelConn()
 						streamWg.Wait()
 						return
 					}
-				}
-				if closeRequested {
-					cancelConn()
-					streamWg.Wait()
-					return
 				}
 			}
 		}
@@ -395,6 +441,7 @@ func main() {
 	password := flag.String("password", "", "Optional K4 network password")
 	fps := flag.Int("fps", 20, "Panadapter frame rate (1..30)")
 	controlHTTP := flag.String("control-http", "127.0.0.1:19206", "Optional HTTP debug stats address (empty disables)")
+	rxOnly := flag.Bool("rx-only", false, "Disable operational TX commands (strict RX-only mode)")
 	flag.Parse()
 
 	srv, err := NewSimServer(ServerConfig{
@@ -402,11 +449,12 @@ func main() {
 		Password:    *password,
 		FPS:         *fps,
 		ControlHTTP: *controlHTTP,
+		RxOnly:      *rxOnly,
 	})
 	if err != nil {
 		log.Fatalf("failed to start k4sim: %v", err)
 	}
-	log.Printf("k4sim listening on tcp://%s (fps=%d, control-http=%q)", srv.Addr(), *fps, *controlHTTP)
+	log.Printf("k4sim listening on tcp://%s (fps=%d, control-http=%q, rx-only=%v)", srv.Addr(), *fps, *controlHTTP, *rxOnly)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()

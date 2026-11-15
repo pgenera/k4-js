@@ -406,7 +406,7 @@ def run_browser_unit_tests(client: MarionetteClient):
         lambda: client.execute_script("return window.__K4_TEST_RESULTS__ || null;"),
         "window.__K4_TEST_RESULTS__",
     )
-    assert results["total"] >= 8, f"Expected >= 8 unit tests, got {results}"
+    assert results["total"] >= 28, f"Expected >= 28 unit tests, got {results}"
     assert results["failed"] == 0, f"Browser unit tests failed: {results}"
     errs = client.collect_console_errors()
     assert not errs, f"Console errors during test.html: {errs}"
@@ -770,6 +770,7 @@ def run_file_origin_e2e(client: MarionetteClient, ws_url: str, password: str, st
     )
     stats = http_get_json(stats_url)
     assert stats["txBlockedViolations"] == 0, f"TX leaked to simulator! stats={stats}"
+    assert stats["txCatCommands"] == 0, f"TX CAT command leaked in rx-only posture! stats={stats}"
     assert stats["authPassed"] >= 1 and stats["authFailed"] == 0, f"Unexpected auth stats: {stats}"
 
     errs = client.collect_console_errors()
@@ -780,13 +781,19 @@ def run_file_origin_e2e(client: MarionetteClient, ws_url: str, password: str, st
 def run_http_origin_and_screenshots(
     client: MarionetteClient, http_url: str, ws_url_expected: str, password: str, stats_url: str, out_dir: str
 ):
-    print(f"[3/3] Running HTTP E2E & screenshots on {http_url} ...")
+    print(f"[3/3] Running cert-free localhost HTTP + TX/ATU/Sensor E2E & screenshots on {http_url} ...")
     client.set_window_rect(1440, 900)
     client.reset_console_errors()
     client.navigate(http_url)
     client.install_page_error_trap()
 
-    default_ws = client.execute_script("return K4.Client.defaultWsUrl();")
+    # (a) Cert-free localhost SecureContext & defaultWsUrl
+    sec_info = client.execute_script(
+        "return { isSecure: window.isSecureContext === true, proto: location.protocol, host: location.hostname, defaultWs: K4.Client.defaultWsUrl() };"
+    )
+    assert sec_info["isSecure"] is True, f"Expected window.isSecureContext === true on localhost without certs: {sec_info}"
+    assert sec_info["proto"] == "http:" and sec_info["host"] == "localhost", f"Unexpected origin: {sec_info}"
+    default_ws = sec_info["defaultWs"]
     assert default_ws == ws_url_expected, f"Expected defaultWsUrl={ws_url_expected}, got {default_ws}"
 
     connect_via_ui(client, default_ws, password)
@@ -799,12 +806,301 @@ def run_http_origin_and_screenshots(
         timeout=10.0,
     )
     verify_non_uniform_canvas(client)
+
+    # (b) Verify TX resets to rx-only on connect; then TX TEST (TS1) + two-tone PTT hold
+    rx_boot = client.execute_script(
+        """
+        const snap = globalThis.k4App.state.getSnapshot();
+        const bar = document.querySelector('[data-testid="tx-posture-bar"]');
+        const ptt = document.querySelector('[data-testid="ptt-btn"]');
+        return {
+          posture: snap.txPosture,
+          policy: snap.operatingPolicy,
+          txActive: snap.txActive,
+          barPosture: bar ? bar.dataset.posture : null,
+          pttDisabled: ptt ? ptt.disabled : null,
+        };
+        """
+    )
+    assert rx_boot["posture"] == "rx-only" and rx_boot["policy"] == "rx-only", f"TX posture not rx-only on connect: {rx_boot}"
+    assert rx_boot["txActive"] is False and rx_boot["barPosture"] == "rx-only" and rx_boot["pttDisabled"] is True, (
+        f"Unexpected TX boot UI state: {rx_boot}"
+    )
+
+    # Ensure USB mode for voice/AF two-tone TX capture and open TX / ATU drawer tab
+    client.execute_script(
+        """
+        globalThis.k4App.client.setMode('A', 'USB');
+        const btns = Array.from(document.querySelectorAll('.k4-panel-tabs .k4-tab-btn'));
+        const txTab = btns.find((b) => b.textContent.includes('TX'));
+        if (!txTab) throw new Error('TX / ATU tab button missing');
+        txTab.click();
+        const srcSel = document.querySelector('[data-testid="tx-audio-source"]');
+        if (!srcSel) throw new Error('tx-audio-source select missing');
+        srcSel.value = 'two-tone';
+        srcSel.dispatchEvent(new Event('change', { bubbles: true }));
+        """
+    )
+    wait_until(
+        lambda: client.execute_script("return globalThis.k4App.state.getSnapshot().rxA.mode === 2;"),
+        "VFO A switched to USB mode for TX audio test",
+    )
+
+    # Switch to TX TEST (TS1)
+    client.click_element(client.find_element('[data-testid="tx-mode-test"]'))
+    wait_until(
+        lambda: client.execute_script(
+            """
+            const snap = globalThis.k4App.state.getSnapshot();
+            const ptt = document.querySelector('[data-testid="ptt-btn"]');
+            return snap.txPosture === 'tx-test' && snap.txTestMode === true && ptt && ptt.disabled === false;
+            """
+        )
+        and http_get_json(stats_url)["txTestMode"] is True,
+        "TX TEST (TS1) posture active",
+    )
+
+    audio_before = http_get_json(stats_url)["txAudioPacketsIn"]
+    ptt_coords = client.execute_script(
+        """
+        const ptt = document.querySelector('[data-testid="ptt-btn"]');
+        const r = ptt.getBoundingClientRect();
+        return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
+        """
+    )
+    # Hold PTT via WebDriver pointerDown
+    client.perform_actions(
+        [
+            {
+                "type": "pointer",
+                "id": "mouse",
+                "parameters": {"pointerType": "mouse"},
+                "actions": [
+                    {"type": "pointerMove", "duration": 0, "x": ptt_coords["x"], "y": ptt_coords["y"], "origin": "viewport"},
+                    {"type": "pointerDown", "button": 0},
+                ],
+            }
+        ]
+    )
+    try:
+        wait_until(
+            lambda: (
+                (st := http_get_json(stats_url))["txActive"] is True
+                and st["txTestMode"] is True
+                and st["txAudioPacketsIn"] > audio_before
+                and st["lastAlcBars"] > 0
+                and st["lastFwdTenthsW"] == 0
+                and client.execute_script(
+                    """
+                    const snap = globalThis.k4App.state.getSnapshot();
+                    const cl = document.querySelector('[data-testid="tx-meter-cluster"]');
+                    const pwr = document.querySelector('[data-testid="tx-meter-pwr"]');
+                    return snap.txActive === true && snap.txMeters.alcBars > 0 && snap.txMeters.fwdWatts === 0 &&
+                           cl && !cl.hidden && pwr && pwr.textContent.includes('0.0W');
+                    """
+                )
+            ),
+            "TX TEST hold-PTT transmits two-tone audio with ALC > 0 & FWD == 0.0W",
+            timeout=6.0,
+        )
+    finally:
+        client.perform_actions(
+            [
+                {
+                    "type": "pointer",
+                    "id": "mouse",
+                    "parameters": {"pointerType": "mouse"},
+                    "actions": [{"type": "pointerUp", "button": 0}],
+                }
+            ]
+        )
+        client.release_actions()
+
+    wait_until(
+        lambda: http_get_json(stats_url)["txActive"] is False
+        and client.execute_script(
+            "const s = globalThis.k4App.state.getSnapshot(); return s.txActive === false && s.txMeters.fwdWatts === 0;"
+        ),
+        "PTT release drops TX TEST to RX immediately",
+    )
+
+    # (c) 2-step Arm live TX popover + KAT4 ATU Tune + Full Search Escape panic abort
+    client.click_element(client.find_element('[data-testid="tx-mode-armed"]'))
+    wait_until(
+        lambda: client.execute_script(
+            """
+            const pop = document.querySelector('[data-testid="tx-arm-confirm"]');
+            const s = globalThis.k4App.state.getSnapshot();
+            return pop && pop.hidden === false && s.txPosture !== 'tx-armed';
+            """
+        ),
+        "2-step TX arm confirmation popover opens before arming",
+    )
+    client.click_element(client.find_element('[data-testid="tx-arm-confirm-btn"]'))
+    wait_until(
+        lambda: client.execute_script(
+            """
+            const pop = document.querySelector('[data-testid="tx-arm-confirm"]');
+            const s = globalThis.k4App.state.getSnapshot();
+            return pop && pop.hidden === true && s.txPosture === 'tx-armed' && s.txTestMode === false;
+            """
+        )
+        and http_get_json(stats_url)["txTestMode"] is False,
+        "TX armed via 2-step confirmation",
+    )
+
+    # Trigger ATU Tune and wait for live SWR tracking + convergence <= 1.3
+    client.click_element(client.find_element('[data-testid="atu-tune-btn"]'))
+    wait_until(
+        lambda: http_get_json(stats_url)["atuTuning"] is True
+        and client.execute_script(
+            """
+            const s = globalThis.k4App.state.getSnapshot();
+            const badge = document.querySelector('[data-testid="atu-status"]');
+            return s.atuTuning === true && s.txMeters.swr >= 1.0 && badge && badge.dataset.state === 'tuning';
+            """
+        ),
+        "KAT4 ATU Tune (TU3) starts live SWR tuning",
+        timeout=5.0,
+    )
+    wait_until(
+        lambda: (
+            (st := http_get_json(stats_url))["atuMatched"] is True
+            and st["atuTuning"] is False
+            and client.execute_script(
+                """
+                const s = globalThis.k4App.state.getSnapshot();
+                const badge = document.querySelector('[data-testid="atu-status"]');
+                return s.atuTuning === false && Number.isFinite(s.atuMatchedSwr) && s.atuMatchedSwr > 0 && s.atuMatchedSwr <= 1.3 &&
+                       badge && (badge.dataset.state === 'matched' || badge.dataset.state === 'warn');
+                """
+            )
+        ),
+        "KAT4 ATU Tune converges to matched SWR <= 1.3",
+        timeout=6.0,
+    )
+
+    # Trigger Full Search and abort mid-tune with Escape panic (TU0;RX;)
+    client.click_element(client.find_element('[data-testid="atu-full-btn"]'))
+    wait_until(
+        lambda: http_get_json(stats_url)["atuTuning"] is True
+        and client.execute_script("return globalThis.k4App.state.getSnapshot().atuTuning === true;"),
+        "ATU Full Search (TU4) active before Escape panic",
+    )
+    client.perform_actions(
+        [
+            {
+                "type": "key",
+                "id": "keyboard",
+                "actions": [{"type": "keyDown", "value": "\uE00C"}, {"type": "keyUp", "value": "\uE00C"}],
+            }
+        ]
+    )
+    client.release_actions()
+    wait_until(
+        lambda: (
+            (st := http_get_json(stats_url))["atuTuning"] is False
+            and st["txActive"] is False
+            and client.execute_script(
+                "const s = globalThis.k4App.state.getSnapshot(); return s.atuTuning === false && s.txActive === false;"
+            )
+        ),
+        "Escape panic aborts ATU Full Search cleanly to RX (TU0;RX;)",
+    )
+
+    # (d) Spacebar PTT hold in tx-armed -> 4-bar TX meter, FWD > 0, SIFP current & PA temp rise -> Spacebar release -> RX
+    client.execute_script("globalThis.k4App.client.setPowerWatts(50, 'H'); if (document.activeElement) document.activeElement.blur();")
+    wait_until(
+        lambda: http_get_json(stats_url)["powerRange"] == "H" and http_get_json(stats_url)["powerWatts"] >= 45,
+        "Power set to 50W H before Spacebar TX test",
+    )
+    baseline = client.execute_script(
+        "const t = globalThis.k4App.state.getSnapshot().telemetry; return { amps: t.supplyAmps || 0, paTemp: t.paTempC || 0 };"
+    )
+    client.perform_actions(
+        [
+            {
+                "type": "key",
+                "id": "keyboard",
+                "actions": [{"type": "keyDown", "value": " "}],
+            }
+        ]
+    )
+    try:
+        wait_until(
+            lambda: (
+                (st := http_get_json(stats_url))["txActive"] is True
+                and st["lastFwdTenthsW"] > 0
+                and client.execute_script(
+                    """
+                    const basePa = arguments[0];
+                    const s = globalThis.k4App.state.getSnapshot();
+                    const cl = document.querySelector('[data-testid="tx-meter-cluster"]');
+                    const ids = ['tx-meter-pwr', 'tx-meter-swr', 'tx-meter-alc', 'tx-meter-cmp'];
+                    const barsOk = ids.every((id) => Boolean(document.querySelector('[data-testid="' + id + '"]')));
+                    return s.txActive === true && s.txMeters.fwdWatts > 0 &&
+                           cl && !cl.hidden && barsOk &&
+                           s.telemetry.supplyAmps > 2.5 && s.telemetry.paTempC > basePa + 0.05;
+                    """,
+                    [baseline["paTemp"]],
+                )
+            ),
+            "Spacebar PTT hold drives 4-bar TX meter, FWD > 0, SIFP current & PA temp rise",
+            timeout=6.0,
+        )
+    finally:
+        client.perform_actions(
+            [
+                {
+                    "type": "key",
+                    "id": "keyboard",
+                    "actions": [{"type": "keyUp", "value": " "}],
+                }
+            ]
+        )
+        client.release_actions()
+
+    wait_until(
+        lambda: http_get_json(stats_url)["txActive"] is False
+        and client.execute_script(
+            "const s = globalThis.k4App.state.getSnapshot(); return s.txActive === false && s.txMeters.fwdWatts === 0;"
+        ),
+        "Spacebar release drops TX back to RX immediately",
+    )
+
+    # (e) CW keyer text via [data-testid="cw-ky-input"] + [data-testid="cw-ky-send"]
+    client.execute_script("globalThis.k4App.client.setMode('A', 'CW');")
+    wait_until(
+        lambda: client.execute_script("return globalThis.k4App.state.getSnapshot().rxA.mode === 3;"),
+        "VFO A switched to CW mode for KY keyer test",
+    )
+    tx_cmds_before_ky = http_get_json(stats_url)["txCatCommands"]
+    client.clear_and_type('[data-testid="cw-ky-input"]', "DE K4 E2E")
+    client.click_element(client.find_element('[data-testid="cw-ky-send"]'))
+    wait_until(
+        lambda: http_get_json(stats_url)["txCatCommands"] > tx_cmds_before_ky,
+        "Simulator processed KY CW keyer command",
+    )
+    wait_until(
+        lambda: http_get_json(stats_url)["txActive"] is False,
+        "CW keyer queue drains back to RX cleanly",
+        timeout=5.0,
+    )
+
+    # Return cleanly to rx-only posture via UI button before screenshots
+    client.click_element(client.find_element('[data-testid="tx-mode-rx"]'))
+    wait_until(
+        lambda: client.execute_script(
+            "const s = globalThis.k4App.state.getSnapshot(); return s.txPosture === 'rx-only' && document.querySelector('[data-testid=\"ptt-btn\"]').disabled === true;"
+        ),
+        "Returned to rx-only safety posture",
+    )
+
     err_toasts = client.execute_script(
         "return Array.from(document.querySelectorAll('.k4-toast[data-level=\"error\"]')).map(e => e.textContent);"
     )
     assert not err_toasts, f"Unexpected error toasts in UI: {err_toasts}"
 
-    # Enable Mini-Pan Loupe briefly for a richer Desktop screenshot too? Let's verify default + clean layout!
     desktop_png = os.path.join(out_dir, "e2e-desktop.png")
     client.take_screenshot(desktop_png)
     assert os.path.getsize(desktop_png) > 5000, f"Desktop screenshot too small: {desktop_png}"
@@ -835,7 +1131,7 @@ def run_http_origin_and_screenshots(
 
     errs = client.collect_console_errors()
     assert not errs, f"Console errors during HTTP E2E: {errs}"
-    print(f"      PASS: HTTP E2E + Desktop ({desktop_png}) + Mobile ({mobile_png}), 0 console errors")
+    print(f"      PASS: localhost SecureContext, TX TEST, ATU Tune+Esc, Spacebar PTT+Sensors, CW KY, Desktop ({desktop_png}) + Mobile ({mobile_png}), 0 console errors")
 
 
 def terminate_proc(proc: subprocess.Popen | None, name: str):
@@ -943,8 +1239,8 @@ def main() -> int:
         )
         run_http_origin_and_screenshots(
             marionette,
-            f"http://127.0.0.1:{ws_port}/",
-            f"ws://127.0.0.1:{ws_port}/ws",
+            f"http://localhost:{ws_port}/",
+            f"ws://localhost:{ws_port}/ws",
             password,
             stats_url,
             args.out_dir,

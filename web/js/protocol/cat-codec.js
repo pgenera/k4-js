@@ -439,12 +439,17 @@
     makeGlobalParser('OM', (arg) => {
       const t = arg.trim();
       if (!t) return null;
+      const u = t.toUpperCase();
       return {
         kind: 'optionModule',
         rx: null,
         om: t,
         optionModules: t,
-        hasSubRx: t.includes('S'),
+        hasSubRx: u.includes('S'),
+        hasAtu: u.includes('A'),
+        hasKpa4: u.includes('P'),
+        hasHdr: u.includes('H'),
+        hasLinearAmp: u.includes('L') || u.includes('1'),
       };
     }),
     makeGlobalParser('SN', (arg) => {
@@ -452,7 +457,260 @@
       return t ? { kind: 'serial', rx: null, serial: t } : null;
     }),
     makeGlobalParser('SI', (arg) => parseSystemInfo(arg)),
+    // Spec 07 TX, ATU, Keyer, Voice & Sensor CAT parsers
+    makeGlobalParser('TX', (arg) => {
+      return arg.trim() === '' ? { kind: 'txState', rx: null, txActive: true } : null;
+    }),
+    makeGlobalParser('RX', (arg) => {
+      return arg.trim() === '' ? { kind: 'txState', rx: null, txActive: false } : null;
+    }),
+    makeGlobalParser('TQX', (arg) => {
+      const v = parseIntStrict(arg);
+      return v === 0 || v === 1 ? { kind: 'txState', rx: null, txActive: v === 1 } : null;
+    }),
+    makeGlobalParser('TQ', (arg) => {
+      const v = parseIntStrict(arg);
+      return v === 0 || v === 1 ? { kind: 'txState', rx: null, txActive: v === 1 } : null;
+    }),
+    makeGlobalParser('IN', (arg) => {
+      const v = parseIntStrict(arg);
+      return v === 0 || v === 1 ? { kind: 'txInhibit', rx: null, txInhibit: v === 1 } : null;
+    }),
+    makeGlobalParser('TS', (arg) => {
+      const v = parseIntStrict(arg);
+      return v === 0 || v === 1 ? { kind: 'txTest', rx: null, txTestMode: v === 1 } : null;
+    }),
+    makeGlobalParser('IF', (arg) => parseIfInfo(arg)),
+    makeGlobalParser('TM', (arg) => parseTxMeters(arg)),
+    makeGlobalParser('PO', (arg) => parsePowerOut(arg)),
+    makeGlobalParser('PCX', (arg) => parsePowerControl(arg)),
+    makeGlobalParser('PC', (arg) => parsePowerControl(arg)),
+    makeGlobalParser('AT', (arg) => {
+      const v = parseIntStrict(arg);
+      return v !== null && v >= 0 && v <= 2 ? { kind: 'atuMode', rx: null, atuMode: v } : null;
+    }),
+    makeGlobalParser('TU', (arg) => {
+      const v = parseIntStrict(arg);
+      return v !== null && v >= 0 && v <= 4
+        ? { kind: 'atuTune', rx: null, tuneState: v, tuning: v > 0 }
+        : null;
+    }),
+    makeGlobalParser('AN', (arg) => {
+      const v = parseIntStrict(arg);
+      return v !== null && v >= 1 && v <= 3 ? { kind: 'antenna', rx: null, antenna: v } : null;
+    }),
+    makeGlobalParser('ACT', (arg) => {
+      const m = arg.trim().match(/^([01])([01])([01])([01])$/);
+      if (!m) return null;
+      return {
+        kind: 'txAntennaMask',
+        rx: null,
+        showAll: m[1] === '1',
+        mask: [m[2] === '1', m[3] === '1', m[4] === '1'],
+      };
+    }),
+    makeGlobalParser('ACN', (arg) => {
+      const m = arg.match(/^\s*([1-5])([\s\S]*)$/);
+      if (!m) return null;
+      return {
+        kind: 'antennaName',
+        rx: null,
+        port: parseInt(m[1], 10),
+        name: m[2].trim(),
+      };
+    }),
+    makeGlobalParser('AB', (arg) => {
+      const v = parseIntStrict(arg);
+      return v !== null && v >= 0 && v <= 5 ? { kind: 'vfoCopy', rx: null, mode: v } : null;
+    }),
+    makeGlobalParser('XT', (arg) => {
+      const v = parseIntStrict(arg);
+      return v === 0 || v === 1 ? { kind: 'xit', rx: null, xitEnabled: v === 1 } : null;
+    }),
+    makeGlobalParser('MG', (arg) => {
+      const v = parseIntStrict(arg);
+      return v !== null && v >= 0 && v <= 80 ? { kind: 'micGain', rx: null, micGain: v } : null;
+    }),
+    makeGlobalParser('CP', (arg) => {
+      const v = parseIntStrict(arg);
+      return v !== null && v >= 0 && v <= 30 ? { kind: 'compLevel', rx: null, compDbSet: v } : null;
+    }),
+    makeGlobalParser('ML', (arg) => {
+      const m = arg.trim().match(/^([0-2])(\d{1,3})$/);
+      if (!m) return null;
+      const level = parseInt(m[2], 10);
+      if (level < 0 || level > 100) return null;
+      return { kind: 'txMonitor', rx: null, channel: parseInt(m[1], 10), level };
+    }),
+    makeGlobalParser('MI', (arg) => {
+      const v = parseIntStrict(arg);
+      return v !== null && v >= 0 && v <= 4 ? { kind: 'micInput', rx: null, micInput: v } : null;
+    }),
+    makeGlobalParser('MS', (arg) => {
+      const t = arg.trim();
+      return /^\d{5}$/.test(t) ? { kind: 'micSetup', rx: null, raw: t } : null;
+    }),
+    makeGlobalParser('ES', (arg) => {
+      const m = arg.trim().match(/^([01])(\d{2})$/);
+      if (!m) return null;
+      return { kind: 'essb', rx: null, essb: m[1] === '1', bwHz: parseInt(m[2], 10) * 100 };
+    }),
+    makeGlobalParser('DW', (arg) => {
+      const t = arg.trim();
+      if (!t) return null;
+      return { kind: 'dataWindow', rx: null, raw: t, value: parseIntStrict(t) };
+    }),
+    makeGlobalParser('TE', (arg) => {
+      const t = arg.trim();
+      if (!t) return null;
+      return { kind: 'txEq', rx: null, raw: t };
+    }),
+    makeGlobalParser('VX', (arg) => {
+      const m = arg.trim().toUpperCase().match(/^([CVD])([01])$/);
+      if (!m) return null;
+      return { kind: 'vox', rx: null, modeChar: m[1], enabled: m[2] === '1' };
+    }),
+    makeGlobalParser('VG', (arg) => {
+      const m = arg.trim().toUpperCase().match(/^([VD])(\d{1,3})$/);
+      if (!m) return null;
+      const level = parseInt(m[2], 10);
+      if (level < 0 || level > 60) return null;
+      return { kind: 'voxGain', rx: null, modeChar: m[1], level };
+    }),
+    makeGlobalParser('VI', (arg) => {
+      const v = parseIntStrict(arg);
+      return v !== null && v >= 0 && v <= 100 ? { kind: 'antiVox', rx: null, level: v } : null;
+    }),
+    makeGlobalParser('SD', (arg) => {
+      const m = arg.trim().toUpperCase().match(/^([01])([A-Z])(\d{1,3})$/);
+      if (!m) return null;
+      return {
+        kind: 'voxDelay',
+        rx: null,
+        qskFull: m[1] === '1',
+        modeChar: m[2],
+        delayMs: parseInt(m[3], 10) * 10,
+      };
+    }),
+    makeGlobalParser('PB', (arg) => {
+      const v = parseIntStrict(arg);
+      return v !== null && v >= 0 && v <= 8
+        ? { kind: 'dvrPlayback', rx: null, slot: v, playing: v > 0 }
+        : null;
+    }),
+    makeGlobalParser('KS', (arg) => {
+      const v = parseIntStrict(arg);
+      return v !== null ? { kind: 'cwSpeed', rx: null, wpm: clamp(v, 8, 100) } : null;
+    }),
+    makeGlobalParser('KP', (arg) => {
+      const m = arg.trim().toUpperCase().match(/^([AB])([NR])(\d{2,3})$/);
+      if (!m) return null;
+      return {
+        kind: 'keyerPaddle',
+        rx: null,
+        iambic: m[1],
+        paddleOrder: m[2],
+        weight: parseInt(m[3], 10),
+      };
+    }),
+    makeGlobalParser('KY', (arg) => {
+      if (!arg) return null;
+      if (arg === '0' || arg === '1') {
+        return { kind: 'keyerStatus', rx: null, bufferFull: arg === '1' };
+      }
+      const first = arg[0];
+      if (first === ' ' || first === 'W' || first === 'w' || first === 'R' || first === 'r') {
+        return {
+          kind: 'keyerText',
+          rx: null,
+          mode: first === ' ' ? ' ' : first.toUpperCase(),
+          text: arg.slice(1),
+        };
+      }
+      return { kind: 'keyerText', rx: null, mode: ' ', text: arg };
+    }),
   ].sort((a, b) => b.prefix.length - a.prefix.length);
+
+  function parseIfInfo(arg) {
+    const full = 'IF' + arg;
+    if (!/^\d{11}/.test(full.slice(2, 13))) return null;
+    const freqHz = parseInt(full.slice(2, 13), 10);
+    if (!Number.isFinite(freqHz) || freqHz <= 0) return null;
+
+    let txChar = '';
+    let modeChar = '';
+    let splitChar = '';
+    if (full[25] === ' ') {
+      // Standard 38-char K4 D4 / Kenwood IF layout
+      if (full.length < 33) return null;
+      txChar = full[28];
+      modeChar = full[29];
+      splitChar = full[32];
+    } else if (full[25] === '0' || full[25] === '1') {
+      // Compact fallback layout
+      if (full.length < 29) return null;
+      txChar = full[25];
+      modeChar = full[26];
+      splitChar = full[28];
+    } else {
+      return null;
+    }
+
+    if ((txChar !== '0' && txChar !== '1') || (splitChar !== '0' && splitChar !== '1')) {
+      return null;
+    }
+    const modeCode = /^\d$/.test(modeChar) ? parseInt(modeChar, 10) : null;
+    return {
+      kind: 'ifInfo',
+      rx: 'A',
+      freqHz,
+      ritOn: full[23] === '1',
+      xitEnabled: full[24] === '1',
+      txActive: txChar === '1',
+      modeCode,
+      splitEnabled: splitChar === '1',
+    };
+  }
+
+  function parseTxMeters(arg) {
+    const t = arg.trim();
+    if (/^[01]$/.test(t)) {
+      return { kind: 'txMetersAuto', rx: null, enabled: t === '1' };
+    }
+    if (!/^\d{12}$/.test(t)) return null;
+    const alcBars = parseInt(t.slice(0, 3), 10);
+    const compDb = parseInt(t.slice(3, 6), 10);
+    const fwdRaw = parseInt(t.slice(6, 9), 10);
+    const swrTenths = parseInt(t.slice(9, 12), 10);
+    return {
+      kind: 'txMeters',
+      rx: null,
+      alcBars,
+      compDb,
+      fwdRaw,
+      swrTenths,
+      swr: swrTenths > 0 ? swrTenths / 10 : 0,
+    };
+  }
+
+  function parsePowerOut(arg) {
+    const t = arg.trim();
+    if (/^[01]$/.test(t)) {
+      return { kind: 'powerOutAuto', rx: null, enabled: t === '1' };
+    }
+    if (!/^\d{2,5}$/.test(t)) return null;
+    return { kind: 'powerOut', rx: null, powerOutWatts: parseInt(t, 10) / 10 };
+  }
+
+  function parsePowerControl(arg) {
+    const t = arg.trim().toUpperCase();
+    const m = t.match(/^(\d{1,3})([LHX]?)$/);
+    if (!m) return null;
+    const raw = parseInt(m[1], 10);
+    const r = m[2] || 'L';
+    const powerWatts = r === 'H' ? raw : raw / 10;
+    return { kind: 'powerControl', rx: null, powerWatts, powerRange: r };
+  }
 
   function parseAutoRef(arg, rx) {
     const t = arg.trim().toUpperCase();
@@ -859,6 +1117,136 @@
     },
     ping(epochSec) {
       return 'PING' + Math.floor(Number(epochSec)) + ';';
+    },
+    tx() {
+      return 'TX;';
+    },
+    rx() {
+      return 'RX;';
+    },
+    txQuery(fast = true) {
+      return fast ? 'TQX;' : 'TQ;';
+    },
+    txInhibitQuery() {
+      return 'IN;';
+    },
+    txTest(on) {
+      return 'TS' + (on ? '1' : '0') + ';';
+    },
+    txMeters(on) {
+      return 'TM' + (on ? '1' : '0') + ';';
+    },
+    powerOutAuto(on) {
+      return 'PO' + (on ? '1' : '0') + ';';
+    },
+    power(watts, range) {
+      const r = range ? String(range).toUpperCase() : (Number(watts) <= 10 ? 'L' : 'H');
+      if (r === 'L' || r === 'X') {
+        const tenths = Math.round(clamp(Number(watts), 0.1, 10.0) * 10);
+        return 'PC' + String(tenths).padStart(3, '0') + r + ';';
+      }
+      const w = Math.round(clamp(Number(watts), 1, 110));
+      return 'PC' + String(w).padStart(3, '0') + 'H;';
+    },
+    txAntenna(port) {
+      return 'AN' + clamp(Math.round(Number(port)), 1, 3) + ';';
+    },
+    txAntennaMaskQuery() {
+      return 'ACT;';
+    },
+    antennaName(port, label) {
+      const p = clamp(Math.round(Number(port)), 1, 5);
+      const clean = label !== undefined && label !== null ? String(label).replace(/[;\r\n]/g, '') : '';
+      return 'ACN' + p + clean + ';';
+    },
+    atuMode(mode) {
+      return 'AT' + clamp(Math.round(Number(mode)), 1, 2) + ';';
+    },
+    atuTune(kind = 3) {
+      return 'TU' + clamp(Math.round(Number(kind)), 0, 4) + ';';
+    },
+    split(on) {
+      return 'FT' + (on ? '1' : '0') + ';';
+    },
+    vfoCopy(mode = 3) {
+      return 'AB' + clamp(Math.round(Number(mode)), 0, 5) + ';';
+    },
+    xit(on) {
+      return 'XT' + (on ? '1' : '0') + ';';
+    },
+    micGain(v) {
+      return 'MG' + String(clamp(Math.round(Number(v)), 0, 80)).padStart(3, '0') + ';';
+    },
+    compLevel(v) {
+      return 'CP' + String(clamp(Math.round(Number(v)), 0, 30)).padStart(3, '0') + ';';
+    },
+    txMonitor(modeIdx, v) {
+      return (
+        'ML' +
+        clamp(Math.round(Number(modeIdx)), 0, 2) +
+        String(clamp(Math.round(Number(v)), 0, 100)).padStart(3, '0') +
+        ';'
+      );
+    },
+    micInput(v) {
+      return 'MI' + clamp(Math.round(Number(v)), 0, 4) + ';';
+    },
+    micSetup(raw) {
+      return 'MS' + String(raw || '').replace(/[;\r\n]/g, '') + ';';
+    },
+    essb(on, bwHz = 4000) {
+      return (
+        'ES' +
+        (on ? '1' : '0') +
+        String(clamp(Math.round(Number(bwHz) / 100), 30, 45)).padStart(2, '0') +
+        ';'
+      );
+    },
+    dataWindow(val) {
+      return 'DW' + String(val !== undefined && val !== null ? val : 0).replace(/[;\r\n]/g, '') + ';';
+    },
+    txEq(raw) {
+      return 'TE' + String(raw || '').replace(/[;\r\n]/g, '') + ';';
+    },
+    vox(modeChar, on) {
+      const m = String(modeChar || 'V').toUpperCase();
+      const c = m === 'C' || m === 'V' || m === 'D' ? m : 'V';
+      return 'VX' + c + (on ? '1' : '0') + ';';
+    },
+    voxGain(modeChar, v) {
+      const c = String(modeChar || 'V').toUpperCase() === 'D' ? 'D' : 'V';
+      return 'VG' + c + String(clamp(Math.round(Number(v)), 0, 60)).padStart(3, '0') + ';';
+    },
+    antiVox(v) {
+      return 'VI' + String(clamp(Math.round(Number(v)), 0, 100)).padStart(3, '0') + ';';
+    },
+    voxDelay(qskFull, modeChar, delayMs) {
+      const m = String(modeChar || 'Q').toUpperCase();
+      const c = m ? m[0] : 'Q';
+      const units = clamp(Math.round(Number(delayMs) / 10), 0, 255);
+      return 'SD' + (qskFull ? '1' : '0') + c + String(units).padStart(3, '0') + ';';
+    },
+    dvrPlay(slot) {
+      return 'PB' + clamp(Math.round(Number(slot)), 0, 8) + ';';
+    },
+    cwSpeed(wpm) {
+      return 'KS' + String(clamp(Math.round(Number(wpm)), 8, 100)).padStart(3, '0') + ';';
+    },
+    keyerPaddle(iambic, order, weight = 110) {
+      const iChar = String(iambic || 'A').toUpperCase() === 'B' ? 'B' : 'A';
+      const oChar = String(order || 'N').toUpperCase() === 'R' ? 'R' : 'N';
+      const wNum = Number.isFinite(Number(weight)) ? Number(weight) : 110;
+      const snapped = clamp(Math.round(wNum / 5) * 5, 90, 125);
+      return 'KP' + iChar + oChar + String(snapped).padStart(3, '0') + ';';
+    },
+    keyerText(text, mode = ' ') {
+      const mRaw = String(mode || ' ').toUpperCase();
+      const modePrefix = mRaw === 'W' || mRaw === 'R' ? mRaw : ' ';
+      const sanitized = String(text || '').replace(/[;\r\n]/g, '').slice(0, 60);
+      return 'KY' + modePrefix + sanitized + ';';
+    },
+    keyerAbort() {
+      return 'KY @;';
     },
   };
 

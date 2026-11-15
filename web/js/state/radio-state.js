@@ -81,13 +81,35 @@
     return {
       supplyVolts: null,
       supplyAmps: null,
+      peakSupplyAmps: null,
+      rxBaselineVolts: null,
+      txVoltDrop: null,
+      paAmps: null,
       fpTempC: null,
       cpuTempC: null,
       paTempC: null,
       lpaTempC: null,
       dapTempC: null,
+      ducTempC: null,
       updatedAt: null,
     };
+  }
+
+  function createDefaultTxMeters() {
+    return {
+      alcBars: 0,
+      compDb: 0,
+      fwdWatts: 0,
+      swr: 0,
+      peakFwdWatts: 0,
+      peakSwr: 0,
+      active: false,
+      updatedAt: null,
+    };
+  }
+
+  function createDefaultAntennaNames() {
+    return { 1: 'ANT1', 2: 'ANT2', 3: 'ANT3', 4: 'RX1', 5: 'RX2' };
   }
 
   function createDefaultState() {
@@ -111,12 +133,51 @@
         serial: '',
       },
       operatingPolicy: 'rx-only',
+      txPosture: 'rx-only',
+      pttHeld: false,
+      txActive: false,
+      txTestMode: false,
+      txInhibit: false,
       cwPitchHz: 500,
       subRxEnabled: false,
       splitEnabled: false,
+      xitEnabled: false,
       vfoLinked: false,
       diversityEnabled: false,
       activeTxVfo: 'A',
+      powerWatts: 10,
+      powerRange: 'L',
+      txMeters: createDefaultTxMeters(),
+      hasAtu: true,
+      hasKpa4: true,
+      hasHdr: false,
+      hasLinearAmp: false,
+      atuMode: 2,
+      atuTuning: false,
+      atuTuneKind: null,
+      atuMatchedSwr: null,
+      atuLastTunedFreqHz: null,
+      atuSearchWindowUntil: 0,
+      txAntenna: 1,
+      txAntennaMask: [true, true, true],
+      antennaNames: createDefaultAntennaNames(),
+      micGain: 15,
+      micInput: 4,
+      compDbSet: 0,
+      monCw: 5,
+      monData: 5,
+      monVoice: 2,
+      voxCw: true,
+      voxVoice: false,
+      voxData: false,
+      cwSpeedWpm: 20,
+      keyerIambic: 'A',
+      keyerPaddleOrder: 'N',
+      keyerWeight: 110,
+      keyerBufferFull: false,
+      txBufferCount: 0,
+      txTimeoutSec: 180,
+      txStartedAt: null,
       panAvg: 4,
       dualPanMode: 0,
       panFrozen: false,
@@ -136,20 +197,38 @@
   }
 
   /**
-   * Reactive store holding K4 receiver, panadapter, audio, and connection telemetry state.
+   * Reactive store holding K4 receiver, transmitter, ATU, panadapter, audio, and connection telemetry state.
    */
   class RadioState extends K4.EventEmitter {
     constructor(initial = null) {
       super();
       this._state = createDefaultState();
       this._nextTextId = 0;
+      this._lastNonZeroTuneSwr = null;
       if (initial && typeof initial === 'object') {
         if (initial.rxA) Object.assign(this._state.rxA, initial.rxA);
         if (initial.rxB) Object.assign(this._state.rxB, initial.rxB);
         if (initial.connection) Object.assign(this._state.connection, initial.connection);
         if (initial.telemetry) Object.assign(this._state.telemetry, initial.telemetry);
+        if (initial.txMeters) Object.assign(this._state.txMeters, initial.txMeters);
+        if (Array.isArray(initial.txAntennaMask)) {
+          this._state.txAntennaMask = initial.txAntennaMask.slice();
+        }
+        if (initial.antennaNames && typeof initial.antennaNames === 'object') {
+          Object.assign(this._state.antennaNames, initial.antennaNames);
+        }
+        const nestedKeys = new Set([
+          'rxA',
+          'rxB',
+          'connection',
+          'telemetry',
+          'txMeters',
+          'txAntennaMask',
+          'antennaNames',
+          'decodedText',
+        ]);
         for (const k of Object.keys(initial)) {
-          if (k !== 'rxA' && k !== 'rxB' && k !== 'connection' && k !== 'telemetry' && k !== 'decodedText') {
+          if (!nestedKeys.has(k)) {
             this._state[k] = initial[k];
           }
         }
@@ -178,12 +257,51 @@
         rxB: Object.assign({}, this._state.rxB),
         connection: Object.assign({}, this._state.connection),
         operatingPolicy: this._state.operatingPolicy,
+        txPosture: this._state.txPosture,
+        pttHeld: this._state.pttHeld,
+        txActive: this._state.txActive,
+        txTestMode: this._state.txTestMode,
+        txInhibit: this._state.txInhibit,
         cwPitchHz: this._state.cwPitchHz,
         subRxEnabled: this._state.subRxEnabled,
         splitEnabled: this._state.splitEnabled,
+        xitEnabled: this._state.xitEnabled,
         vfoLinked: this._state.vfoLinked,
         diversityEnabled: this._state.diversityEnabled,
         activeTxVfo: this._state.activeTxVfo,
+        powerWatts: this._state.powerWatts,
+        powerRange: this._state.powerRange,
+        txMeters: Object.assign({}, this._state.txMeters),
+        hasAtu: this._state.hasAtu,
+        hasKpa4: this._state.hasKpa4,
+        hasHdr: this._state.hasHdr,
+        hasLinearAmp: this._state.hasLinearAmp,
+        atuMode: this._state.atuMode,
+        atuTuning: this._state.atuTuning,
+        atuTuneKind: this._state.atuTuneKind,
+        atuMatchedSwr: this._state.atuMatchedSwr,
+        atuLastTunedFreqHz: this._state.atuLastTunedFreqHz,
+        atuSearchWindowUntil: this._state.atuSearchWindowUntil,
+        txAntenna: this._state.txAntenna,
+        txAntennaMask: this._state.txAntennaMask.slice(),
+        antennaNames: Object.assign({}, this._state.antennaNames),
+        micGain: this._state.micGain,
+        micInput: this._state.micInput,
+        compDbSet: this._state.compDbSet,
+        monCw: this._state.monCw,
+        monData: this._state.monData,
+        monVoice: this._state.monVoice,
+        voxCw: this._state.voxCw,
+        voxVoice: this._state.voxVoice,
+        voxData: this._state.voxData,
+        cwSpeedWpm: this._state.cwSpeedWpm,
+        keyerIambic: this._state.keyerIambic,
+        keyerPaddleOrder: this._state.keyerPaddleOrder,
+        keyerWeight: this._state.keyerWeight,
+        keyerBufferFull: this._state.keyerBufferFull,
+        txBufferCount: this._state.txBufferCount,
+        txTimeoutSec: this._state.txTimeoutSec,
+        txStartedAt: this._state.txStartedAt,
         panAvg: this._state.panAvg,
         dualPanMode: this._state.dualPanMode,
         panFrozen: this._state.panFrozen,
@@ -231,6 +349,37 @@
       if (!patch || typeof patch !== 'object') return;
       Object.assign(this._state.connection, patch);
       this._emitChange('connection');
+    }
+
+    /**
+     * Update local TX safety posture, policy, and PTT flags.
+     * @param {Object} patch
+     * @param {string} [changedKey='txPosture']
+     */
+    updateTxSafety(patch, changedKey = 'txPosture') {
+      if (!patch || typeof patch !== 'object') return;
+      Object.assign(this._state, patch);
+      this._emitChange(changedKey);
+    }
+
+    /**
+     * Clear held peak TX meters at the start of a new transmission/tune cycle.
+     */
+    resetTxMeterPeaks() {
+      this._state.txMeters.peakFwdWatts = 0;
+      this._state.txMeters.peakSwr = 0;
+      this._emitChange('txMeters');
+    }
+
+    _resetLiveTxMetersKeepingPeaks() {
+      const m = this._state.txMeters;
+      m.alcBars = 0;
+      m.compDb = 0;
+      m.fwdWatts = 0;
+      m.swr = 0;
+      m.active = false;
+      m.updatedAt = Date.now();
+      this._state.telemetry.txVoltDrop = this._state.telemetry.rxBaselineVolts !== null ? 0 : null;
     }
 
     /**
@@ -431,6 +580,7 @@
 
         case 'split':
           this._state.splitEnabled = parsed.splitEnabled;
+          this._state.activeTxVfo = parsed.splitEnabled ? 'B' : 'A';
           this._emitChange('splitEnabled');
           return true;
 
@@ -478,6 +628,10 @@
         case 'optionModule':
           this._state.optionModules = parsed.optionModules || '';
           this._state.hasSubRx = Boolean(parsed.hasSubRx);
+          this._state.hasAtu = Boolean(parsed.hasAtu);
+          this._state.hasKpa4 = Boolean(parsed.hasKpa4);
+          this._state.hasHdr = Boolean(parsed.hasHdr);
+          this._state.hasLinearAmp = Boolean(parsed.hasLinearAmp);
           this._emitChange('optionModules');
           return true;
 
@@ -589,10 +743,28 @@
         case 'systemInfo': {
           const t = this._state.telemetry;
           const f = parsed.fields || {};
+          const activeTxOrTune = Boolean(this._state.txActive || this._state.atuTuning);
           let changed = false;
           if (parsed.module === 'FP') {
-            if (Number.isFinite(f.VS)) { t.supplyVolts = f.VS; changed = true; }
-            if (Number.isFinite(f.IS)) { t.supplyAmps = f.IS; changed = true; }
+            if (Number.isFinite(f.VS)) {
+              t.supplyVolts = f.VS;
+              if (!activeTxOrTune) {
+                t.rxBaselineVolts = f.VS;
+                t.txVoltDrop = 0;
+              } else if (Number.isFinite(t.rxBaselineVolts)) {
+                t.txVoltDrop = Math.max(0, t.rxBaselineVolts - f.VS);
+              }
+              changed = true;
+            }
+            if (Number.isFinite(f.IS)) {
+              t.supplyAmps = f.IS;
+              if (activeTxOrTune) {
+                t.peakSupplyAmps = Number.isFinite(t.peakSupplyAmps)
+                  ? Math.max(t.peakSupplyAmps, f.IS)
+                  : f.IS;
+              }
+              changed = true;
+            }
             if (Number.isFinite(f.TF)) { t.fpTempC = f.TF; changed = true; }
           } else if (parsed.module === 'CP') {
             const temps = [f.T1, f.T2, f.T4].filter((v) => Number.isFinite(v));
@@ -603,8 +775,11 @@
           } else if (parsed.module === 'RF') {
             if (Number.isFinite(f.PT)) { t.paTempC = f.PT; changed = true; }
             if (Number.isFinite(f.LT)) { t.lpaTempC = f.LT; changed = true; }
+            if (Number.isFinite(f.PA)) { t.paAmps = f.PA; changed = true; }
           } else if (parsed.module === 'DA') {
             if (Number.isFinite(f.T)) { t.dapTempC = f.T; changed = true; }
+          } else if (parsed.module === 'DU') {
+            if (Number.isFinite(f.T)) { t.ducTempC = f.T; changed = true; }
           }
           if (changed) {
             t.updatedAt = Date.now();
@@ -612,6 +787,229 @@
           }
           return changed;
         }
+
+        case 'txState': {
+          this._state.txActive = Boolean(parsed.txActive);
+          if (!this._state.txActive && !this._state.atuTuning) {
+            this._resetLiveTxMetersKeepingPeaks();
+          }
+          this._emitChange('txActive');
+          return true;
+        }
+
+        case 'txInhibit':
+          this._state.txInhibit = Boolean(parsed.txInhibit);
+          this._emitChange('txInhibit');
+          return true;
+
+        case 'txTest':
+          this._state.txTestMode = Boolean(parsed.txTestMode);
+          this._emitChange('txTestMode');
+          return true;
+
+        case 'ifInfo': {
+          if (Number.isFinite(parsed.freqHz) && parsed.freqHz > 0) {
+            this._state.rxA.freqHz = parsed.freqHz;
+            this._state.rxA.band = bandForFreq(parsed.freqHz);
+            this._state.band = this._state.rxA.band;
+          }
+          if (typeof parsed.ritOn === 'boolean') {
+            this._state.rxA.ritOn = parsed.ritOn;
+          }
+          if (typeof parsed.xitEnabled === 'boolean') {
+            this._state.xitEnabled = parsed.xitEnabled;
+          }
+          if (typeof parsed.splitEnabled === 'boolean') {
+            this._state.splitEnabled = parsed.splitEnabled;
+            this._state.activeTxVfo = parsed.splitEnabled ? 'B' : 'A';
+          }
+          if (Number.isFinite(parsed.modeCode) && K4.MODES && K4.MODES[parsed.modeCode]) {
+            this._state.rxA.mode = parsed.modeCode;
+            this._state.rxA.modeLabel = K4.MODES[parsed.modeCode];
+          }
+          if (typeof parsed.txActive === 'boolean') {
+            this._state.txActive = parsed.txActive;
+            if (!this._state.txActive && !this._state.atuTuning) {
+              this._resetLiveTxMetersKeepingPeaks();
+            }
+          }
+          this._emitChange('ifInfo');
+          return true;
+        }
+
+        case 'txMeters': {
+          const m = this._state.txMeters;
+          const fwdWatts = this._state.powerRange === 'L' ? parsed.fwdRaw / 10 : parsed.fwdRaw;
+          const swr = parsed.swrTenths > 0 ? parsed.swrTenths / 10 : 0;
+          const active = Boolean(
+            this._state.txActive ||
+              this._state.atuTuning ||
+              fwdWatts > 0 ||
+              parsed.swrTenths > 0 ||
+              parsed.alcBars > 0
+          );
+          m.alcBars = parsed.alcBars;
+          m.compDb = parsed.compDb;
+          m.fwdWatts = fwdWatts;
+          m.swr = swr;
+          m.active = active;
+          m.updatedAt = Date.now();
+          if (this._state.txActive || this._state.atuTuning || fwdWatts > 0 || swr > 0) {
+            if (fwdWatts > (m.peakFwdWatts || 0)) m.peakFwdWatts = fwdWatts;
+            if (swr > (m.peakSwr || 0)) m.peakSwr = swr;
+          }
+          if (
+            this._state.atuTuning &&
+            (this._state.atuTuneKind === 3 || this._state.atuTuneKind === 4) &&
+            swr > 0
+          ) {
+            this._lastNonZeroTuneSwr = swr;
+          }
+          this._emitChange('txMeters');
+          return true;
+        }
+
+        case 'powerOut': {
+          const m = this._state.txMeters;
+          const watts = Number(parsed.powerOutWatts);
+          if (!Number.isFinite(watts)) return false;
+          m.fwdWatts = watts;
+          m.active = Boolean(
+            this._state.txActive || this._state.atuTuning || watts > 0 || m.alcBars > 0
+          );
+          m.updatedAt = Date.now();
+          if ((this._state.txActive || this._state.atuTuning || watts > 0) && watts > (m.peakFwdWatts || 0)) {
+            m.peakFwdWatts = watts;
+          }
+          this._emitChange('txMeters');
+          return true;
+        }
+
+        case 'powerControl':
+          this._state.powerWatts = parsed.powerWatts;
+          this._state.powerRange = parsed.powerRange;
+          this._emitChange('powerWatts');
+          return true;
+
+        case 'atuMode':
+          this._state.atuMode = parsed.atuMode;
+          this._emitChange('atuMode');
+          return true;
+
+        case 'atuTune': {
+          const prevTuning = this._state.atuTuning;
+          const prevKind = this._state.atuTuneKind;
+          if (parsed.tuning) {
+            this._state.atuTuning = true;
+            this._state.atuTuneKind = parsed.tuneState;
+            if (!prevTuning) {
+              this._lastNonZeroTuneSwr = null;
+            }
+          } else {
+            if (prevTuning && (prevKind === 3 || prevKind === 4)) {
+              const matched =
+                this._state.txMeters.swr > 0
+                  ? this._state.txMeters.swr
+                  : this._lastNonZeroTuneSwr;
+              if (Number.isFinite(matched) && matched > 0) {
+                this._state.atuMatchedSwr = matched;
+              }
+              const txVfoKey = this._state.splitEnabled ? 'rxB' : 'rxA';
+              this._state.atuLastTunedFreqHz = this._state[txVfoKey].freqHz;
+              if (prevKind === 3) {
+                this._state.atuSearchWindowUntil = Date.now() + 5000;
+              }
+            }
+            this._state.atuTuning = false;
+            this._state.atuTuneKind = null;
+            this._lastNonZeroTuneSwr = null;
+            if (!this._state.txActive) {
+              this._resetLiveTxMetersKeepingPeaks();
+            }
+          }
+          this._emitChange('atuTuning');
+          return true;
+        }
+
+        case 'antenna':
+          this._state.txAntenna = parsed.antenna;
+          this._emitChange('txAntenna');
+          return true;
+
+        case 'txAntennaMask':
+          this._state.txAntennaMask = parsed.mask.slice();
+          this._emitChange('txAntennaMask');
+          return true;
+
+        case 'antennaName': {
+          const defaults = createDefaultAntennaNames();
+          this._state.antennaNames[parsed.port] = parsed.name || defaults[parsed.port] || `ANT${parsed.port}`;
+          this._emitChange('antennaNames');
+          return true;
+        }
+
+        case 'xit':
+          this._state.xitEnabled = Boolean(parsed.xitEnabled);
+          this._emitChange('xitEnabled');
+          return true;
+
+        case 'micGain':
+          this._state.micGain = parsed.micGain;
+          this._emitChange('micGain');
+          return true;
+
+        case 'compLevel':
+          this._state.compDbSet = parsed.compDbSet;
+          this._emitChange('compDbSet');
+          return true;
+
+        case 'txMonitor':
+          if (parsed.channel === 0) {
+            this._state.monCw = parsed.level;
+            this._emitChange('monCw');
+            return true;
+          }
+          if (parsed.channel === 1) {
+            this._state.monData = parsed.level;
+            this._emitChange('monData');
+            return true;
+          }
+          if (parsed.channel === 2) {
+            this._state.monVoice = parsed.level;
+            this._emitChange('monVoice');
+            return true;
+          }
+          return false;
+
+        case 'micInput':
+          this._state.micInput = parsed.micInput;
+          this._emitChange('micInput');
+          return true;
+
+        case 'vox':
+          if (parsed.modeChar === 'C') this._state.voxCw = Boolean(parsed.enabled);
+          else if (parsed.modeChar === 'V') this._state.voxVoice = Boolean(parsed.enabled);
+          else if (parsed.modeChar === 'D') this._state.voxData = Boolean(parsed.enabled);
+          else return false;
+          this._emitChange('vox');
+          return true;
+
+        case 'cwSpeed':
+          this._state.cwSpeedWpm = parsed.wpm;
+          this._emitChange('cwSpeedWpm');
+          return true;
+
+        case 'keyerPaddle':
+          this._state.keyerIambic = parsed.iambic;
+          this._state.keyerPaddleOrder = parsed.paddleOrder;
+          this._state.keyerWeight = parsed.weight;
+          this._emitChange('keyerPaddle');
+          return true;
+
+        case 'keyerStatus':
+          this._state.keyerBufferFull = Boolean(parsed.bufferFull);
+          this._emitChange('keyerBufferFull');
+          return true;
 
         case 'radioId':
           this.updateConnection({ radioId: parsed.id });
@@ -622,7 +1020,18 @@
           return true;
 
         case 'decodedText': {
-          if (!parsed.text || parsed.text.length === 0) return false;
+          let bufChanged = false;
+          if (Number.isFinite(parsed.txQueued) && this._state.txBufferCount !== parsed.txQueued) {
+            this._state.txBufferCount = parsed.txQueued;
+            bufChanged = true;
+          }
+          if (!parsed.text || parsed.text.length === 0) {
+            if (bufChanged) {
+              this._emitChange('txBufferCount');
+              return true;
+            }
+            return false;
+          }
           this._state.decodedText.push({
             id: ++this._nextTextId,
             rx: parsed.rx || 'A',

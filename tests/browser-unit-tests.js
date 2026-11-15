@@ -1868,6 +1868,452 @@
     }
   });
 
+  // 23. BinaryPackets: encodeAudio + odd-offset parseAudio roundtrip
+  test('BinaryPackets.encodeAudio & odd-offset parseAudio roundtrip', () => {
+    const K4 = globalThis.K4;
+    const frames = 240;
+    const pcmBytes = new Uint8Array(frames * 4);
+    const srcDv = new DataView(pcmBytes.buffer);
+    for (let i = 0; i < frames; i++) {
+      const l = ((i * 257) % 30000) - 15000;
+      const r = -(((i * 193) % 28000) - 14000);
+      srcDv.setInt16(i * 4, l, true);
+      srcDv.setInt16(i * 4 + 2, r, true);
+    }
+
+    const encoded = K4.BinaryPackets.encodeAudio({
+      seq: 0xab,
+      encodeMode: 1,
+      frameSamplesPerCh: frames,
+      sampleRateCode: 0,
+      audioBytes: pcmBytes,
+    });
+    assertEqual(encoded.byteLength, 7 + frames * 4, 'encoded 0x01 length');
+    assertEqual(encoded[0], 0x01, 'header packet type 0x01');
+    assertEqual(encoded[1], 0x01, 'header version 0x01');
+    assertEqual(encoded[2], 0xab, 'header seq');
+    assertEqual(encoded[3], 0x01, 'header encodeMode EM1');
+    assertEqual(new DataView(encoded.buffer, encoded.byteOffset, encoded.byteLength).getUint16(4, true), frames, 'header frameSamplesPerCh');
+    assertEqual(encoded[6], 0x00, 'header sampleRateCode 12kHz');
+
+    // Place encoded packet at odd offsets (both u8.byteOffset=1 and u8.byteOffset+7=9)
+    for (const offset of [1, 2, 3]) {
+      const backing = new Uint8Array(offset + encoded.byteLength + 5);
+      backing.set(encoded, offset);
+      const subview = backing.subarray(offset, offset + encoded.byteLength);
+      const parsed = K4.BinaryPackets.parse(subview);
+      assert(parsed !== null, `parse(subview) at offset=${offset}`);
+      assertEqual(parsed.type, 1, 'parsed.type');
+      assertEqual(parsed.version, 1, 'parsed.version');
+      assertEqual(parsed.seq, 0xab, 'parsed.seq');
+      assertEqual(parsed.encodeMode, 1, 'parsed.encodeMode');
+      assertEqual(parsed.frameSamplesPerCh, frames, 'parsed.frameSamplesPerCh');
+      assertEqual(parsed.sampleRateCode, 0, 'parsed.sampleRateCode');
+      assertEqual(parsed.sampleRate, 12000, 'parsed.sampleRate');
+      assertEqual(parsed.data.byteLength, frames * 4, 'parsed.data.byteLength');
+      assertEqual(parsed.dataView.byteOffset, offset + 7, 'parsed.dataView.byteOffset');
+      assertEqual(parsed.dataView.getInt16(0, true), srcDv.getInt16(0, true), `sample 0L @ offset=${offset}`);
+      assertEqual(parsed.dataView.getInt16(2, true), srcDv.getInt16(2, true), `sample 0R @ offset=${offset}`);
+      assertEqual(parsed.dataView.getInt16((frames - 1) * 4, true), srcDv.getInt16((frames - 1) * 4, true), `sample lastL @ offset=${offset}`);
+      assertEqual(parsed.dataView.getInt16((frames - 1) * 4 + 2, true), srcDv.getInt16((frames - 1) * 4 + 2, true), `sample lastR @ offset=${offset}`);
+    }
+  });
+
+  // 24. CatCodec: TX, ATU, Voice, CW, Option Module & Sensor parsers & builders
+  test('CatCodec parses & builds TX/ATU/Voice/CW/OM/SIRF/SIDU CAT commands', () => {
+    const { parseCommand, splitFrames, builders } = globalThis.K4.CatCodec;
+
+    // TX/RX/TQ/TQX/IN/TS
+    assertDeepEqual(parseCommand('TX;'), { kind: 'txState', rx: null, txActive: true }, 'TX;');
+    assertDeepEqual(parseCommand('RX;'), { kind: 'txState', rx: null, txActive: false }, 'RX;');
+    assertDeepEqual(parseCommand('TQ1;'), { kind: 'txState', rx: null, txActive: true }, 'TQ1;');
+    assertDeepEqual(parseCommand('TQX0;'), { kind: 'txState', rx: null, txActive: false }, 'TQX0;');
+    assertDeepEqual(parseCommand('IN1;'), { kind: 'txInhibit', rx: null, txInhibit: true }, 'IN1;');
+    assertDeepEqual(parseCommand('IN0;'), { kind: 'txInhibit', rx: null, txInhibit: false }, 'IN0;');
+    assertDeepEqual(parseCommand('TS1;'), { kind: 'txTest', rx: null, txTestMode: true }, 'TS1;');
+    assertEqual(builders.tx(), 'TX;', 'builders.tx');
+    assertEqual(builders.rx(), 'RX;', 'builders.rx');
+    assertEqual(builders.txQuery(true), 'TQX;', 'builders.txQuery(true)');
+    assertEqual(builders.txQuery(false), 'TQ;', 'builders.txQuery(false)');
+    assertEqual(builders.txInhibitQuery(), 'IN;', 'builders.txInhibitQuery');
+    assertEqual(builders.txTest(true), 'TS1;', 'builders.txTest(true)');
+
+    // IF: 38-char K4 D4 layout ([23]=rit, [24]=xit, [25]=' ', [28]=tx, [29]=mode, [32]=split) & compact fallback
+    const ifD4 = parseCommand('IF00014074000     +015011 0012001001 ;');
+    assertEqual(ifD4.kind, 'ifInfo', 'IF D4 kind');
+    assertEqual(ifD4.freqHz, 14074000, 'IF D4 freqHz');
+    assertEqual(ifD4.ritOn, true, 'IF D4 ritOn');
+    assertEqual(ifD4.xitEnabled, true, 'IF D4 xitEnabled');
+    assertEqual(ifD4.txActive, true, 'IF D4 txActive');
+    assertEqual(ifD4.modeCode, 2, 'IF D4 modeCode USB');
+    assertEqual(ifD4.splitEnabled, true, 'IF D4 splitEnabled');
+
+    const ifCompact = parseCommand('IF00007074000     +0000001301;');
+    assertEqual(ifCompact.kind, 'ifInfo', 'IF compact kind');
+    assertEqual(ifCompact.freqHz, 7074000, 'IF compact freqHz');
+    assertEqual(ifCompact.txActive, true, 'IF compact txActive');
+    assertEqual(ifCompact.modeCode, 3, 'IF compact modeCode CW');
+    assertEqual(ifCompact.splitEnabled, true, 'IF compact splitEnabled');
+
+    // TM & PO disambiguation (0/1 toggles vs telemetry digits)
+    assertDeepEqual(parseCommand('TM1;'), { kind: 'txMetersAuto', rx: null, enabled: true }, 'TM1;');
+    assertDeepEqual(parseCommand('TM0;'), { kind: 'txMetersAuto', rx: null, enabled: false }, 'TM0;');
+    const tm = parseCommand('TM004012055013;');
+    assertEqual(tm.kind, 'txMeters', 'TM 12-digit kind');
+    assertEqual(tm.alcBars, 4, 'TM alcBars');
+    assertEqual(tm.compDb, 12, 'TM compDb');
+    assertEqual(tm.fwdRaw, 55, 'TM fwdRaw');
+    assertEqual(tm.swrTenths, 13, 'TM swrTenths');
+    assertApprox(tm.swr, 1.3, 1e-6, 'TM swr');
+    assertEqual(builders.txMeters(true), 'TM1;', 'builders.txMeters');
+
+    assertDeepEqual(parseCommand('PO1;'), { kind: 'powerOutAuto', rx: null, enabled: true }, 'PO1;');
+    assertDeepEqual(parseCommand('PO0;'), { kind: 'powerOutAuto', rx: null, enabled: false }, 'PO0;');
+    const po = parseCommand('PO0255;');
+    assertEqual(po.kind, 'powerOut', 'PO 4-digit kind');
+    assertApprox(po.powerOutWatts, 25.5, 1e-6, 'PO tenths watts');
+    assertEqual(builders.powerOutAuto(true), 'PO1;', 'builders.powerOutAuto');
+
+    // PC & PCX L tenths vs H whole watts
+    const pcL = parseCommand('PC055L;');
+    assertApprox(pcL.powerWatts, 5.5, 1e-6, 'PC055L watts');
+    assertEqual(pcL.powerRange, 'L', 'PC055L range');
+    const pcH = parseCommand('PC085H;');
+    assertEqual(pcH.powerWatts, 85, 'PC085H watts');
+    assertEqual(pcH.powerRange, 'H', 'PC085H range');
+    const pcxL = parseCommand('PCX100L;');
+    assertApprox(pcxL.powerWatts, 10.0, 1e-6, 'PCX100L watts');
+    assertEqual(pcxL.powerRange, 'L', 'PCX100L range');
+    const pcxH = parseCommand('PCX100H;');
+    assertEqual(pcxH.powerWatts, 100, 'PCX100H watts');
+    assertEqual(pcxH.powerRange, 'H', 'PCX100H range');
+    assertEqual(builders.power(5.5, 'L'), 'PC055L;', 'builders.power L');
+    assertEqual(builders.power(55, 'H'), 'PC055H;', 'builders.power H');
+
+    // AT, TU, AN, ACT, ACN, FT, AB, XT
+    assertEqual(parseCommand('AT0;').atuMode, 0, 'AT0');
+    assertEqual(parseCommand('AT2;').atuMode, 2, 'AT2');
+    assertEqual(builders.atuMode(1), 'AT1;', 'builders.atuMode bypass');
+    assertEqual(builders.atuMode(2), 'AT2;', 'builders.atuMode auto');
+    assertDeepEqual(parseCommand('TU3;'), { kind: 'atuTune', rx: null, tuneState: 3, tuning: true }, 'TU3;');
+    assertDeepEqual(parseCommand('TU0;'), { kind: 'atuTune', rx: null, tuneState: 0, tuning: false }, 'TU0;');
+    assertEqual(builders.atuTune(3), 'TU3;', 'builders.atuTune(3)');
+    assertEqual(builders.atuTune(4), 'TU4;', 'builders.atuTune(4)');
+    assertEqual(builders.atuTune(0), 'TU0;', 'builders.atuTune(0)');
+    assertEqual(parseCommand('AN2;').antenna, 2, 'AN2;');
+    assertEqual(builders.txAntenna(3), 'AN3;', 'builders.txAntenna(3)');
+    assertDeepEqual(parseCommand('ACT1101;'), { kind: 'txAntennaMask', rx: null, showAll: true, mask: [true, false, true] }, 'ACT1101;');
+    assertEqual(builders.txAntennaMaskQuery(), 'ACT;', 'builders.txAntennaMaskQuery');
+    assertDeepEqual(parseCommand('ACN2Dipole 40m ;'), { kind: 'antennaName', rx: null, port: 2, name: 'Dipole 40m' }, 'ACN2 mixed-case trimmed');
+    assertEqual(builders.antennaName(2, 'HexBeam'), 'ACN2HexBeam;', 'builders.antennaName');
+    assertEqual(parseCommand('FT1;').splitEnabled, true, 'FT1;');
+    assertEqual(builders.split(true), 'FT1;', 'builders.split(true)');
+    assertEqual(parseCommand('AB3;').mode, 3, 'AB3;');
+    assertEqual(builders.vfoCopy(3), 'AB3;', 'builders.vfoCopy(3)');
+    assertEqual(parseCommand('XT1;').xitEnabled, true, 'XT1;');
+    assertEqual(builders.xit(true), 'XT1;', 'builders.xit(true)');
+
+    // MG, CP, ML, MI, PB, KS, KP, KY (including mixed-case KY text)
+    assertEqual(parseCommand('MG035;').micGain, 35, 'MG035;');
+    assertEqual(builders.micGain(35), 'MG035;', 'builders.micGain');
+    assertEqual(parseCommand('CP012;').compDbSet, 12, 'CP012;');
+    assertEqual(builders.compLevel(12), 'CP012;', 'builders.compLevel');
+    assertDeepEqual(parseCommand('ML1045;'), { kind: 'txMonitor', rx: null, channel: 1, level: 45 }, 'ML1045;');
+    assertEqual(builders.txMonitor(1, 45), 'ML1045;', 'builders.txMonitor');
+    assertEqual(parseCommand('MI2;').micInput, 2, 'MI2;');
+    assertEqual(builders.micInput(2), 'MI2;', 'builders.micInput');
+    assertDeepEqual(parseCommand('PB3;'), { kind: 'dvrPlayback', rx: null, slot: 3, playing: true }, 'PB3;');
+    assertDeepEqual(parseCommand('PB0;'), { kind: 'dvrPlayback', rx: null, slot: 0, playing: false }, 'PB0;');
+    assertEqual(builders.dvrPlay(3), 'PB3;', 'builders.dvrPlay');
+    assertEqual(parseCommand('KS028;').wpm, 28, 'KS028;');
+    assertEqual(builders.cwSpeed(28), 'KS028;', 'builders.cwSpeed');
+    assertDeepEqual(parseCommand('KPBN115;'), { kind: 'keyerPaddle', rx: null, iambic: 'B', paddleOrder: 'N', weight: 115 }, 'KPBN115;');
+    assertEqual(builders.keyerPaddle('B', 'N', 115), 'KPBN115;', 'builders.keyerPaddle');
+    assertDeepEqual(parseCommand('KY1;'), { kind: 'keyerStatus', rx: null, bufferFull: true }, 'KY1;');
+    assertDeepEqual(parseCommand('KY Cq Test De K4;'), { kind: 'keyerText', rx: null, mode: ' ', text: 'Cq Test De K4' }, 'KY mixed-case');
+    assertDeepEqual(parseCommand('KYWHello K4;'), { kind: 'keyerText', rx: null, mode: 'W', text: 'Hello K4' }, 'KYW mixed-case');
+    assertEqual(builders.keyerText('Cq De K4', ' '), 'KY Cq De K4;', 'builders.keyerText');
+    assertEqual(builders.keyerAbort(), 'KY @;', 'builders.keyerAbort');
+
+    // OM, SIRF, SIDU
+    const om = parseCommand('OMAPSHL;');
+    assertEqual(om.kind, 'optionModule', 'OM kind');
+    assertEqual(om.hasAtu, true, 'OM hasAtu');
+    assertEqual(om.hasKpa4, true, 'OM hasKpa4');
+    assertEqual(om.hasSubRx, true, 'OM hasSubRx');
+    assertEqual(om.hasHdr, true, 'OM hasHdr');
+    assertEqual(om.hasLinearAmp, true, 'OM hasLinearAmp');
+
+    const sirf = parseCommand('SIRFV8:8.0,V5:5.0,V27:27.1,LT:31.2,LM:0,PA:9.75,PM:0,PT:46.8;');
+    assertEqual(sirf.kind, 'systemInfo', 'SIRF kind');
+    assertEqual(sirf.module, 'RF', 'SIRF module');
+    assertApprox(sirf.fields.LT, 31.2, 1e-6, 'SIRF LT');
+    assertApprox(sirf.fields.PA, 9.75, 1e-6, 'SIRF PA');
+    assertApprox(sirf.fields.PT, 46.8, 1e-6, 'SIRF PT');
+
+    const sidu = parseCommand('SIDUV5:5.0,V3:3.3,T:34.2;');
+    assertEqual(sidu.kind, 'systemInfo', 'SIDU kind');
+    assertEqual(sidu.module, 'DU', 'SIDU module');
+    assertApprox(sidu.fields.T, 34.2, 1e-6, 'SIDU T');
+
+    // splitFrames preserves TX/TU tokens without breaking
+    assertDeepEqual(splitFrames('TX;TM004000018011;RX;'), ['TX', 'TM004000018011', 'RX'], 'splitFrames TX batch');
+  });
+
+  // 25. RxOnlyGate: policy transitions, 0x01 TX audio gating, permanent blocklist, mixed-case KY
+  test('RxOnlyGate policy transitions, 0x01 audio gating, permanent blocklist & mixed-case KY', () => {
+    const gate = new globalThis.K4.RxOnlyGate();
+    assertEqual(gate.getPolicy(), 'rx-only', 'default policy is rx-only');
+    assertEqual(gate.isTxAudioAllowed(), false, 'default txAudioAllowed is false');
+
+    // In rx-only, 0x01 audio is blocked even if setTxAudioAllowed(true) was attempted
+    gate.setTxAudioAllowed(true);
+    assertEqual(gate.inspectBinary(0x00), true, '0x00 CAT binary always allowed');
+    assertEqual(gate.inspectBinary(0x01), false, '0x01 audio blocked in rx-only');
+
+    // In rx-only, operational TX commands are blocked
+    const rxBlocked = gate.inspectCat('TX;TU3;KY CQ;PC050L;PB1;FA00014074000;');
+    assertDeepEqual(rxBlocked.allowed, ['FA00014074000;'], 'rx-only allows FA');
+    assertDeepEqual(rxBlocked.blocked, ['TX;', 'TU3;', 'KY CQ;', 'PC050L;', 'PB1;'], 'rx-only blocks TX cmds');
+    assertEqual(rxBlocked.sanitized, 'FA00014074000;', 'rx-only sanitized');
+
+    // Transition to tx-enabled keeps txAudioAllowed=false until explicitly armed
+    gate.setPolicy('tx-enabled');
+    gate.setTxAudioAllowed(false);
+    assertEqual(gate.getPolicy(), 'tx-enabled', 'policy switched to tx-enabled');
+    assertEqual(gate.inspectBinary(0x01), false, '0x01 blocked while txAudioAllowed=false');
+
+    gate.setTxAudioAllowed(true);
+    assertEqual(gate.isTxAudioAllowed(), true, 'txAudioAllowed=true');
+    assertEqual(gate.inspectBinary(0x01), true, '0x01 allowed when tx-enabled & txAudioAllowed');
+    assertEqual(gate.inspectBinary(0x04), false, 'unknown binary 0x04 always blocked');
+
+    // Operational TX commands + mixed-case KY / ACN preserved in tx-enabled
+    const txRes = gate.inspectCat('tx;rx;TS1;TU3;AT2;AN2;PC050H;MG025;CP010;ML0020;MI1;KS024;KPAR110;PB1;FT1;AB3;XT1;DW0;TE+0+0;ky Cq Test De K4;acn2Dipole 40m;');
+    assertEqual(txRes.blocked.length, 0, 'tx-enabled allows full operational TX set');
+    assert(txRes.allowed.includes('KY Cq Test De K4;'), 'KY mixed-case preserved');
+    assert(txRes.allowed.includes('ACN2Dipole 40m;'), 'ACN mixed-case preserved');
+    assert(txRes.sanitized.includes('KY Cq Test De K4;'), 'KY mixed-case in sanitized');
+
+    // Permanent destructive/admin blocklist MUST stay blocked even in tx-enabled
+    const permCmds = ['EE0;', 'LB1;', 'WM0;', '#CAL1;', 'PS0;', 'RRP1;', 'EC1;', 'SW1;', 'DARM1;'];
+    const permRes = gate.inspectCat('TX;' + permCmds.join('') + 'RX;');
+    assertEqual(permRes.blocked.length, permCmds.length, 'all 9 permanent blocklist commands blocked in tx-enabled');
+    assertDeepEqual(permRes.blocked, permCmds, 'exact permanent blocked list');
+    assertEqual(permRes.sanitized, 'TX;RX;', 'destructive cmds stripped around TX;RX;');
+
+    // Disarm back to rx-only clears txAudioAllowed and re-blocks TX
+    gate.setPolicy('rx-only');
+    assertEqual(gate.getPolicy(), 'rx-only', 'disarmed to rx-only');
+    assertEqual(gate.isTxAudioAllowed(), false, 'disarm clears txAudioAllowed');
+    assertEqual(gate.inspectBinary(0x01), false, '0x01 re-blocked after disarm');
+    assertEqual(gate.inspectCat('TX;').blocked.length, 1, 'TX; re-blocked after disarm');
+  });
+
+  // 26. RadioState: TX/ATU/sensor transitions (TM L/H scaling, TX->RX peakHold, SIFP/SIRF/SIDU, atuMatchedSwr)
+  test('RadioState handles TM L/H scaling, TX->RX peakHold, sensors & atuMatchedSwr', () => {
+    const state = new globalThis.K4.RadioState();
+    const { parseCommand } = globalThis.K4.CatCodec;
+
+    // TM scaling in L (tenths of watt) vs H (whole watts)
+    state.applyParsedCat(parseCommand('PC055L;'));
+    state.applyParsedCat(parseCommand('TX;'));
+    state.applyParsedCat(parseCommand('TM003005045014;'));
+    let snap = state.getSnapshot();
+    assertEqual(snap.powerRange, 'L', 'powerRange L');
+    assertApprox(snap.txMeters.fwdWatts, 4.5, 1e-6, 'TM L tenths W');
+    assertApprox(snap.txMeters.swr, 1.4, 1e-6, 'TM swr');
+    assertEqual(snap.txMeters.alcBars, 3, 'TM alcBars');
+    assertEqual(snap.txMeters.compDb, 5, 'TM compDb');
+    assertApprox(snap.txMeters.peakFwdWatts, 4.5, 1e-6, 'peakFwdWatts in L');
+    assertApprox(snap.txMeters.peakSwr, 1.4, 1e-6, 'peakSwr in L');
+
+    state.applyParsedCat(parseCommand('PC075H;'));
+    state.applyParsedCat(parseCommand('TM005012075018;'));
+    snap = state.getSnapshot();
+    assertEqual(snap.powerRange, 'H', 'powerRange H');
+    assertEqual(snap.txMeters.fwdWatts, 75, 'TM H integer W');
+    assertApprox(snap.txMeters.swr, 1.8, 1e-6, 'TM H swr');
+    assertEqual(snap.txMeters.peakFwdWatts, 75, 'peakFwdWatts updated in H');
+    assertApprox(snap.txMeters.peakSwr, 1.8, 1e-6, 'peakSwr updated in H');
+
+    // TX -> RX resets live TX meters while preserving peakHold
+    state.applyParsedCat(parseCommand('RX;'));
+    snap = state.getSnapshot();
+    assertEqual(snap.txActive, false, 'RX clears txActive');
+    assertEqual(snap.txMeters.fwdWatts, 0, 'RX resets live fwdWatts');
+    assertEqual(snap.txMeters.swr, 0, 'RX resets live swr');
+    assertEqual(snap.txMeters.alcBars, 0, 'RX resets live alcBars');
+    assertEqual(snap.txMeters.compDb, 0, 'RX resets live compDb');
+    assertEqual(snap.txMeters.peakFwdWatts, 75, 'RX keeps peakFwdWatts hold');
+    assertApprox(snap.txMeters.peakSwr, 1.8, 1e-6, 'RX keeps peakSwr hold');
+
+    // SIFP rxBaselineVolts / txVoltDrop & peakSupplyAmps
+    state.applyParsedCat(parseCommand('SIFPVS:13.80,IS:1.65,TF:26.0;'));
+    snap = state.getSnapshot();
+    assertApprox(snap.telemetry.rxBaselineVolts, 13.80, 1e-6, 'idle rxBaselineVolts');
+    assertApprox(snap.telemetry.txVoltDrop, 0, 1e-6, 'idle txVoltDrop = 0');
+
+    state.applyParsedCat(parseCommand('TX;'));
+    state.applyParsedCat(parseCommand('SIFPVS:13.15,IS:18.40,TF:27.5;'));
+    state.applyParsedCat(parseCommand('SIFPVS:13.25,IS:12.00,TF:27.8;'));
+    snap = state.getSnapshot();
+    assertApprox(snap.telemetry.rxBaselineVolts, 13.80, 1e-6, 'baseline preserved during TX');
+    assertApprox(snap.telemetry.txVoltDrop, 0.55, 1e-6, 'txVoltDrop = baseline - supplyVolts');
+    assertApprox(snap.telemetry.peakSupplyAmps, 18.40, 1e-6, 'peakSupplyAmps retains max');
+    assertApprox(snap.telemetry.fpTempC, 27.8, 1e-6, 'fpTempC updated');
+
+    // SIRF & SIDU sensors
+    state.applyParsedCat(parseCommand('SIRFV8:8.0,V5:5.0,V27:27.1,LT:31.2,LM:0,PA:12.50,PM:0,PT:48.5;'));
+    state.applyParsedCat(parseCommand('SIDUV5:5.0,V3:3.3,T:36.8;'));
+    snap = state.getSnapshot();
+    assertApprox(snap.telemetry.paTempC, 48.5, 1e-6, 'paTempC');
+    assertApprox(snap.telemetry.lpaTempC, 31.2, 1e-6, 'lpaTempC');
+    assertApprox(snap.telemetry.paAmps, 12.5, 1e-6, 'paAmps');
+    assertApprox(snap.telemetry.ducTempC, 36.8, 1e-6, 'ducTempC');
+
+    // ATU tune capture: TU3 -> non-zero SWR -> TU0 captures atuMatchedSwr
+    state.applyParsedCat(parseCommand('RX;'));
+    state.applyParsedCat(parseCommand('FA00014200000;'));
+    state.applyParsedCat(parseCommand('TU3;'));
+    assertEqual(state.getSnapshot().atuTuning, true, 'atuTuning active on TU3');
+    state.applyParsedCat(parseCommand('TM004000018011;'));
+    state.applyParsedCat(parseCommand('TU0;'));
+    snap = state.getSnapshot();
+    assertEqual(snap.atuTuning, false, 'atuTuning cleared on TU0');
+    assertApprox(snap.atuMatchedSwr, 1.1, 1e-6, 'atuMatchedSwr captured from tune');
+    assertEqual(snap.atuLastTunedFreqHz, 14200000, 'atuLastTunedFreqHz');
+  });
+
+  // 27. AudioEngine: TX sources ('two-tone', 'tone-1k', 'wav') -> EM1 12kHz S16LE 240-sample 0x01 packets
+  test('AudioEngine generates EM1 12kHz 240-sample 0x01 packets for two-tone, tone-1k & wav', async () => {
+    const K4 = globalThis.K4;
+    const engine = new K4.AudioEngine({ latencyMs: 75 });
+    const packets = [];
+    engine.setTxPacketHandler((pkt, meta) => {
+      packets.push({ pkt: new Uint8Array(pkt), meta });
+    });
+
+    const sleepMs = (ms) => new Promise((r) => setTimeout(r, ms));
+    try {
+      const expectedMicAvail = Boolean(
+        globalThis.isSecureContext &&
+          typeof navigator !== 'undefined' &&
+          navigator.mediaDevices &&
+          typeof navigator.mediaDevices.getUserMedia === 'function'
+      );
+      assertEqual(engine.isMicSecureContextAvailable(), expectedMicAvail, 'isMicSecureContextAvailable');
+      const devices = await engine.listAudioInputs();
+      assert(Array.isArray(devices), 'listAudioInputs resolves an Array');
+
+      // 'two-tone'
+      packets.length = 0;
+      const d1 = await engine.startTxCapture({ source: 'two-tone' });
+      assertEqual(d1.active, true, 'two-tone active');
+      assertEqual(d1.source, 'two-tone', 'two-tone source');
+      assertEqual(d1.sampleRate, 12000, 'two-tone 12kHz');
+      assertEqual(d1.frameSamplesPerCh, 240, 'two-tone 240 samples');
+      assert(packets.length >= 1, 'two-tone emitted initial packet');
+      assert(engine.getTxInputLevel() > 0, 'two-tone input level > 0');
+      assertEqual(engine.getDiagnostics().txActive, true, 'diagnostics txActive=true');
+
+      const parsedTwoTone = K4.BinaryPackets.parseAudio(packets[0].pkt);
+      assert(parsedTwoTone !== null, 'parseAudio(two-tone)');
+      assertEqual(parsedTwoTone.encodeMode, 1, 'two-tone EM1');
+      assertEqual(parsedTwoTone.sampleRate, 12000, 'two-tone 12000 Hz');
+      assertEqual(parsedTwoTone.frameSamplesPerCh, 240, 'two-tone 240 frames');
+      assertEqual(parsedTwoTone.data.byteLength, 960, 'two-tone stereo S16LE byteLength=960');
+      const decTwoTone = K4.PcmDecoder.decode(parsedTwoTone);
+      assert(decTwoTone.left.some((v) => Math.abs(v) > 0.01), 'two-tone non-silent PCM');
+      engine.stopTxCapture();
+      assertEqual(engine.getTxInputLevel(), 0, 'stopTxCapture resets input level');
+      assertEqual(engine.getDiagnostics().txActive, false, 'stopTxCapture sets txActive=false');
+
+      // 'tone-1k'
+      packets.length = 0;
+      const d2 = await engine.startTxCapture({ source: 'tone-1k' });
+      assertEqual(d2.source, 'tone-1k', 'tone-1k source');
+      assert(packets.length >= 1, 'tone-1k emitted packet');
+      assert(engine.getTxInputLevel() > 0, 'tone-1k input level > 0');
+      const parsedTone1k = K4.BinaryPackets.parseAudio(packets[0].pkt);
+      assertEqual(parsedTone1k.encodeMode, 1, 'tone-1k EM1');
+      assertEqual(parsedTone1k.frameSamplesPerCh, 240, 'tone-1k 240 frames');
+      assertEqual(parsedTone1k.data.byteLength, 960, 'tone-1k 960 bytes');
+      engine.stopTxCapture();
+
+      // 'wav' + verify interval emission and clean stopTxCapture halt
+      const wavSamples = new Float32Array(480);
+      for (let i = 0; i < wavSamples.length; i++) {
+        wavSamples[i] = 0.45 * Math.sin((2 * Math.PI * 800 * i) / 12000);
+      }
+      engine.setTxWaveBuffer(wavSamples, 12000);
+      packets.length = 0;
+      const d3 = await engine.startTxCapture({ source: 'wav' });
+      assertEqual(d3.source, 'wav', 'wav source');
+      await sleepMs(60);
+      assert(packets.length >= 2, `wav timer emitted multiple packets (got ${packets.length})`);
+      assert(engine.getTxInputLevel() > 0, 'wav input level > 0');
+      const parsedWav = K4.BinaryPackets.parseAudio(packets[0].pkt);
+      assertEqual(parsedWav.encodeMode, 1, 'wav EM1');
+      assertEqual(parsedWav.frameSamplesPerCh, 240, 'wav 240 frames');
+      const decWav = K4.PcmDecoder.decode(parsedWav);
+      assert(decWav.left.some((v) => Math.abs(v) > 0.01), 'wav decoded energy > 0');
+
+      engine.stopTxCapture();
+      const countAtStop = packets.length;
+      await sleepMs(60);
+      assertEqual(packets.length, countAtStop, 'stopTxCapture cleanly stops further packets');
+      assertEqual(engine.getTxInputLevel(), 0, 'stopTxCapture clears wav input level');
+    } finally {
+      engine.destroy();
+    }
+  });
+
+  // 28. SpectrumGeometry.computeTxOverlay: Split VFO B + XIT offset + CW pitch
+  test('SpectrumGeometry.computeTxOverlay computes Split VFO B, XIT offset & CW pitch', () => {
+    const geom = globalThis.K4.SpectrumGeometry;
+    assert(typeof geom.computeTxOverlay === 'function', 'computeTxOverlay exists');
+
+    // Simplex VFO A USB
+    const simplex = geom.computeTxOverlay({
+      splitEnabled: false,
+      xitEnabled: false,
+      cwPitchHz: 500,
+      txActive: true,
+      txTestMode: false,
+      rxA: { freqHz: 14200000, mode: 2, bwHz: 2400, ifShiftHz: 0, ritOffsetHz: 300 },
+      rxB: { freqHz: 14205000, mode: 2, bwHz: 2400, ifShiftHz: 0, ritOffsetHz: 900 },
+    });
+    assertEqual(simplex.txVfo, 'A', 'simplex txVfo=A');
+    assertEqual(simplex.carrierHz, 14200000, 'simplex ignores ritOffsetHz when XIT off');
+    assertEqual(simplex.centerHz, 14200000, 'simplex USB centerHz');
+    assertEqual(simplex.lowHz, 14198800, 'simplex USB lowHz');
+    assertEqual(simplex.highHz, 14201200, 'simplex USB highHz');
+    assertEqual(simplex.isSplitOrXit, false, 'simplex isSplitOrXit=false');
+    assertEqual(simplex.active, true, 'simplex active=true');
+    assertEqual(simplex.txTestMode, false, 'simplex txTestMode=false');
+
+    // Split VFO B + XIT offset + CW pitch
+    const splitXitCw = geom.computeTxOverlay({
+      splitEnabled: true,
+      xitEnabled: true,
+      cwPitchHz: 600,
+      txActive: false,
+      atuTuning: true,
+      txTestMode: true,
+      rxA: { freqHz: 14020000, mode: 3, bwHz: 400, ifShiftHz: 0, ritOffsetHz: 100 },
+      rxB: { freqHz: 14025000, mode: 3, bwHz: 400, ifShiftHz: 0, ritOffsetHz: 1200 },
+    });
+    assertEqual(splitXitCw.txVfo, 'B', 'split txVfo=B');
+    assertEqual(splitXitCw.carrierHz, 14026200, 'split VFO B + XIT carrierHz = 14025000 + 1200');
+    assertEqual(splitXitCw.centerHz, 14026800, 'CW pitch +600 centerHz = 14026800');
+    assertEqual(splitXitCw.lowHz, 14026600, 'CW lowHz');
+    assertEqual(splitXitCw.highHz, 14027000, 'CW highHz');
+    assertEqual(splitXitCw.isSplitOrXit, true, 'isSplitOrXit=true');
+    assertEqual(splitXitCw.active, true, 'atuTuning activates overlay');
+    assertEqual(splitXitCw.txTestMode, true, 'txTestMode propagated');
+  });
+
   async function runAll() {
     const resultsEl = document.getElementById('results');
     const summaryEl = document.getElementById('summary');

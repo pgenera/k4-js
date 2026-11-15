@@ -237,10 +237,17 @@
         this.splitBadge = document.createElement('span');
         this.splitBadge.className = 'k4-split-tag';
         this.splitBadge.textContent = 'SPLIT';
-        this.splitBadge.title = 'Split active on radio (read-only indicator in RX-Only mode)';
+        this.splitBadge.title = 'Split active: transmitting on VFO B';
         this.splitBadge.hidden = true;
         this.pillsEl.appendChild(this.splitBadge);
       }
+
+      this.txBadge = document.createElement('span');
+      this.txBadge.className = 'k4-tx-target-tag';
+      this.txBadge.dataset.testid = this.rx === 'A' ? 'vfo-a-tx-badge' : 'vfo-b-tx-badge';
+      this.txBadge.textContent = 'TX';
+      this.txBadge.hidden = true;
+      this.pillsEl.appendChild(this.txBadge);
 
       this.bandBtn = document.createElement('button');
       this.bandBtn.type = 'button';
@@ -341,6 +348,37 @@
           this.splitBadge.hidden = !split;
           this._lastCache.split = split;
         }
+      }
+
+      if (this.txBadge) {
+        const split = Boolean(snapshot.splitEnabled);
+        const txVfo = snapshot.activeTxVfo || (split ? 'B' : 'A');
+        const isTxTarget = txVfo === this.rx;
+        const txActive = Boolean(snapshot.txActive);
+        const atuTuning = Boolean(snapshot.atuTuning);
+        const posture = snapshot.txPosture || 'rx-only';
+        const isTest = Boolean(snapshot.txTestMode || posture === 'tx-test');
+
+        const showTxBadge = isTxTarget && (txActive || atuTuning || split || posture !== 'rx-only');
+        let badgeText = split && this.rx === 'B' ? 'SPLIT TX' : 'TX';
+        let badgeClass = 'k4-tx-target-tag';
+        if (isTxTarget && atuTuning) {
+          badgeText = 'ATU';
+          badgeClass = 'k4-tx-target-tag is-tx-test';
+        } else if (isTxTarget && txActive && isTest) {
+          badgeText = 'TEST';
+          badgeClass = 'k4-tx-target-tag is-tx-test';
+        } else if (isTxTarget && txActive) {
+          badgeText = 'TX';
+          badgeClass = 'k4-tx-target-tag is-tx-live';
+        }
+
+        this.txBadge.hidden = !showTxBadge;
+        if (showTxBadge) {
+          this.txBadge.textContent = badgeText;
+          this.txBadge.className = badgeClass;
+        }
+        this.container.classList.toggle('is-transmitting', Boolean(isTxTarget && (txActive || atuTuning)));
       }
 
       if (this._lastCache.freqHz !== freqHz) {

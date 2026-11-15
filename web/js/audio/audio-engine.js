@@ -10,6 +10,14 @@
   const AF_FFT_SIZE = 1024;
   const AF_TAP_SAMPLE_RATE = 12000;
   const MAX_RECORD_SECONDS = 300;
+  const TX_SAMPLE_RATE = 12000;
+  const TX_FRAME_SAMPLES = 240;
+  const TX_CHUNK_MS = 20;
+  const TX_CHANNELS = 2; // Interleaved stereo S16LE matching K4 EM1 4-byte frame format
+  const TX_S16_SCALE = 32768.0 / 32.0; // K4 1/32 wire convention (1024 counts = 1.0)
+  const TX_VALID_SOURCES = new Set(['two-tone', 'tone-1k', 'wav', 'mic']);
+  const TX_WORKLET_LOADED_CTXS = typeof WeakSet === 'function' ? new WeakSet() : null;
+  const TWO_PI = 2 * Math.PI;
 
   const VALID_MIX_MODES = new Set([
     'A.B', 'AB.AB', 'A.-A', 'A.AB', 'AB.B', 'AB.A', 'B.AB', 'B.B', 'B.A', 'A.A',
@@ -61,6 +69,110 @@
   }
 
   const BaseEmitter = typeof K4.EventEmitter === 'function' ? K4.EventEmitter : FallbackEmitter;
+
+  function fallbackSoftClip(x) {
+    if (!Number.isFinite(x)) return 0;
+    const ax = Math.abs(x);
+    if (ax <= 0.9) return x;
+    const mag = Math.min(0.9999999, 0.9 + 0.1 * Math.tanh((ax - 0.9) / 0.1));
+    return Math.sign(x) * mag;
+  }
+
+  function softLimitTx(x) {
+    if (K4.PcmDecoder && typeof K4.PcmDecoder.softClip === 'function') {
+      return K4.PcmDecoder.softClip(x);
+    }
+    return fallbackSoftClip(x);
+  }
+
+  function fallbackEncodeAudio(opts) {
+    const cfg = opts || {};
+    const seq = Number(cfg.seq || 0) & 0xff;
+    const encodeMode = cfg.encodeMode !== undefined ? (Number(cfg.encodeMode) & 0xff) : 1;
+    const frameSamplesPerCh = Number(cfg.frameSamplesPerCh || TX_FRAME_SAMPLES) & 0xffff;
+    const sampleRateCode = Number(cfg.sampleRateCode || 0) & 0xff;
+    const raw = cfg.audioBytes;
+    let payloadBytes;
+    if (raw instanceof Uint8Array) {
+      payloadBytes = raw;
+    } else if (ArrayBuffer.isView(raw)) {
+      payloadBytes = new Uint8Array(raw.buffer, raw.byteOffset, raw.byteLength);
+    } else if (raw instanceof ArrayBuffer) {
+      payloadBytes = new Uint8Array(raw);
+    } else {
+      payloadBytes = new Uint8Array(0);
+    }
+
+    const out = new Uint8Array(7 + payloadBytes.byteLength);
+    const dv = new DataView(out.buffer, out.byteOffset, out.byteLength);
+    out[0] = 0x01;
+    out[1] = 0x01;
+    out[2] = seq;
+    out[3] = encodeMode;
+    dv.setUint16(4, frameSamplesPerCh, true);
+    out[6] = sampleRateCode;
+    out.set(payloadBytes, 7);
+    return out;
+  }
+
+  // Pure 7-bit ASCII source so btoa() succeeds in every browser and file:// origin.
+  const TX_WORKLET_PROCESSOR_SOURCE = [
+    "'use strict';",
+    'class K4TxCaptureProcessor extends AudioWorkletProcessor {',
+    '  constructor() {',
+    '    super();',
+    '    this.chunkSize = 256;',
+    '    this.buf = new Float32Array(this.chunkSize);',
+    '    this.offset = 0;',
+    '    this.stopped = false;',
+    '    this.port.onmessage = (ev) => {',
+    '      if (ev && ev.data && ev.data.type === "stop") {',
+    '        this.stopped = true;',
+    '      }',
+    '    };',
+    '  }',
+    '  process(inputs) {',
+    '    if (this.stopped) return false;',
+    '    const input = inputs && inputs[0];',
+    '    if (!input || input.length === 0) return true;',
+    '    const ch0 = input[0];',
+    '    if (!ch0 || ch0.length === 0) return true;',
+    '    for (let i = 0; i < ch0.length; i++) {',
+    '      this.buf[this.offset++] = ch0[i];',
+    '      if (this.offset >= this.chunkSize) {',
+    '        const out = this.buf;',
+    '        this.port.postMessage({ samples: out }, [out.buffer]);',
+    '        this.buf = new Float32Array(this.chunkSize);',
+    '        this.offset = 0;',
+    '      }',
+    '    }',
+    '    return true;',
+    '  }',
+    '}',
+    "registerProcessor('k4-tx-capture-processor', K4TxCaptureProcessor);",
+  ].join('\n');
+
+  function createTxWorkletDataUrl() {
+    return 'data:text/javascript;base64,' + globalThis.btoa(TX_WORKLET_PROCESSOR_SOURCE);
+  }
+
+  function computeButterworthLpCoeffs(fs, fc) {
+    const cutoff = Math.min(fc, fs * 0.4);
+    const w0 = (TWO_PI * cutoff) / fs;
+    const cosW0 = Math.cos(w0);
+    const sinW0 = Math.sin(w0);
+    const alpha = sinW0 / Math.SQRT2;
+    const a0 = 1 + alpha;
+    const b0 = ((1 - cosW0) * 0.5) / a0;
+    return {
+      fs,
+      b0,
+      b1: (1 - cosW0) / a0,
+      b2: b0,
+      a1: (-2 * cosW0) / a0,
+      a2: (1 - alpha) / a0,
+    };
+  }
 
   /**
    * Encode Int16 interleaved PCM chunks into a standard 44-byte RIFF WAVE Uint8Array.
@@ -249,6 +361,49 @@
       this._recCurIdx = 0;
       this._recTotalFrames = 0;
       this._lastRecordedClip = null;
+
+      // Outbound TX capture & EM1 12 kHz S16LE encoder state
+      this._destroyed = false;
+      this._txPacketHandler = null;
+      this._txActive = false;
+      this._txSource = null;
+      this._txInputLevel = 0;
+      this._txPacketsOut = 0;
+      this._txSessionPackets = 0;
+      this._txSeq = 0;
+      this._txSessionGen = 0;
+      this._txTimer = null;
+
+      this._txPhase1 = 0;
+      this._txPhase2 = 0;
+
+      this._txWaveBuffer = null;
+      this._txWaveSampleRate = TX_SAMPLE_RATE;
+      this._txWavePhase = 0;
+
+      this._txCtx = null;
+      this._txOwnsCtx = false;
+      this._txMediaStream = null;
+      this._txMicSourceNode = null;
+      this._txWorkletNode = null;
+      this._txScriptNode = null;
+      this._txMuteGainNode = null;
+
+      this._txFrameBuf = new Float32Array(TX_FRAME_SAMPLES);
+      this._txFrameIdx = 0;
+      this._txSynthBuf = new Float32Array(TX_FRAME_SAMPLES);
+      this._txPcmBytes = new Uint8Array(TX_FRAME_SAMPLES * TX_CHANNELS * 2);
+      this._txPcmView = new DataView(this._txPcmBytes.buffer);
+
+      this._txResampPhase = 0;
+      this._txResampPrev = 0;
+      this._txResampLastSrcRate = 0;
+      this._txLpCoeffs = null;
+      this._txLpX1 = 0;
+      this._txLpX2 = 0;
+      this._txLpY1 = 0;
+      this._txLpY2 = 0;
+      this._txFilterScratch = null;
     }
 
     _readSnapshot(stateObj) {
@@ -893,7 +1048,587 @@
         underruns: this._underruns,
         packetsIn: this._packetsIn,
         seqGaps: this._seqGaps,
+        txActive: this._txActive,
+        txSource: this._txSource,
+        txInputLevel: clamp(this._txInputLevel, 0, 1),
+        txPacketsOut: this._txPacketsOut,
+        isSecureContext: Boolean(globalThis.isSecureContext),
       };
+    }
+
+    /**
+     * Register callback receiving outbound 0x01 EM1 packets (encodedPacketUint8, meta).
+     * @param {Function|null} fn
+     */
+    setTxPacketHandler(fn) {
+      this._txPacketHandler = typeof fn === 'function' ? fn : null;
+    }
+
+    /**
+     * Return true when browser Secure Context and getUserMedia mic capture are available.
+     * @returns {boolean}
+     */
+    isMicSecureContextAvailable() {
+      return Boolean(
+        globalThis.isSecureContext &&
+        typeof navigator !== 'undefined' &&
+        navigator.mediaDevices &&
+        typeof navigator.mediaDevices.getUserMedia === 'function'
+      );
+    }
+
+    /**
+     * Enumerate available audio input devices without throwing on restricted origins.
+     * @returns {Promise<Array<{ deviceId: string, label: string }>>}
+     */
+    async listAudioInputs() {
+      if (
+        typeof navigator === 'undefined' ||
+        !navigator.mediaDevices ||
+        typeof navigator.mediaDevices.enumerateDevices !== 'function'
+      ) {
+        return [];
+      }
+      try {
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        if (!Array.isArray(devices)) return [];
+        const inputs = [];
+        let idx = 1;
+        for (let i = 0; i < devices.length; i++) {
+          const d = devices[i];
+          if (d && d.kind === 'audioinput') {
+            inputs.push({
+              deviceId: d.deviceId || '',
+              label: d.label || `Microphone ${idx}`,
+            });
+            idx += 1;
+          }
+        }
+        return inputs;
+      } catch (_) {
+        return [];
+      }
+    }
+
+    /**
+     * Load a mono Float32 PCM buffer for looping TX 'wav' replay.
+     * @param {Float32Array|Int16Array|number[]|null} float32Samples
+     * @param {number} [sampleRate=12000]
+     */
+    setTxWaveBuffer(float32Samples, sampleRate = TX_SAMPLE_RATE) {
+      const sr = Number(sampleRate);
+      this._txWaveSampleRate = Number.isFinite(sr) && sr > 0 ? sr : TX_SAMPLE_RATE;
+      this._txWavePhase = 0;
+
+      if (!float32Samples || float32Samples.length === 0) {
+        this._txWaveBuffer = null;
+        return;
+      }
+
+      if (float32Samples instanceof Float32Array) {
+        this._txWaveBuffer = new Float32Array(float32Samples);
+        return;
+      }
+
+      const len = float32Samples.length;
+      const buf = new Float32Array(len);
+      if (float32Samples instanceof Int16Array) {
+        for (let i = 0; i < len; i++) {
+          buf[i] = float32Samples[i] / 32768.0;
+        }
+      } else {
+        for (let i = 0; i < len; i++) {
+          const v = Number(float32Samples[i]);
+          buf[i] = Number.isFinite(v) ? v : 0;
+        }
+      }
+      this._txWaveBuffer = buf;
+    }
+
+    /**
+     * Return current TX input RMS VU level in [0, 1].
+     * @returns {number}
+     */
+    getTxInputLevel() {
+      return clamp(this._txInputLevel, 0, 1);
+    }
+
+    /**
+     * Start outbound 12 kHz EM1 TX audio capture from 'two-tone', 'tone-1k', 'wav', or 'mic'.
+     * @param {Object} [opts]
+     * @returns {Promise<{ active: boolean, source: string, sampleRate: number, frameSamplesPerCh: number }>}
+     */
+    async startTxCapture({ source = 'two-tone', deviceId = '', voiceProcessing = false } = {}) {
+      if (this._destroyed) {
+        throw new Error('AudioEngine has been destroyed');
+      }
+      const resolvedSource = source ? String(source) : 'two-tone';
+      if (!TX_VALID_SOURCES.has(resolvedSource)) {
+        throw new RangeError('Unsupported TX audio source: ' + resolvedSource);
+      }
+
+      this.stopTxCapture({ silent: true });
+      const gen = ++this._txSessionGen;
+      this._txSessionPackets = 0;
+      this._txInputLevel = 0;
+      this._txFrameIdx = 0;
+
+      if (resolvedSource === 'mic') {
+        return this._startMicTxCapture(gen, deviceId, Boolean(voiceProcessing));
+      }
+
+      this._txActive = true;
+      this._txSource = resolvedSource;
+      this._txPhase1 = 0;
+      this._txPhase2 = 0;
+      this._txWavePhase = 0;
+
+      this._pumpSyntheticTxFrame();
+      this._txTimer = setInterval(() => {
+        if (gen !== this._txSessionGen || !this._txActive) return;
+        this._pumpSyntheticTxFrame();
+      }, TX_CHUNK_MS);
+
+      this.emit('diagnostics', this.getDiagnostics());
+      return {
+        active: true,
+        source: resolvedSource,
+        sampleRate: TX_SAMPLE_RATE,
+        frameSamplesPerCh: TX_FRAME_SAMPLES,
+      };
+    }
+
+    async _startMicTxCapture(gen, deviceId, voiceProcessing) {
+      if (!this.isMicSecureContextAvailable()) {
+        this.emit('diagnostics', this.getDiagnostics());
+        throw new Error(
+          'Microphone capture requires a Secure Context (http://localhost or https://) and navigator.mediaDevices.getUserMedia.'
+        );
+      }
+
+      const audioConstraints = {
+        echoCancellation: voiceProcessing,
+        noiseSuppression: voiceProcessing,
+        autoGainControl: voiceProcessing,
+      };
+      const devId = typeof deviceId === 'string' ? deviceId.trim() : '';
+      if (devId) {
+        audioConstraints.deviceId = devId;
+      }
+
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints });
+      if (gen !== this._txSessionGen || this._destroyed) {
+        this._stopMediaStreamTracks(stream);
+        return { active: false, source: 'mic', sampleRate: TX_SAMPLE_RATE, frameSamplesPerCh: TX_FRAME_SAMPLES };
+      }
+
+      const reuseRxCtx = Boolean(this._ctx && this._ctx.state !== 'closed');
+      const ctx = reuseRxCtx ? this._ctx : this._createAudioContext();
+      if (!ctx) {
+        this._stopMediaStreamTracks(stream);
+        throw new Error('Web Audio API AudioContext unavailable for microphone capture.');
+      }
+
+      if (ctx.state === 'suspended' && typeof ctx.resume === 'function') {
+        try {
+          const p = ctx.resume();
+          if (p && typeof p.catch === 'function') p.catch(() => {});
+        } catch (_) {}
+      }
+
+      this._txCtx = ctx;
+      this._txOwnsCtx = !reuseRxCtx;
+      this._txMediaStream = stream;
+      this._resetTxResampler();
+
+      let sourceNode = null;
+      let muteGain = null;
+      try {
+        sourceNode = ctx.createMediaStreamSource(stream);
+        muteGain = ctx.createGain();
+        muteGain.gain.value = 0;
+        muteGain.connect(ctx.destination);
+      } catch (err) {
+        this._cleanupTxAudioGraph();
+        throw err;
+      }
+
+      this._txMicSourceNode = sourceNode;
+      this._txMuteGainNode = muteGain;
+
+      let workletReady = false;
+      if (
+        ctx.audioWorklet &&
+        typeof ctx.audioWorklet.addModule === 'function' &&
+        typeof globalThis.AudioWorkletNode === 'function'
+      ) {
+        try {
+          if (!TX_WORKLET_LOADED_CTXS || !TX_WORKLET_LOADED_CTXS.has(ctx)) {
+            const txWorkletUrl = createTxWorkletDataUrl();
+            await Promise.race([
+              ctx.audioWorklet.addModule(txWorkletUrl),
+              new Promise((_, reject) => setTimeout(() => reject(new Error('TX AudioWorklet timeout')), 1500)),
+            ]);
+            if (TX_WORKLET_LOADED_CTXS) TX_WORKLET_LOADED_CTXS.add(ctx);
+          }
+
+          if (gen !== this._txSessionGen || this._destroyed) {
+            this._cleanupTxAudioGraph();
+            return { active: false, source: 'mic', sampleRate: TX_SAMPLE_RATE, frameSamplesPerCh: TX_FRAME_SAMPLES };
+          }
+
+          const workletNode = new globalThis.AudioWorkletNode(ctx, 'k4-tx-capture-processor', {
+            numberOfInputs: 1,
+            numberOfOutputs: 1,
+            channelCount: 1,
+            outputChannelCount: [1],
+          });
+          workletNode.port.onmessage = (ev) => {
+            if (gen !== this._txSessionGen || !this._txActive) return;
+            const payload = ev && ev.data;
+            const samples = payload && payload.samples ? payload.samples : payload;
+            if (samples && typeof samples.length === 'number') {
+              this._processTxInputSamples(samples, ctx.sampleRate || DEFAULT_SAMPLE_RATE);
+            }
+          };
+          this._txActive = true;
+          this._txSource = 'mic';
+          sourceNode.connect(workletNode);
+          workletNode.connect(muteGain);
+          this._txWorkletNode = workletNode;
+          workletReady = true;
+        } catch (_) {
+          this._txActive = false;
+          this._txSource = null;
+          workletReady = false;
+        }
+      }
+
+      if (gen !== this._txSessionGen || this._destroyed) {
+        this._cleanupTxAudioGraph();
+        this._txActive = false;
+        this._txSource = null;
+        return { active: false, source: 'mic', sampleRate: TX_SAMPLE_RATE, frameSamplesPerCh: TX_FRAME_SAMPLES };
+      }
+
+      if (!workletReady) {
+        if (typeof ctx.createScriptProcessor === 'function') {
+          const sp = ctx.createScriptProcessor(512, 1, 1);
+          sp.onaudioprocess = (ev) => {
+            if (gen !== this._txSessionGen || !this._txActive) return;
+            const inBuf = ev && ev.inputBuffer;
+            if (!inBuf || inBuf.numberOfChannels < 1) return;
+            this._processTxInputSamples(inBuf.getChannelData(0), ctx.sampleRate || DEFAULT_SAMPLE_RATE);
+          };
+          this._txActive = true;
+          this._txSource = 'mic';
+          sourceNode.connect(sp);
+          sp.connect(muteGain);
+          this._txScriptNode = sp;
+        } else {
+          this._cleanupTxAudioGraph();
+          this._txActive = false;
+          this._txSource = null;
+          this.emit('diagnostics', this.getDiagnostics());
+          throw new Error('Browser Web Audio API lacks AudioWorkletNode and ScriptProcessorNode for mic capture.');
+        }
+      }
+
+      this.emit('diagnostics', this.getDiagnostics());
+      return {
+        active: true,
+        source: 'mic',
+        sampleRate: TX_SAMPLE_RATE,
+        frameSamplesPerCh: TX_FRAME_SAMPLES,
+      };
+    }
+
+    /**
+     * Stop TX audio capture and clean up TX audio nodes, MediaStream tracks, and timers.
+     * @param {{ silent?: boolean }} [opts]
+     */
+    stopTxCapture(opts = {}) {
+      this._txSessionGen += 1;
+      if (this._txTimer !== null) {
+        clearInterval(this._txTimer);
+        this._txTimer = null;
+      }
+      this._cleanupTxAudioGraph();
+      this._resetTxResampler();
+
+      this._txActive = false;
+      this._txSource = null;
+      this._txInputLevel = 0;
+      this._txFrameIdx = 0;
+      this._txSessionPackets = 0;
+
+      if (!opts || !opts.silent) {
+        this.emit('diagnostics', this.getDiagnostics());
+      }
+    }
+
+    _stopMediaStreamTracks(stream) {
+      if (!stream || typeof stream.getTracks !== 'function') return;
+      try {
+        const tracks = stream.getTracks();
+        for (let i = 0; i < tracks.length; i++) {
+          if (tracks[i] && typeof tracks[i].stop === 'function') {
+            tracks[i].stop();
+          }
+        }
+      } catch (_) {}
+    }
+
+    _cleanupTxAudioGraph() {
+      if (this._txWorkletNode) {
+        try {
+          this._txWorkletNode.port.onmessage = null;
+          this._txWorkletNode.port.postMessage({ type: 'stop' });
+          this._txWorkletNode.disconnect();
+        } catch (_) {}
+        this._txWorkletNode = null;
+      }
+      if (this._txScriptNode) {
+        try {
+          this._txScriptNode.onaudioprocess = null;
+          this._txScriptNode.disconnect();
+        } catch (_) {}
+        this._txScriptNode = null;
+      }
+      if (this._txMicSourceNode) {
+        try {
+          this._txMicSourceNode.disconnect();
+        } catch (_) {}
+        this._txMicSourceNode = null;
+      }
+      if (this._txMuteGainNode) {
+        try {
+          this._txMuteGainNode.disconnect();
+        } catch (_) {}
+        this._txMuteGainNode = null;
+      }
+      if (this._txMediaStream) {
+        this._stopMediaStreamTracks(this._txMediaStream);
+        this._txMediaStream = null;
+      }
+      if (this._txOwnsCtx && this._txCtx) {
+        try {
+          const p = this._txCtx.close();
+          if (p && typeof p.catch === 'function') p.catch(() => {});
+        } catch (_) {}
+      }
+      this._txCtx = null;
+      this._txOwnsCtx = false;
+    }
+
+    _resetTxResampler() {
+      this._txResampPhase = 0;
+      this._txResampPrev = 0;
+      this._txResampLastSrcRate = 0;
+      this._txLpCoeffs = null;
+      this._txLpX1 = 0;
+      this._txLpX2 = 0;
+      this._txLpY1 = 0;
+      this._txLpY2 = 0;
+    }
+
+    _pumpSyntheticTxFrame() {
+      const buf = this._txSynthBuf;
+      const src = this._txSource;
+
+      if (src === 'two-tone') {
+        const d1 = (TWO_PI * 700) / TX_SAMPLE_RATE;
+        const d2 = (TWO_PI * 1900) / TX_SAMPLE_RATE;
+        let p1 = this._txPhase1;
+        let p2 = this._txPhase2;
+        for (let i = 0; i < TX_FRAME_SAMPLES; i++) {
+          buf[i] = 0.45 * Math.sin(p1) + 0.45 * Math.sin(p2);
+          p1 += d1;
+          if (p1 >= TWO_PI) p1 -= TWO_PI;
+          p2 += d2;
+          if (p2 >= TWO_PI) p2 -= TWO_PI;
+        }
+        this._txPhase1 = p1;
+        this._txPhase2 = p2;
+      } else if (src === 'tone-1k') {
+        const d1 = (TWO_PI * 1000) / TX_SAMPLE_RATE;
+        let p1 = this._txPhase1;
+        for (let i = 0; i < TX_FRAME_SAMPLES; i++) {
+          buf[i] = 0.85 * Math.sin(p1);
+          p1 += d1;
+          if (p1 >= TWO_PI) p1 -= TWO_PI;
+        }
+        this._txPhase1 = p1;
+      } else if (src === 'wav') {
+        const wav = this._txWaveBuffer;
+        if (!wav || wav.length === 0) {
+          buf.fill(0);
+        } else {
+          const len = wav.length;
+          const step = this._txWaveSampleRate / TX_SAMPLE_RATE;
+          let pos = this._txWavePhase;
+          for (let i = 0; i < TX_FRAME_SAMPLES; i++) {
+            const idx0 = Math.floor(pos) % len;
+            const idx1 = (idx0 + 1) % len;
+            const frac = pos - Math.floor(pos);
+            buf[i] = wav[idx0] + frac * (wav[idx1] - wav[idx0]);
+            pos += step;
+            if (pos >= len) pos %= len;
+          }
+          this._txWavePhase = pos;
+        }
+      } else {
+        return;
+      }
+
+      this._emitTxFrame(buf);
+    }
+
+    _processTxInputSamples(inputSamples, srcRate) {
+      if (!this._txActive || this._txSource !== 'mic') return;
+      if (!inputSamples || inputSamples.length === 0) return;
+
+      const rate = Number.isFinite(srcRate) && srcRate > 0 ? srcRate : DEFAULT_SAMPLE_RATE;
+      const len = inputSamples.length;
+
+      if (rate === TX_SAMPLE_RATE) {
+        for (let i = 0; i < len; i++) {
+          this._pushTxSample12k(softLimitTx(inputSamples[i]));
+        }
+        return;
+      }
+
+      if (rate !== this._txResampLastSrcRate) {
+        this._txResampPhase = 0;
+        this._txResampPrev = 0;
+        this._txResampLastSrcRate = rate;
+        this._txLpX1 = 0;
+        this._txLpX2 = 0;
+        this._txLpY1 = 0;
+        this._txLpY2 = 0;
+        this._txLpCoeffs = rate > 13000 ? computeButterworthLpCoeffs(rate, 5000) : null;
+      }
+
+      let src = inputSamples;
+      if (this._txLpCoeffs) {
+        if (!this._txFilterScratch || this._txFilterScratch.length < len) {
+          this._txFilterScratch = new Float32Array(Math.max(len, 1024));
+        }
+        const out = this._txFilterScratch;
+        const { b0, b1, b2, a1, a2 } = this._txLpCoeffs;
+        let x1 = this._txLpX1;
+        let x2 = this._txLpX2;
+        let y1 = this._txLpY1;
+        let y2 = this._txLpY2;
+        for (let i = 0; i < len; i++) {
+          const raw = inputSamples[i];
+          const x = Number.isFinite(raw) ? raw : 0;
+          const y = b0 * x + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2;
+          x2 = x1;
+          x1 = x;
+          y2 = y1;
+          y1 = y;
+          out[i] = y;
+        }
+        this._txLpX1 = x1;
+        this._txLpX2 = x2;
+        this._txLpY1 = y1;
+        this._txLpY2 = y2;
+        src = out;
+      }
+
+      const ratio = rate / TX_SAMPLE_RATE;
+      let t = this._txResampPhase;
+      const limit = len - 1;
+      const prev = this._txResampPrev;
+      while (t < limit) {
+        let s;
+        if (t < 0) {
+          const frac = t + 1;
+          s = prev + frac * (src[0] - prev);
+        } else {
+          const idx = t | 0;
+          const frac = t - idx;
+          s = src[idx] + frac * (src[idx + 1] - src[idx]);
+        }
+        this._pushTxSample12k(softLimitTx(s));
+        t += ratio;
+      }
+      this._txResampPhase = t - len;
+      this._txResampPrev = src[len - 1];
+    }
+
+    _pushTxSample12k(sample) {
+      this._txFrameBuf[this._txFrameIdx++] = sample;
+      if (this._txFrameIdx >= TX_FRAME_SAMPLES) {
+        this._txFrameIdx = 0;
+        this._emitTxFrame(this._txFrameBuf);
+      }
+    }
+
+    _emitTxFrame(samples240) {
+      let sumSq = 0;
+      let peak = 0;
+      const view = this._txPcmView;
+
+      for (let i = 0; i < TX_FRAME_SAMPLES; i++) {
+        const v = softLimitTx(samples240[i]);
+        const av = v < 0 ? -v : v;
+        if (av > peak) peak = av;
+        sumSq += v * v;
+        const s16 = clampInt(v * TX_S16_SCALE, -32768, 32767);
+        const off = i * 4;
+        view.setInt16(off, s16, true);
+        view.setInt16(off + 2, s16, true);
+      }
+
+      const rms = Math.sqrt(sumSq / TX_FRAME_SAMPLES);
+      const rawLevel = clamp(rms, 0, 1);
+      if (this._txSessionPackets === 0 && rawLevel > 0) {
+        this._txInputLevel = rawLevel;
+      } else {
+        const alpha = rawLevel > this._txInputLevel ? 0.8 : 0.35;
+        this._txInputLevel = this._txInputLevel * (1 - alpha) + rawLevel * alpha;
+      }
+
+      const seq = this._txSeq & 0xff;
+      this._txSeq = (this._txSeq + 1) & 0xff;
+
+      const encodeFn =
+        K4.BinaryPackets && typeof K4.BinaryPackets.encodeAudio === 'function'
+          ? K4.BinaryPackets.encodeAudio
+          : fallbackEncodeAudio;
+
+      const packet = encodeFn({
+        seq,
+        encodeMode: 1,
+        frameSamplesPerCh: TX_FRAME_SAMPLES,
+        sampleRateCode: 0,
+        audioBytes: this._txPcmBytes,
+      });
+
+      this._txSessionPackets += 1;
+      this._txPacketsOut += 1;
+
+      if (this._txPacketHandler) {
+        const meta = {
+          seq,
+          encodeMode: 1,
+          frameSamplesPerCh: TX_FRAME_SAMPLES,
+          sampleRate: TX_SAMPLE_RATE,
+          sampleRateCode: 0,
+          channels: TX_CHANNELS,
+          source: this._txSource,
+          inputLevel: this._txInputLevel,
+          rms,
+          peak,
+        };
+        try {
+          this._txPacketHandler(packet, meta);
+        } catch (err) {
+          this.emit('error', err);
+        }
+      }
     }
 
     _tapDecodedStereo(leftSrc, rightSrc, srcRate) {
@@ -1101,6 +1836,9 @@
     }
 
     stop() {
+      if (this._txActive && !this._txOwnsCtx && this._txCtx === this._ctx) {
+        this.stopTxCapture({ silent: true });
+      }
       if (this._workletNode) {
         try {
           this._workletNode.port.onmessage = null;
@@ -1135,7 +1873,11 @@
     }
 
     destroy() {
+      this._destroyed = true;
+      this.stopTxCapture({ silent: true });
       this.stop();
+      this._txPacketHandler = null;
+      this._txWaveBuffer = null;
       if (this._unsubState) {
         try { this._unsubState(); } catch (_) {}
         this._unsubState = null;

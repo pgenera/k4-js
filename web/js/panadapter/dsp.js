@@ -168,6 +168,33 @@
       };
     },
 
+    computeTxOverlay(snapshot) {
+      const snap = snapshot || {};
+      const splitEnabled = Boolean(snap.splitEnabled);
+      const xitEnabled = Boolean(snap.xitEnabled);
+      const txVfo = splitEnabled ? 'B' : 'A';
+      const txState = (txVfo === 'B' ? snap.rxB : snap.rxA) || snap.rxA || {};
+      const baseFreqHz = Number.isFinite(txState.freqHz) ? txState.freqHz : 14074000;
+      const xitOffsetHz =
+        xitEnabled && Number.isFinite(txState.ritOffsetHz) ? txState.ritOffsetHz : 0;
+      const txDialHz = baseFreqHz + xitOffsetHz;
+      const cwPitchHz = Number.isFinite(snap.cwPitchHz) ? snap.cwPitchHz : 500;
+      const pb = SpectrumGeometry.computePassbandRange(
+        Object.assign({}, txState, { freqHz: txDialHz }),
+        cwPitchHz
+      );
+      return {
+        txVfo,
+        carrierHz: pb.carrierHz,
+        centerHz: pb.centerHz,
+        lowHz: pb.lowHz,
+        highHz: pb.highHz,
+        isSplitOrXit: Boolean(splitEnabled || xitEnabled),
+        active: Boolean(snap.txActive || snap.atuTuning),
+        txTestMode: Boolean(snap.txTestMode),
+      };
+    },
+
     rfFreqFromX(xPx, plotLeftPx, plotWidthPx, panCenterHz, userSpanHz) {
       if (!(plotWidthPx > 0)) return panCenterHz;
       const u = clamp((xPx - plotLeftPx) / plotWidthPx, 0, 1);

@@ -7,6 +7,7 @@
     { id: 'dsp', label: 'DSP' },
     { id: 'display', label: 'Display' },
     { id: 'audio', label: 'Audio' },
+    { id: 'tx', label: 'TX / ATU' },
   ];
 
   const MOBILE_TABS = [
@@ -15,6 +16,7 @@
     { id: 'dsp', label: 'DSP' },
     { id: 'display', label: 'Display' },
     { id: 'audio', label: 'Audio' },
+    { id: 'tx', label: 'TX / ATU' },
   ];
 
   const MODE_CHOICES = [
@@ -78,6 +80,8 @@
       path.setAttribute('d', 'M2 11.5L5.2 4.5H10.8L14 11.5');
     } else if (tabId === 'display') {
       path.setAttribute('d', 'M1.8 11.5L4.5 7.5L7.2 9.5L10.5 4L14.2 11.5');
+    } else if (tabId === 'tx') {
+      path.setAttribute('d', 'M8.8 1.5L4.2 8.6H8L7.2 14.5L11.8 7.4H8Z');
     } else {
       path.setAttribute('d', 'M2.5 6.2H5.2L8.8 3.2V12.8L5.2 9.8H2.5ZM11.3 5.7A3 3 0 0 1 11.3 10.3');
     }
@@ -215,6 +219,22 @@
       this.getMouseQsyMode = opts.getMouseQsyMode || (() => 'lr');
       this.onSetMouseQsyMode = opts.onSetMouseQsyMode || (() => {});
       this.onToggleAudio = opts.onToggleAudio || (() => {});
+      this.onSetTxPosture = opts.onSetTxPosture || ((posture) => {
+        if (this.client && typeof this.client.setTxPosture === 'function') {
+          this.client.setTxPosture(posture, { confirmed: posture === 'tx-armed' });
+        }
+      });
+      this.onPanicAbort = opts.onPanicAbort || (() => {
+        if (this.client && typeof this.client.panicAbortTx === 'function') {
+          this.client.panicAbortTx('ui-panic');
+        }
+      });
+      this.getTxAudioConfig = opts.getTxAudioConfig || (() => this._localTxAudio);
+      this.onSetTxAudioConfig = opts.onSetTxAudioConfig || ((patch) => {
+        Object.assign(this._localTxAudio, patch);
+      });
+      this.onLoadTxWav = opts.onLoadTxWav || null;
+      this.onOpenDrawer = opts.onOpenDrawer || (() => {});
 
       this._activeDesktopTab = 'band-mode';
       this._activeMobileTab = null;
@@ -222,6 +242,8 @@
       this._refs = {};
       this._keypadBuffer = '';
       this._localAudio = { gainA: 0.85, gainB: 0.85, balance: 0 };
+      this._localTxAudio = { source: 'two-tone', deviceId: '', voiceProcessing: false, wavName: '' };
+      this._micDevices = [];
 
       this._buildDrawerShell();
       this._buildMobileShell();
@@ -259,6 +281,31 @@
         this.drawerTabBar.appendChild(btn);
       }
       this.drawerEl.appendChild(this.drawerTabBar);
+
+      // Compact always-visible live sensor strip in inspector drawer
+      this.sensorStrip = document.createElement('button');
+      this.sensorStrip.type = 'button';
+      this.sensorStrip.className = 'k4-sensor-strip';
+      this.sensorStrip.dataset.testid = 'sensor-strip';
+      this.sensorStrip.title = 'Jump to PA, Electrical & Thermal Sensors card';
+      const makeStripPill = (lbl) => {
+        const pill = el('span', 'k4-sensor-pill');
+        pill.appendChild(el('span', 'k4-sensor-pill-lbl', lbl));
+        const val = el('span', 'k4-sensor-pill-val', '--');
+        pill.appendChild(val);
+        this.sensorStrip.appendChild(pill);
+        return { pill, val };
+      };
+      this._strip = {
+        vs: makeStripPill('VS'),
+        is: makeStripPill('IS'),
+        pt: makeStripPill('PA TEMP'),
+        swr: makeStripPill('SWR'),
+      };
+      this.sensorStrip.addEventListener('click', () => {
+        this.openTab('tx', this._refs.txSensorsCard);
+      });
+      this.drawerEl.appendChild(this.sensorStrip);
 
       this.drawerScroll = el('div', 'k4-panel-scroll');
       this.drawerEl.appendChild(this.drawerScroll);
@@ -316,6 +363,7 @@
       this._panes['display'] = this._buildDisplayPane();
       this._panes['audio'] = this._buildAudioPane();
       this._panes['tune'] = this._buildTunePane();
+      this._panes['tx'] = this._buildTxPane();
     }
 
     _buildBandModePane() {
@@ -1673,6 +1721,767 @@
       ctx.fill();
     }
 
+    _buildTxPane() {
+      const pane = el('div', 'k4-panel-pane');
+
+      // (a) TX Status, Posture, TOT, Split & XIT
+      const statusBadge = el('span', 'k4-card-badge', 'RX ONLY');
+      const statusCard = makeCard('TX Status & Safety', statusBadge);
+
+      const postureGroup = el('div', 'k4-seg-group');
+      const postureBtns = {};
+      const postureSpecs = [
+        { id: 'rx-only', label: 'RX ONLY' },
+        { id: 'tx-test', label: 'TEST 0W' },
+        { id: 'tx-armed', label: 'ARM TX' },
+      ];
+      for (let i = 0; i < postureSpecs.length; i++) {
+        const p = postureSpecs[i];
+        const b = el('button', `k4-seg-btn${p.id === 'tx-armed' ? ' is-amber' : ''}`, p.label);
+        b.type = 'button';
+        b.addEventListener('click', () => this.onSetTxPosture(p.id));
+        postureGroup.appendChild(b);
+        postureBtns[p.id] = b;
+      }
+      statusCard.appendChild(postureGroup);
+      this._refs.txPostureBtns = postureBtns;
+
+      const txBanner = el('div', 'k4-tx-banner', 'Receive-only firewall active');
+      txBanner.dataset.state = 'idle';
+      statusCard.appendChild(txBanner);
+      this._refs.txStatusBanner = txBanner;
+      this._refs.txStatusBadge = statusBadge;
+
+      const metaRow = el('div', 'k4-diag-list');
+      const vfoRow = el('div', 'k4-diag-row');
+      vfoRow.appendChild(el('span', 'k4-diag-key', 'Active TX VFO'));
+      const txVfoVal = el('span', 'k4-diag-val', 'VFO A');
+      vfoRow.appendChild(txVfoVal);
+      metaRow.appendChild(vfoRow);
+
+      const totRow = el('div', 'k4-diag-row');
+      totRow.appendChild(el('span', 'k4-diag-key', 'TX Timeout (TOT)'));
+      const txTotVal = el('span', 'k4-diag-val', '3:00');
+      totRow.appendChild(txTotVal);
+      metaRow.appendChild(totRow);
+      statusCard.appendChild(metaRow);
+      this._refs.txVfoVal = txVfoVal;
+      this._refs.txTotVal = txTotVal;
+
+      const splitSwitch = makeSwitchRow('Split TX on VFO B (FT)', () => {
+        const next = !this._snap().splitEnabled;
+        if (typeof this.client.setSplit === 'function') {
+          this.client.setSplit(next);
+        } else {
+          this._sendCat(`FT${next ? '1' : '0'};`);
+        }
+      });
+      statusCard.appendChild(splitSwitch.row);
+      this._refs.txSplitSwitch = splitSwitch;
+
+      const splitMacroRow = el('div', 'k4-btn-grid k4-btn-grid--2');
+      const quickSplitBtn = el('button', 'k4-btn', 'A►B Split +1 kHz');
+      quickSplitBtn.type = 'button';
+      quickSplitBtn.addEventListener('click', () => {
+        if (typeof this.client.setupQuickSplit === 'function') {
+          this.client.setupQuickSplit(1000);
+        } else {
+          const base = Number((this._snap().rxA || {}).freqHz) || 14074000;
+          this._sendCat(`FB${String(base + 1000).padStart(11, '0')};`);
+          this._sendCat('FT1;');
+        }
+      });
+      const panicBtn = el('button', 'k4-btn k4-btn--danger', 'PANIC ABORT (Esc)');
+      panicBtn.type = 'button';
+      panicBtn.addEventListener('click', () => this.onPanicAbort());
+      splitMacroRow.appendChild(quickSplitBtn);
+      splitMacroRow.appendChild(panicBtn);
+      statusCard.appendChild(splitMacroRow);
+
+      const xitSwitch = makeSwitchRow('XIT Offset (XT)', () => {
+        const snap = this._snap();
+        const next = !snap.xitEnabled;
+        if (typeof this.client.setXit === 'function') {
+          this.client.setXit(next);
+        } else {
+          this._sendCat(`XT${next ? '1' : '0'};`);
+        }
+      });
+      statusCard.appendChild(xitSwitch.row);
+      this._refs.txXitSwitch = xitSwitch;
+
+      const xitCtrlRow = el('div', 'k4-btn-grid k4-btn-grid--3');
+      const xitDownBtn = el('button', 'k4-btn', 'XIT -100');
+      xitDownBtn.type = 'button';
+      xitDownBtn.addEventListener('click', () => {
+        const cur = Number((this._snap().rxA || {}).ritOffsetHz) || 0;
+        if (typeof this.client.setXit === 'function') {
+          this.client.setXit(true, cur - 100);
+        } else {
+          this._sendCat('RD0100;');
+        }
+      });
+      const xitZeroBtn = el('button', 'k4-btn', 'XIT 0 Hz');
+      xitZeroBtn.type = 'button';
+      xitZeroBtn.addEventListener('click', () => {
+        if (typeof this.client.setXit === 'function') {
+          this.client.setXit(Boolean(this._snap().xitEnabled), 0);
+        } else {
+          this._sendCat('RC;');
+        }
+      });
+      const xitUpBtn = el('button', 'k4-btn', 'XIT +100');
+      xitUpBtn.type = 'button';
+      xitUpBtn.addEventListener('click', () => {
+        const cur = Number((this._snap().rxA || {}).ritOffsetHz) || 0;
+        if (typeof this.client.setXit === 'function') {
+          this.client.setXit(true, cur + 100);
+        } else {
+          this._sendCat('RU0100;');
+        }
+      });
+      xitCtrlRow.appendChild(xitDownBtn);
+      xitCtrlRow.appendChild(xitZeroBtn);
+      xitCtrlRow.appendChild(xitUpBtn);
+      statusCard.appendChild(xitCtrlRow);
+      this._refs.txXitZeroBtn = xitZeroBtn;
+
+      pane.appendChild(statusCard);
+
+      // (b) KAT4 ATU & Antenna card
+      const atuBadge = el('span', 'k4-card-badge', 'KAT4');
+      const atuCard = makeCard('KAT4 ATU & Antenna', atuBadge);
+      this._refs.atuModuleBadge = atuBadge;
+
+      const antRow = el('div', 'k4-slider-row');
+      const antHead = el('div', 'k4-slider-head');
+      antHead.appendChild(el('span', 'k4-slider-label', 'TX Antenna (AN)'));
+      antRow.appendChild(antHead);
+      const antSelect = document.createElement('select');
+      antSelect.className = 'k4-select';
+      antSelect.dataset.testid = 'tx-antenna-select';
+      for (let i = 1; i <= 3; i++) {
+        const opt = document.createElement('option');
+        opt.value = String(i);
+        opt.textContent = `ANT${i}`;
+        antSelect.appendChild(opt);
+      }
+      antSelect.addEventListener('change', () => {
+        const port = Number(antSelect.value) || 1;
+        if (typeof this.client.setTxAntenna === 'function') {
+          this.client.setTxAntenna(port);
+        } else {
+          this._sendCat(`AN${port};`);
+        }
+      });
+      antRow.appendChild(antSelect);
+      atuCard.appendChild(antRow);
+      this._refs.txAntennaSelect = antSelect;
+
+      const atuModeSeg = el('div', 'k4-seg-group');
+      const bypassBtn = el('button', 'k4-seg-btn', 'BYPASS (AT1)');
+      bypassBtn.type = 'button';
+      bypassBtn.addEventListener('click', () => {
+        if (typeof this.client.setAtuMode === 'function') this.client.setAtuMode(1);
+        else this._sendCat('AT1;');
+      });
+      const autoBtn = el('button', 'k4-seg-btn', 'AUTO (AT2)');
+      autoBtn.type = 'button';
+      autoBtn.addEventListener('click', () => {
+        if (typeof this.client.setAtuMode === 'function') this.client.setAtuMode(2);
+        else this._sendCat('AT2;');
+      });
+      atuModeSeg.appendChild(bypassBtn);
+      atuModeSeg.appendChild(autoBtn);
+      atuCard.appendChild(atuModeSeg);
+      this._refs.atuModeBtns = { 1: bypassBtn, 2: autoBtn };
+
+      const atuGrid = el('div', 'k4-btn-grid k4-btn-grid--2');
+      const atuTuneBtn = el('button', 'k4-btn k4-btn--amber', 'ATU TUNE');
+      atuTuneBtn.type = 'button';
+      atuTuneBtn.dataset.testid = 'atu-tune-btn';
+      atuTuneBtn.addEventListener('click', () => {
+        if (typeof this.client.startAtuTune === 'function') this.client.startAtuTune(3);
+        else this._sendCat('TU3;');
+      });
+
+      const atuFullBtn = el('button', 'k4-btn', 'FULL SEARCH');
+      atuFullBtn.type = 'button';
+      atuFullBtn.dataset.testid = 'atu-full-btn';
+      atuFullBtn.addEventListener('click', () => {
+        if (typeof this.client.startAtuTune === 'function') this.client.startAtuTune(4);
+        else this._sendCat('TU4;');
+      });
+
+      const atuLpBtn = el('button', 'k4-btn', 'TUNE LP');
+      atuLpBtn.type = 'button';
+      atuLpBtn.addEventListener('click', () => {
+        if (typeof this.client.startAtuTune === 'function') this.client.startAtuTune(2);
+        else this._sendCat('TU2;');
+      });
+
+      const atuStopBtn = el('button', 'k4-btn k4-btn--danger', 'STOP');
+      atuStopBtn.type = 'button';
+      atuStopBtn.dataset.testid = 'atu-stop-btn';
+      atuStopBtn.addEventListener('click', () => {
+        if (typeof this.client.stopAtuTune === 'function') this.client.stopAtuTune();
+        else this._sendCat('TU0;');
+      });
+
+      atuGrid.appendChild(atuTuneBtn);
+      atuGrid.appendChild(atuFullBtn);
+      atuGrid.appendChild(atuLpBtn);
+      atuGrid.appendChild(atuStopBtn);
+      atuCard.appendChild(atuGrid);
+      this._refs.atuBtns = { tune: atuTuneBtn, full: atuFullBtn, lp: atuLpBtn, stop: atuStopBtn };
+
+      const atuStatus = el('div', 'k4-tx-banner', 'KAT4 Standby');
+      atuStatus.dataset.testid = 'atu-status';
+      atuStatus.dataset.state = 'idle';
+      atuCard.appendChild(atuStatus);
+      this._refs.atuStatus = atuStatus;
+
+      pane.appendChild(atuCard);
+
+      // (c) RF Power & Audio TX card
+      const pwrCard = makeCard('RF Power & TX Audio');
+
+      const rangeGroup = el('div', 'k4-seg-group');
+      const rangeLBtn = el('button', 'k4-seg-btn', 'L · QRP (0.1–10W)');
+      rangeLBtn.type = 'button';
+      rangeLBtn.addEventListener('click', () => {
+        const curW = Number(this._snap().powerWatts) || 5;
+        const clamped = Math.max(0.1, Math.min(10.0, curW));
+        if (typeof this.client.setPowerWatts === 'function') {
+          this.client.setPowerWatts(clamped, 'L');
+        } else {
+          this._sendCat(`PC${String(Math.round(clamped * 10)).padStart(3, '0')}L;`);
+        }
+      });
+      const rangeHBtn = el('button', 'k4-seg-btn is-amber', 'H · QRO (1–110W)');
+      rangeHBtn.type = 'button';
+      rangeHBtn.addEventListener('click', () => {
+        const curW = Math.round(Number(this._snap().powerWatts) || 25);
+        const clamped = Math.max(1, Math.min(110, curW));
+        if (typeof this.client.setPowerWatts === 'function') {
+          this.client.setPowerWatts(clamped, 'H');
+        } else {
+          this._sendCat(`PC${String(clamped).padStart(3, '0')}H;`);
+        }
+      });
+      rangeGroup.appendChild(rangeLBtn);
+      rangeGroup.appendChild(rangeHBtn);
+      pwrCard.appendChild(rangeGroup);
+      this._refs.pwrRangeBtns = { L: rangeLBtn, H: rangeHBtn };
+
+      const pwrSlider = makeSliderRow({
+        label: 'RF Power (PC)',
+        min: 0.1,
+        max: 10,
+        step: 0.1,
+        value: 10,
+        formatValue: (v) => (this._snap().powerRange === 'H' ? `${Math.round(v)} W` : `${v.toFixed(1)} W`),
+        onInput: (v) => {
+          const range = this._snap().powerRange === 'H' ? 'H' : 'L';
+          if (typeof this.client.setPowerWatts === 'function') this.client.setPowerWatts(v, range);
+        },
+        onChange: (v) => {
+          const range = this._snap().powerRange === 'H' ? 'H' : 'L';
+          if (typeof this.client.setPowerWatts === 'function') this.client.setPowerWatts(v, range);
+        },
+      });
+      pwrSlider.input.dataset.testid = 'tx-power-slider';
+      pwrCard.appendChild(pwrSlider.row);
+      this._refs.txPowerSlider = pwrSlider;
+
+      const mgSlider = makeSliderRow({
+        label: 'Mic Gain (MG)',
+        min: 0,
+        max: 80,
+        step: 1,
+        value: 15,
+        formatValue: (v) => String(Math.round(v)),
+        onInput: (v) => {
+          if (typeof this.client.setMicGain === 'function') this.client.setMicGain(v);
+          else this._sendCat(`MG${String(Math.round(v)).padStart(3, '0')};`);
+        },
+      });
+      pwrCard.appendChild(mgSlider.row);
+      this._refs.txMgSlider = mgSlider;
+
+      const cpSlider = makeSliderRow({
+        label: 'Speech Comp (CP)',
+        min: 0,
+        max: 30,
+        step: 1,
+        value: 0,
+        formatValue: (v) => `${Math.round(v)} dB`,
+        onInput: (v) => {
+          if (typeof this.client.setCompression === 'function') this.client.setCompression(v);
+          else this._sendCat(`CP${String(Math.round(v)).padStart(3, '0')};`);
+        },
+      });
+      pwrCard.appendChild(cpSlider.row);
+      this._refs.txCpSlider = cpSlider;
+
+      const mlSlider = makeSliderRow({
+        label: 'TX Monitor (ML)',
+        min: 0,
+        max: 100,
+        step: 1,
+        value: 5,
+        formatValue: (v) => String(Math.round(v)),
+        onInput: (v) => {
+          const ch = this._txMonitorChannel();
+          if (typeof this.client.setTxMonitor === 'function') this.client.setTxMonitor(ch, v);
+          else this._sendCat(`ML${ch}${String(Math.round(v)).padStart(3, '0')};`);
+        },
+      });
+      pwrCard.appendChild(mlSlider.row);
+      this._refs.txMlSlider = mlSlider;
+
+      const miRow = el('div', 'k4-slider-row');
+      miRow.appendChild(el('div', 'k4-slider-head')).appendChild(el('span', 'k4-slider-label', 'Mic Input (MI)'));
+      const miSelect = document.createElement('select');
+      miSelect.className = 'k4-select';
+      const miLabels = ['0 · Front Mic', '1 · Rear Mic', '2 · Line In', '3 · Front + Line', '4 · USB Audio'];
+      for (let i = 0; i < miLabels.length; i++) {
+        const opt = document.createElement('option');
+        opt.value = String(i);
+        opt.textContent = miLabels[i];
+        miSelect.appendChild(opt);
+      }
+      miSelect.addEventListener('change', () => {
+        const v = Number(miSelect.value) || 0;
+        if (typeof this.client.setMicInput === 'function') this.client.setMicInput(v);
+        else this._sendCat(`MI${v};`);
+      });
+      miRow.appendChild(miSelect);
+      pwrCard.appendChild(miRow);
+      this._refs.txMiSelect = miSelect;
+
+      const voxSwitch = makeSwitchRow('VOX (VX)', () => {
+        const snap = this._snap();
+        const rx = snap.activeTxVfo === 'B' ? (snap.rxB || {}) : (snap.rxA || {});
+        const mode = Number(rx.mode) || 2;
+        let ch = 'V';
+        let cur = Boolean(snap.voxVoice);
+        if (mode === 3 || mode === 7) { ch = 'C'; cur = Boolean(snap.voxCw); }
+        else if (mode === 6 || mode === 9) { ch = 'D'; cur = Boolean(snap.voxData); }
+        if (typeof this.client.setVox === 'function') this.client.setVox(ch, !cur);
+        else this._sendCat(`VX${ch}${!cur ? '1' : '0'};`);
+      });
+      pwrCard.appendChild(voxSwitch.row);
+      this._refs.txVoxSwitch = voxSwitch;
+
+      const dvrLabel = el('span', 'k4-slider-label', 'DVR Message Playback (PB)');
+      pwrCard.appendChild(dvrLabel);
+      const dvrRow = el('div', 'k4-btn-grid k4-btn-grid--5');
+      const dvrBtns = [1, 2, 3, 4, 0];
+      for (let i = 0; i < dvrBtns.length; i++) {
+        const slot = dvrBtns[i];
+        const b = el('button', 'k4-btn', slot === 0 ? 'PB0' : `PB${slot}`);
+        b.type = 'button';
+        b.title = slot === 0 ? 'Stop DVR playback' : `Play DVR bank ${slot}`;
+        b.addEventListener('click', () => {
+          if (typeof this.client.playDvr === 'function') this.client.playDvr(slot);
+          else this._sendCat(`PB${slot};`);
+        });
+        dvrRow.appendChild(b);
+      }
+      pwrCard.appendChild(dvrRow);
+
+      // TX Audio Source & Live VU Meter
+      const srcRow = el('div', 'k4-slider-row');
+      srcRow.appendChild(el('div', 'k4-slider-head')).appendChild(el('span', 'k4-slider-label', 'Web TX Audio Source'));
+      const srcSelect = document.createElement('select');
+      srcSelect.className = 'k4-select';
+      srcSelect.dataset.testid = 'tx-audio-source';
+      const srcOpts = [
+        { val: 'two-tone', label: 'Two-Tone Test (700/1900 Hz)' },
+        { val: 'tone-1k', label: '1 kHz Test Tone' },
+        { val: 'wav', label: 'WAV / Voice Loop' },
+        { val: 'mic', label: 'Microphone (Live)' },
+      ];
+      for (let i = 0; i < srcOpts.length; i++) {
+        const opt = document.createElement('option');
+        opt.value = srcOpts[i].val;
+        opt.textContent = srcOpts[i].label;
+        srcSelect.appendChild(opt);
+      }
+      srcSelect.addEventListener('change', () => {
+        const nextSrc = srcSelect.value;
+        if (nextSrc === 'mic' && !this._isMicSecureContext()) {
+          this.onSetTxAudioConfig({ source: 'two-tone' });
+          srcSelect.value = 'two-tone';
+        } else {
+          this.onSetTxAudioConfig({ source: nextSrc });
+          if (nextSrc === 'mic') this._refreshMicDevices();
+        }
+        this.update(this._snap());
+      });
+      srcRow.appendChild(srcSelect);
+      pwrCard.appendChild(srcRow);
+      this._refs.txAudioSource = srcSelect;
+
+      const micSecNote = el(
+        'div',
+        'k4-tx-inline-alert',
+        'Live Microphone requires a SecureContext (open http://localhost:9280 or HTTPS). Two-Tone, 1 kHz, and WAV test sources work over file://.'
+      );
+      micSecNote.hidden = true;
+      pwrCard.appendChild(micSecNote);
+      this._refs.txMicSecNote = micSecNote;
+
+      // Mic device & AEC wrap
+      const micExtras = el('div', 'k4-slider-row');
+      micExtras.hidden = true;
+      const micDevSelect = document.createElement('select');
+      micDevSelect.className = 'k4-select';
+      const defOpt = document.createElement('option');
+      defOpt.value = '';
+      defOpt.textContent = 'System Default Microphone';
+      micDevSelect.appendChild(defOpt);
+      micDevSelect.addEventListener('change', () => {
+        this.onSetTxAudioConfig({ deviceId: micDevSelect.value });
+      });
+      micExtras.appendChild(micDevSelect);
+      const vpSwitch = makeSwitchRow('Mic AEC / Noise Supp', () => {
+        const cfg = this.getTxAudioConfig();
+        this.onSetTxAudioConfig({ voiceProcessing: !cfg.voiceProcessing });
+        this.update(this._snap());
+      });
+      micExtras.appendChild(vpSwitch.row);
+      pwrCard.appendChild(micExtras);
+      this._refs.txMicExtras = micExtras;
+      this._refs.txMicDevSelect = micDevSelect;
+      this._refs.txVpSwitch = vpSwitch;
+
+      // WAV file picker wrap
+      const wavExtras = el('div', 'k4-slider-row');
+      wavExtras.hidden = true;
+      const wavBtnRow = el('div', 'k4-toggle-row');
+      const wavNameEl = el('span', 'k4-slider-val', 'Built-in voice test loop');
+      const wavPickBtn = el('button', 'k4-btn', 'Load WAV...');
+      wavPickBtn.type = 'button';
+      const wavInput = document.createElement('input');
+      wavInput.type = 'file';
+      wavInput.accept = 'audio/*,.wav';
+      wavInput.hidden = true;
+      wavPickBtn.addEventListener('click', () => wavInput.click());
+      wavInput.addEventListener('change', async () => {
+        const file = wavInput.files && wavInput.files[0];
+        if (!file) return;
+        if (this.onLoadTxWav) {
+          await this.onLoadTxWav(file);
+        } else if (this.audio && typeof this.audio.setTxWaveBuffer === 'function') {
+          try {
+            const buf = await file.arrayBuffer();
+            const AC = window.AudioContext || window.webkitAudioContext;
+            if (AC) {
+              const ctx = new AC();
+              const decoded = await ctx.decodeAudioData(buf);
+              this.audio.setTxWaveBuffer(decoded.getChannelData(0), decoded.sampleRate);
+              ctx.close().catch(() => {});
+              this.onSetTxAudioConfig({ wavName: file.name });
+            }
+          } catch (_) {}
+        }
+        wavInput.value = '';
+        this.update(this._snap());
+      });
+      wavBtnRow.appendChild(wavNameEl);
+      wavBtnRow.appendChild(wavPickBtn);
+      wavBtnRow.appendChild(wavInput);
+      wavExtras.appendChild(wavBtnRow);
+      pwrCard.appendChild(wavExtras);
+      this._refs.txWavExtras = wavExtras;
+      this._refs.txWavNameEl = wavNameEl;
+
+      // Live TX input VU meter
+      const vuWrap = el('div', 'k4-tx-vu-wrap');
+      const vuHead = el('div', 'k4-slider-head');
+      vuHead.appendChild(el('span', 'k4-slider-label', 'TX Audio Input Level'));
+      const vuVal = el('span', 'k4-slider-val', '0% · 0 pkts');
+      vuHead.appendChild(vuVal);
+      const vuTrack = el('div', 'k4-tx-vu-track');
+      const vuFill = el('div', 'k4-tx-vu-fill');
+      vuTrack.appendChild(vuFill);
+      vuWrap.appendChild(vuHead);
+      vuWrap.appendChild(vuTrack);
+      pwrCard.appendChild(vuWrap);
+      this._refs.txVuVal = vuVal;
+      this._refs.txVuFill = vuFill;
+
+      pane.appendChild(pwrCard);
+
+      // (d) CW / DATA Keyer card
+      const kyCard = makeCard('CW / Direct DATA Keyer');
+
+      const kyInput = document.createElement('textarea');
+      kyInput.className = 'k4-ky-textarea';
+      kyInput.dataset.testid = 'cw-ky-input';
+      kyInput.rows = 2;
+      kyInput.maxLength = 64;
+      kyInput.placeholder = 'CW / FSK-D / PSK-D keyer text (Space or Send)...';
+      kyCard.appendChild(kyInput);
+      this._refs.cwKyInput = kyInput;
+
+      const kyActions = el('div', 'k4-btn-grid k4-btn-grid--2');
+      const kySendBtn = el('button', 'k4-btn k4-btn--amber', 'Send KY');
+      kySendBtn.type = 'button';
+      kySendBtn.dataset.testid = 'cw-ky-send';
+      kySendBtn.addEventListener('click', () => {
+        const text = (kyInput.value || '').trim();
+        if (!text) return;
+        if (typeof this.client.sendKeyerText === 'function') {
+          this.client.sendKeyerText(text, ' ');
+        } else {
+          this._sendCat(`KY ${text.slice(0, 24)};`);
+        }
+      });
+
+      const kyAbortBtn = el('button', 'k4-btn k4-btn--danger', 'Abort KY @');
+      kyAbortBtn.type = 'button';
+      kyAbortBtn.dataset.testid = 'cw-ky-abort';
+      kyAbortBtn.addEventListener('click', () => {
+        if (typeof this.client.clearKeyerBuffer === 'function') {
+          this.client.clearKeyerBuffer();
+        } else {
+          this._sendCat('KY @;');
+        }
+      });
+      kyActions.appendChild(kySendBtn);
+      kyActions.appendChild(kyAbortBtn);
+      kyCard.appendChild(kyActions);
+
+      const macroGrid = el('div', 'k4-btn-grid k4-btn-grid--3');
+      const macros = [
+        { lbl: 'CQ', text: 'CQ CQ DE K4 K ' },
+        { lbl: 'DE TEST', text: 'DE K4WEB K ' },
+        { lbl: '599 TU', text: 'UR 599 TU ' },
+        { lbl: 'AGN?', text: 'AGN? ' },
+        { lbl: 'BK', text: 'BK ' },
+        { lbl: '73', text: '73 GL E E ' },
+      ];
+      for (let i = 0; i < macros.length; i++) {
+        const m = macros[i];
+        const mb = el('button', 'k4-btn', m.lbl);
+        mb.type = 'button';
+        mb.addEventListener('click', () => {
+          if (typeof this.client.sendKeyerText === 'function') {
+            this.client.sendKeyerText(m.text, ' ');
+          } else {
+            this._sendCat(`KY ${m.text};`);
+          }
+        });
+        macroGrid.appendChild(mb);
+      }
+      kyCard.appendChild(macroGrid);
+
+      const tbWrap = el('div', 'k4-tx-vu-wrap');
+      const tbHead = el('div', 'k4-slider-head');
+      tbHead.appendChild(el('span', 'k4-slider-label', 'Keyer TX Queue (TB)'));
+      const tbVal = el('span', 'k4-slider-val', '0 chars');
+      tbHead.appendChild(tbVal);
+      const tbTrack = el('div', 'k4-tb-track');
+      const tbFill = el('div', 'k4-tb-fill');
+      tbTrack.appendChild(tbFill);
+      tbWrap.appendChild(tbHead);
+      tbWrap.appendChild(tbTrack);
+      kyCard.appendChild(tbWrap);
+      this._refs.tbVal = tbVal;
+      this._refs.tbFill = tbFill;
+
+      const ksSlider = makeSliderRow({
+        label: 'CW Speed (KS)',
+        min: 8,
+        max: 100,
+        step: 1,
+        value: 20,
+        formatValue: (v) => `${Math.round(v)} WPM`,
+        onInput: (v) => {
+          if (typeof this.client.setCwSpeed === 'function') this.client.setCwSpeed(v);
+          else this._sendCat(`KS${String(Math.round(v)).padStart(3, '0')};`);
+        },
+      });
+      kyCard.appendChild(ksSlider.row);
+      this._refs.cwKsSlider = ksSlider;
+
+      const kpSlider = makeSliderRow({
+        label: 'Keyer Weight (KP)',
+        min: 90,
+        max: 125,
+        step: 1,
+        value: 115,
+        formatValue: (v) => (v / 100).toFixed(2),
+        onInput: (v) => {
+          const snap = this._snap();
+          if (typeof this.client.setKeyerPaddle === 'function') {
+            this.client.setKeyerPaddle({
+              iambic: snap.keyerIambic || 'A',
+              order: snap.keyerPaddleOrder || 'N',
+              weight: Math.round(v),
+            });
+          } else {
+            this._sendCat(`KP${snap.keyerIambic || 'A'}${snap.keyerPaddleOrder || 'N'}${String(Math.round(v)).padStart(3, '0')};`);
+          }
+        },
+      });
+      kyCard.appendChild(kpSlider.row);
+      this._refs.cwKpSlider = kpSlider;
+
+      const paddleRow = el('div', 'k4-btn-grid k4-btn-grid--3');
+      const iambicBtn = el('button', 'k4-btn', 'Iambic A');
+      iambicBtn.type = 'button';
+      iambicBtn.addEventListener('click', () => {
+        const snap = this._snap();
+        const next = snap.keyerIambic === 'B' ? 'A' : 'B';
+        if (typeof this.client.setKeyerPaddle === 'function') {
+          this.client.setKeyerPaddle({
+            iambic: next,
+            order: snap.keyerPaddleOrder || 'N',
+            weight: snap.keyerWeight || 115,
+          });
+        }
+      });
+      const polBtn = el('button', 'k4-btn', 'Paddle N');
+      polBtn.type = 'button';
+      polBtn.addEventListener('click', () => {
+        const snap = this._snap();
+        const next = snap.keyerPaddleOrder === 'R' ? 'N' : 'R';
+        if (typeof this.client.setKeyerPaddle === 'function') {
+          this.client.setKeyerPaddle({
+            iambic: snap.keyerIambic || 'A',
+            order: next,
+            weight: snap.keyerWeight || 115,
+          });
+        }
+      });
+      const qskBtn = el('button', 'k4-btn', 'QSK / CW VOX');
+      qskBtn.type = 'button';
+      qskBtn.addEventListener('click', () => {
+        const cur = Boolean(this._snap().voxCw);
+        if (typeof this.client.setVox === 'function') this.client.setVox('C', !cur);
+        else this._sendCat(`VX${!cur ? '1' : '0'};`);
+      });
+      paddleRow.appendChild(iambicBtn);
+      paddleRow.appendChild(polBtn);
+      paddleRow.appendChild(qskBtn);
+      kyCard.appendChild(paddleRow);
+      this._refs.cwIambicBtn = iambicBtn;
+      this._refs.cwPolBtn = polBtn;
+      this._refs.cwQskBtn = qskBtn;
+
+      pane.appendChild(kyCard);
+
+      // (e) Expanded PA, Electrical & Thermal Sensors Card
+      const sensorsCard = makeCard('PA, Electrical & Thermal Sensors');
+      sensorsCard.dataset.testid = 'tx-sensors-card';
+      this._refs.txSensorsCard = sensorsCard;
+
+      const thermalAlert = el('div', 'k4-tx-inline-alert', '');
+      thermalAlert.hidden = true;
+      sensorsCard.appendChild(thermalAlert);
+      this._refs.txThermalAlert = thermalAlert;
+
+      const sensorGrid = el('div', 'k4-sensor-grid');
+      const makeSensorTile = (lbl) => {
+        const tile = el('div', 'k4-sensor-tile');
+        tile.appendChild(el('span', 'k4-sensor-tile-lbl', lbl));
+        const val = el('span', 'k4-sensor-tile-val', '—');
+        tile.appendChild(val);
+        sensorGrid.appendChild(tile);
+        return { tile, val };
+      };
+      this._refs.sensors = {
+        vs: makeSensorTile('Supply Voltage (VS)'),
+        is: makeSensorTile('Current / Peak (IS)'),
+        pt: makeSensorTile('PA Heatsink (PT)'),
+        lt: makeSensorTile('LPA / Driver (LT)'),
+        tf: makeSensorTile('Front Panel (TF)'),
+        sys: makeSensorTile('CPU / DAP / DUC'),
+      };
+      sensorsCard.appendChild(sensorGrid);
+
+      const omRow = el('div', 'k4-om-badges');
+      const makeOmBadge = (name) => {
+        const b = el('span', 'k4-om-badge', name);
+        omRow.appendChild(b);
+        return b;
+      };
+      this._refs.omBadges = {
+        kat4: makeOmBadge('KAT4'),
+        kpa4: makeOmBadge('KPA4'),
+        krx4: makeOmBadge('KRX4'),
+        amp: makeOmBadge('LINEAR AMP'),
+      };
+      sensorsCard.appendChild(omRow);
+
+      pane.appendChild(sensorsCard);
+      return pane;
+    }
+
+    _txMonitorChannel() {
+      const snap = this._snap();
+      const rx = snap.activeTxVfo === 'B' ? (snap.rxB || {}) : (snap.rxA || {});
+      const mode = Number(rx.mode) || 2;
+      if (mode === 3 || mode === 7) return 0; // CW
+      if (mode === 6 || mode === 9) return 1; // Data
+      return 2; // Voice
+    }
+
+    _isMicSecureContext() {
+      if (this.audio && typeof this.audio.isMicSecureContextAvailable === 'function') {
+        return Boolean(this.audio.isMicSecureContextAvailable());
+      }
+      return Boolean(window.isSecureContext);
+    }
+
+    async _refreshMicDevices() {
+      if (!this.audio || typeof this.audio.listAudioInputs !== 'function') return;
+      try {
+        const list = await this.audio.listAudioInputs();
+        this._micDevices = Array.isArray(list) ? list : [];
+        const sel = this._refs.txMicDevSelect;
+        if (!sel) return;
+        const cur = this.getTxAudioConfig().deviceId || '';
+        sel.textContent = '';
+        const def = document.createElement('option');
+        def.value = '';
+        def.textContent = 'System Default Microphone';
+        sel.appendChild(def);
+        for (let i = 0; i < this._micDevices.length; i++) {
+          const d = this._micDevices[i];
+          const opt = document.createElement('option');
+          opt.value = d.deviceId || '';
+          opt.textContent = d.label || `Microphone ${i + 1}`;
+          sel.appendChild(opt);
+        }
+        sel.value = cur;
+      } catch (_) {}
+    }
+
+    openTab(tabId, scrollTargetEl) {
+      if (!this._panes[tabId]) return;
+      if (window.innerWidth < 960) {
+        if (tabId !== this._activeMobileTab) {
+          this._activeMobileTab = tabId;
+        }
+      } else {
+        if (tabId === 'tune') return;
+        this.onOpenDrawer();
+        this._activeDesktopTab = tabId;
+      }
+      this.syncHost();
+      this.update(this._snap());
+      if (scrollTargetEl && typeof scrollTargetEl.scrollIntoView === 'function') {
+        requestAnimationFrame(() => {
+          scrollTargetEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        });
+      }
+    }
+
     destroy() {
       if (this._afScopeTimer) {
         clearInterval(this._afScopeTimer);
@@ -2010,14 +2819,295 @@
       }
 
       this._drawAfScope(snapshot);
+      this._updateTxAndSensors(snapshot, aDiag);
 
       if (this._refs.safetyNote) {
         const gStats = this.gate && this.gate.getStats ? this.gate.getStats() : { blockedCatCount: 0, blockedBinaryCount: 0 };
         const totalBlocked = (gStats.blockedCatCount || 0) + (gStats.blockedBinaryCount || 0);
         const policy = this.gate && this.gate.getPolicy ? this.gate.getPolicy() : 'rx-only';
+        const posture = snapshot.txPosture || (policy === 'tx-enabled' ? 'tx-armed' : 'rx-only');
         this._refs.safetyNote.textContent =
-          `Policy: ${policy.toUpperCase()} · Intercepted TX attempts: ${totalBlocked}. ` +
-          `All TX/tune/keyer/DVR/power commands and outbound audio (0x01) are blocked client-side via K4.RxOnlyGate (Phase 2 TX extension hook).`;
+          posture === 'rx-only'
+            ? `Policy: RX-ONLY · Intercepted TX attempts: ${totalBlocked}. All transmit, tune, keyer, DVR, power commands, and outbound audio (0x01) are blocked client-side by K4.RxOnlyGate.`
+            : `Policy: ${posture.toUpperCase()} (${policy.toUpperCase()}) · Intercepted TX attempts: ${totalBlocked}. Permanent destructive/calibration commands remain blocked in all modes.`;
+      }
+    }
+
+    _updateTxAndSensors(snapshot, aDiag) {
+      const tel = snapshot.telemetry || {};
+      const tm = snapshot.txMeters || {};
+      const posture = snapshot.txPosture || 'rx-only';
+      const txActive = Boolean(snapshot.txActive);
+      const isTest = Boolean(snapshot.txTestMode || posture === 'tx-test');
+      const atuTuning = Boolean(snapshot.atuTuning);
+
+      const vs = tel.supplyVolts != null ? Number(tel.supplyVolts) : null;
+      const sag = tel.txVoltDrop != null ? Number(tel.txVoltDrop) : 0;
+      const isAmps = tel.supplyAmps != null ? Number(tel.supplyAmps) : null;
+      const peakIs = tel.peakSupplyAmps != null ? Number(tel.peakSupplyAmps) : isAmps;
+      const pt = tel.paTempC != null ? Number(tel.paTempC) : null;
+      const lt = tel.lpaTempC != null ? Number(tel.lpaTempC) : null;
+      const tf = tel.fpTempC != null ? Number(tel.fpTempC) : null;
+      const swr = Number(tm.swr) >= 1.0 ? Number(tm.swr) : (snapshot.atuMatchedSwr || 1.0);
+
+      const tempLevel = (t) => (t == null ? 'ok' : (t >= 75 ? 'crit' : (t >= 60 ? 'warn' : 'ok')));
+      const voltLevel = (v) => (v == null ? 'ok' : (v < 11.2 ? 'crit' : (v < 11.8 ? 'warn' : 'ok')));
+      const swrLevel = (s) => (s > 2.5 ? 'crit' : (s > 1.5 ? 'warn' : 'ok'));
+
+      // Compact always-visible sensor strip
+      if (this._strip) {
+        this._strip.vs.val.textContent = vs != null ? `${vs.toFixed(1)}V` : '—';
+        this._strip.vs.pill.dataset.level = voltLevel(vs);
+
+        this._strip.is.val.textContent = isAmps != null
+          ? (peakIs != null && peakIs > isAmps + 0.3 ? `${isAmps.toFixed(1)}/${peakIs.toFixed(0)}A` : `${isAmps.toFixed(1)}A`)
+          : '—';
+        this._strip.is.pill.dataset.level = isAmps != null && isAmps > 21 ? 'warn' : 'ok';
+
+        this._strip.pt.val.textContent = pt != null ? `${pt.toFixed(0)}°C` : '—';
+        this._strip.pt.pill.dataset.level = tempLevel(pt);
+
+        this._strip.swr.val.textContent = `${swr.toFixed(2)}:1`;
+        this._strip.swr.pill.dataset.level = swrLevel(swr);
+      }
+
+      // (a) TX Status, Posture, TOT, Split, XIT
+      if (this._refs.txPostureBtns) {
+        for (const id of Object.keys(this._refs.txPostureBtns)) {
+          this._refs.txPostureBtns[id].classList.toggle('is-active', id === posture);
+        }
+      }
+      if (this._refs.txStatusBanner) {
+        const b = this._refs.txStatusBanner;
+        if (snapshot.txInhibit) {
+          b.textContent = 'TX INHIBIT ACTIVE (Hardware/CAT Lock)';
+          b.dataset.state = 'warn';
+          this._refs.txStatusBadge.textContent = 'INHIBIT';
+        } else if (atuTuning) {
+          b.textContent = 'KAT4 ATU Tuning in progress...';
+          b.dataset.state = 'tuning';
+          this._refs.txStatusBadge.textContent = 'ATU';
+        } else if (txActive && isTest) {
+          b.textContent = 'TX TEST ACTIVE (0 W Output · Meters/Keyer Live)';
+          b.dataset.state = 'tuning';
+          this._refs.txStatusBadge.textContent = 'TEST 0W';
+        } else if (txActive) {
+          b.textContent = 'TRANSMITTING LIVE RF — Press Esc for immediate RX drop';
+          b.dataset.state = 'warn';
+          this._refs.txStatusBadge.textContent = 'ON AIR';
+        } else if (posture === 'tx-armed') {
+          b.textContent = 'TX ARMED — Hold PTT or Spacebar to transmit';
+          b.dataset.state = 'matched';
+          this._refs.txStatusBadge.textContent = 'ARMED';
+        } else if (posture === 'tx-test') {
+          b.textContent = 'TX TEST (0W) ARMED — Safe local keyer, audio & meter test';
+          b.dataset.state = 'tuning';
+          this._refs.txStatusBadge.textContent = 'TEST 0W';
+        } else {
+          b.textContent = 'Receive-Only Firewall Active — TX / ATU / Power locked';
+          b.dataset.state = 'idle';
+          this._refs.txStatusBadge.textContent = 'RX ONLY';
+        }
+      }
+      if (this._refs.txVfoVal) {
+        const txVfo = snapshot.activeTxVfo || (snapshot.splitEnabled ? 'B' : 'A');
+        this._refs.txVfoVal.textContent = snapshot.splitEnabled ? `VFO ${txVfo} (SPLIT)` : `VFO ${txVfo}`;
+      }
+      if (this._refs.txTotVal) {
+        const maxSec = Number(snapshot.txTimeoutSec) || 180;
+        const elapsed = txActive && snapshot.txStartedAt ? Math.max(0, Math.floor((Date.now() - snapshot.txStartedAt) / 1000)) : 0;
+        const rem = Math.max(0, maxSec - elapsed);
+        const mm = String(Math.floor(rem / 60)).padStart(1, '0');
+        const ss = String(rem % 60).padStart(2, '0');
+        this._refs.txTotVal.textContent = txActive ? `${mm}:${ss} rem (${elapsed}s)` : `${mm}:${ss}`;
+      }
+      if (this._refs.txSplitSwitch) this._refs.txSplitSwitch.sync(Boolean(snapshot.splitEnabled));
+      if (this._refs.txXitSwitch) this._refs.txXitSwitch.sync(Boolean(snapshot.xitEnabled));
+      if (this._refs.txXitZeroBtn) {
+        const off = Number((snapshot.rxA || {}).ritOffsetHz) || 0;
+        this._refs.txXitZeroBtn.textContent = off === 0 ? 'XIT 0 Hz' : `${off > 0 ? '+' : ''}${off} Hz`;
+      }
+
+      // (b) KAT4 ATU & Antenna
+      if (this._refs.txAntennaSelect) {
+        const sel = this._refs.txAntennaSelect;
+        const names = snapshot.antennaNames || {};
+        const mask = Array.isArray(snapshot.txAntennaMask) ? snapshot.txAntennaMask : [true, true, true];
+        for (let i = 0; i < sel.options.length; i++) {
+          const port = i + 1;
+          const label = names[port] ? `ANT${port} · ${names[port]}` : `ANT${port}`;
+          if (sel.options[i].textContent !== label) sel.options[i].textContent = label;
+          sel.options[i].disabled = mask[i] === false;
+        }
+        const curAnt = String(snapshot.txAntenna || 1);
+        if (document.activeElement !== sel && sel.value !== curAnt) {
+          sel.value = curAnt;
+        }
+      }
+      if (this._refs.atuModuleBadge) {
+        this._refs.atuModuleBadge.textContent = snapshot.hasAtu === false ? 'NO ATU' : (atuTuning ? 'TUNING' : 'KAT4');
+      }
+      if (this._refs.atuModeBtns) {
+        const am = Number(snapshot.atuMode);
+        this._refs.atuModeBtns[1].classList.toggle('is-active', am === 1);
+        this._refs.atuModeBtns[2].classList.toggle('is-active', am === 2);
+      }
+      if (this._refs.atuBtns) {
+        const searchHot = Number(snapshot.atuSearchWindowUntil) > Date.now();
+        this._refs.atuBtns.full.classList.toggle('k4-btn--search-hot', searchHot);
+        this._refs.atuBtns.tune.disabled = snapshot.hasAtu === false;
+        this._refs.atuBtns.full.disabled = snapshot.hasAtu === false;
+      }
+      if (this._refs.atuStatus) {
+        const st = this._refs.atuStatus;
+        const am = Number(snapshot.atuMode);
+        const searchHot = Number(snapshot.atuSearchWindowUntil) > Date.now();
+        if (snapshot.hasAtu === false || am === 0) {
+          st.textContent = 'KAT4 internal ATU not detected (AT0)';
+          st.dataset.state = 'idle';
+        } else if (atuTuning) {
+          st.textContent = `KAT4 ${snapshot.atuTuneKind === 4 ? 'Full Search' : 'Tuning'}... SWR ${swr.toFixed(2)}:1`;
+          st.dataset.state = 'tuning';
+        } else if (searchHot) {
+          st.textContent = 'Press FULL SEARCH within 5s for wide L/C search';
+          st.dataset.state = 'warn';
+        } else if (am === 1) {
+          st.textContent = 'KAT4 Bypassed (AT1)';
+          st.dataset.state = 'idle';
+        } else if (snapshot.atuMatchedSwr) {
+          const mFreq = snapshot.atuLastTunedFreqHz ? `${(snapshot.atuLastTunedFreqHz / 1e6).toFixed(3)} MHz` : 'active band';
+          st.textContent = `Matched ${Number(snapshot.atuMatchedSwr).toFixed(2)}:1 @ ${mFreq}`;
+          st.dataset.state = 'matched';
+        } else {
+          st.textContent = 'KAT4 Auto Ready (AT2)';
+          st.dataset.state = 'idle';
+        }
+      }
+
+      // (c) RF Power & Audio TX
+      const pRange = snapshot.powerRange === 'H' ? 'H' : 'L';
+      if (this._refs.pwrRangeBtns) {
+        this._refs.pwrRangeBtns.L.classList.toggle('is-active', pRange === 'L');
+        this._refs.pwrRangeBtns.H.classList.toggle('is-active', pRange === 'H');
+      }
+      if (this._refs.txPowerSlider) {
+        const inp = this._refs.txPowerSlider.input;
+        const targetMin = pRange === 'H' ? '1' : '0.1';
+        const targetMax = pRange === 'H' ? '110' : '10';
+        const targetStep = pRange === 'H' ? '1' : '0.1';
+        if (inp.min !== targetMin) inp.min = targetMin;
+        if (inp.max !== targetMax) inp.max = targetMax;
+        if (inp.step !== targetStep) inp.step = targetStep;
+        this._refs.txPowerSlider.sync(snapshot.powerWatts ?? (pRange === 'H' ? 25 : 10));
+      }
+      if (this._refs.txMgSlider) this._refs.txMgSlider.sync(snapshot.micGain ?? 15);
+      if (this._refs.txCpSlider) this._refs.txCpSlider.sync(snapshot.compDbSet ?? 0);
+      if (this._refs.txMlSlider) {
+        const ch = this._txMonitorChannel();
+        const mlVal = ch === 0 ? snapshot.monCw : (ch === 1 ? snapshot.monData : snapshot.monVoice);
+        this._refs.txMlSlider.sync(mlVal ?? 5);
+      }
+      if (this._refs.txMiSelect && document.activeElement !== this._refs.txMiSelect) {
+        const mi = String(snapshot.micInput ?? 4);
+        if (this._refs.txMiSelect.value !== mi) this._refs.txMiSelect.value = mi;
+      }
+      if (this._refs.txVoxSwitch) {
+        const rx = snapshot.activeTxVfo === 'B' ? (snapshot.rxB || {}) : (snapshot.rxA || {});
+        const mode = Number(rx.mode) || 2;
+        const voxOn = (mode === 3 || mode === 7) ? snapshot.voxCw : ((mode === 6 || mode === 9) ? snapshot.voxData : snapshot.voxVoice);
+        this._refs.txVoxSwitch.sync(Boolean(voxOn));
+      }
+
+      // Web TX Audio Source & VU meter
+      const cfg = this.getTxAudioConfig();
+      const secureOk = this._isMicSecureContext();
+      if (this._refs.txAudioSource) {
+        const sel = this._refs.txAudioSource;
+        const micOpt = sel.querySelector('option[value="mic"]');
+        if (micOpt) {
+          micOpt.disabled = !secureOk;
+          micOpt.textContent = secureOk ? 'Microphone (Live)' : 'Microphone (Requires localhost / HTTPS)';
+        }
+        const activeSrc = cfg.source === 'mic' && !secureOk ? 'two-tone' : (cfg.source || 'two-tone');
+        if (document.activeElement !== sel && sel.value !== activeSrc) {
+          sel.value = activeSrc;
+        }
+        if (this._refs.txMicSecNote) this._refs.txMicSecNote.hidden = secureOk;
+        if (this._refs.txMicExtras) this._refs.txMicExtras.hidden = !(activeSrc === 'mic' && secureOk);
+        if (this._refs.txWavExtras) this._refs.txWavExtras.hidden = activeSrc !== 'wav';
+        if (this._refs.txVpSwitch) this._refs.txVpSwitch.sync(Boolean(cfg.voiceProcessing));
+        if (this._refs.txWavNameEl && cfg.wavName) {
+          this._refs.txWavNameEl.textContent = cfg.wavName;
+        }
+      }
+      if (this._refs.txVuFill && this._refs.txVuVal) {
+        const level = Math.max(0, Math.min(1, Number(aDiag.txInputLevel) || 0));
+        const pkts = Number(aDiag.txPacketsOut) || 0;
+        this._refs.txVuFill.style.width = `${Math.round(level * 100)}%`;
+        this._refs.txVuVal.textContent = `${Math.round(level * 100)}% · ${pkts} pkts`;
+      }
+
+      // (d) CW / DATA Keyer
+      if (this._refs.tbVal && this._refs.tbFill) {
+        const q = Math.max(0, Number(snapshot.txBufferCount) || 0);
+        const full = Boolean(snapshot.keyerBufferFull || q >= 24);
+        this._refs.tbVal.textContent = full ? `${q} (FULL)` : `${q} chars`;
+        this._refs.tbFill.style.width = `${Math.min(100, Math.round((q / 24) * 100))}%`;
+        this._refs.tbFill.classList.toggle('is-full', full);
+      }
+      if (this._refs.cwKsSlider) this._refs.cwKsSlider.sync(snapshot.cwSpeedWpm ?? 20);
+      if (this._refs.cwKpSlider) this._refs.cwKpSlider.sync(snapshot.keyerWeight ?? 115);
+      if (this._refs.cwIambicBtn) this._refs.cwIambicBtn.textContent = `Iambic ${snapshot.keyerIambic || 'A'}`;
+      if (this._refs.cwPolBtn) this._refs.cwPolBtn.textContent = `Paddle ${snapshot.keyerPaddleOrder || 'N'}`;
+      if (this._refs.cwQskBtn) this._refs.cwQskBtn.classList.toggle('is-active', Boolean(snapshot.voxCw));
+
+      // (e) Expanded PA, Electrical & Thermal Sensors
+      if (this._refs.sensors) {
+        const s = this._refs.sensors;
+        s.vs.val.textContent = vs != null ? `${vs.toFixed(2)} V (ΔV ${sag.toFixed(2)} V)` : '—';
+        s.vs.tile.dataset.level = voltLevel(vs);
+
+        const paA = tel.paAmps != null ? ` · PA ${Number(tel.paAmps).toFixed(1)}A` : '';
+        s.is.val.textContent = isAmps != null
+          ? `${isAmps.toFixed(1)} A (pk ${(peakIs ?? isAmps).toFixed(1)} A)${paA}`
+          : '—';
+        s.is.tile.dataset.level = isAmps != null && isAmps > 21 ? 'warn' : 'ok';
+
+        s.pt.val.textContent = pt != null ? `${pt.toFixed(1)} °C` : '—';
+        s.pt.tile.dataset.level = tempLevel(pt);
+
+        s.lt.val.textContent = lt != null ? `${lt.toFixed(1)} °C` : '—';
+        s.lt.tile.dataset.level = tempLevel(lt);
+
+        s.tf.val.textContent = tf != null ? `${tf.toFixed(1)} °C` : '—';
+        s.tf.tile.dataset.level = tempLevel(tf);
+
+        const sysParts = [];
+        if (tel.cpuTempC != null) sysParts.push(`C:${Number(tel.cpuTempC).toFixed(0)}°`);
+        if (tel.dapTempC != null) sysParts.push(`D:${Number(tel.dapTempC).toFixed(0)}°`);
+        if (tel.ducTempC != null) sysParts.push(`U:${Number(tel.ducTempC).toFixed(0)}°`);
+        s.sys.val.textContent = sysParts.length ? sysParts.join(' ') : '—';
+
+        const maxHot = Math.max(pt || 0, lt || 0, tf || 0);
+        if (this._refs.txThermalAlert) {
+          if (maxHot >= 75) {
+            this._refs.txThermalAlert.hidden = false;
+            this._refs.txThermalAlert.className = 'k4-tx-inline-alert k4-tx-inline-alert--danger';
+            this._refs.txThermalAlert.textContent = `CRITICAL THERMAL WARNING (${maxHot.toFixed(1)} °C >= 75 °C) — Drop TX immediately!`;
+          } else if (maxHot >= 60) {
+            this._refs.txThermalAlert.hidden = false;
+            this._refs.txThermalAlert.className = 'k4-tx-inline-alert';
+            this._refs.txThermalAlert.textContent = `Elevated PA/LPA temperature (${maxHot.toFixed(1)} °C >= 60 °C) — Monitor duty cycle.`;
+          } else {
+            this._refs.txThermalAlert.hidden = true;
+          }
+        }
+      }
+      if (this._refs.omBadges) {
+        this._refs.omBadges.kat4.classList.toggle('is-present', snapshot.hasAtu !== false);
+        this._refs.omBadges.kpa4.classList.toggle('is-present', Boolean(snapshot.hasKpa4));
+        this._refs.omBadges.krx4.classList.toggle('is-present', snapshot.hasSubRx !== false);
+        this._refs.omBadges.amp.classList.toggle('is-present', Boolean(snapshot.hasLinearAmp));
       }
     }
   }

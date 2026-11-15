@@ -66,7 +66,7 @@ select {
   width: 100vw;
   height: 100vh;
   height: 100dvh;
-  grid-template-rows: var(--topbar-h) minmax(0, 1fr);
+  grid-template-rows: minmax(var(--topbar-h), auto) minmax(0, 1fr);
   grid-template-columns: minmax(0, 1fr);
   overflow: hidden;
   background: var(--bg-canvas);
@@ -80,6 +80,7 @@ select {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
+  min-height: var(--topbar-h);
   height: var(--topbar-h);
   padding: 0 10px;
   background: var(--bg-glass-strong);
@@ -100,11 +101,11 @@ select {
 }
 
 .k4-topbar-left {
-  flex: 0 1 auto;
+  flex: 0 0 auto;
 }
 
 .k4-topbar-center {
-  flex: 1 1 auto;
+  flex: 1 0 auto;
   justify-content: center;
 }
 
@@ -183,19 +184,21 @@ select {
   display: none;
 }
 
-/* Mid-size desktop refinements (960px..1379px) */
-@media (min-width: 960px) and (max-width: 1379px) {
+/* Mid-size desktop refinements (960px..1480px) */
+@media (min-width: 960px) and (max-width: 1480px) {
   #top-bar {
-    gap: 6px;
+    gap: 5px;
     padding: 0 8px;
   }
 
   .k4-conn-label {
-    max-width: 56px;
+    max-width: 60px;
   }
 
   .k4-omnibar-trigger .k4-btn-label,
-  .k4-omnibar-trigger .k4-kbd-hint {
+  .k4-omnibar-trigger .k4-kbd-hint,
+  .k4-audio-btn .k4-audio-label,
+  .k4-rx-badge .k4-rx-badge-text {
     display: none;
   }
 
@@ -206,9 +209,16 @@ select {
   }
 }
 
-@media (min-width: 960px) and (max-width: 1239px) {
+@media (min-width: 960px) and (max-width: 1219px) {
   :root {
     --drawer-w: 296px;
+  }
+
+  #top-bar {
+    flex-wrap: wrap;
+    height: auto;
+    padding: 4px 8px;
+    row-gap: 4px;
   }
 
   .k4-conn-pill .k4-conn-label {
@@ -219,38 +229,42 @@ select {
 @media (min-width: 960px) and (max-width: 1159px) {
   .k4-vfo-slot--main .k4-vfo-band,
   .k4-vfo-slot--sub .k4-vfo-lock:not(.is-locked),
-  .k4-omnibar-trigger .k4-kbd-hint,
-  .k4-rx-badge .k4-rx-badge-text,
-  .k4-conn-pill .k4-conn-rtt,
-  .k4-audio-btn .k4-audio-label {
+  .k4-conn-pill .k4-conn-rtt {
     display: none;
   }
 }
 
-/* Mobile Layout (< 960px) */
+/* Mobile Layout (< 960px): 2-row top-bar prevents any overlap at 390px */
 @media (max-width: 959px) {
   #app-shell {
-    grid-template-rows: var(--topbar-mobile-h) minmax(0, 1fr) calc(var(--mobilenav-h) + env(safe-area-inset-bottom, 0px));
+    grid-template-rows: auto minmax(0, 1fr) calc(var(--mobilenav-h) + env(safe-area-inset-bottom, 0px));
   }
 
   #top-bar {
-    height: var(--topbar-mobile-h);
-    padding: 0 6px;
-    gap: 4px;
+    height: auto;
+    min-height: var(--topbar-mobile-h);
+    flex-wrap: wrap;
+    padding: 4px 6px;
+    gap: 4px 6px;
   }
 
   .k4-topbar-left {
     flex: 1 1 auto;
+    min-width: 0;
     gap: 4px;
   }
 
   .k4-topbar-center {
-    flex: 0 1 auto;
+    flex: 0 0 auto;
+    justify-content: flex-end;
     gap: 4px;
   }
 
   .k4-topbar-right {
-    flex: 0 0 auto;
+    flex: 0 0 100%;
+    width: 100%;
+    order: 3;
+    justify-content: space-between;
     gap: 4px;
   }
 

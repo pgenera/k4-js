@@ -37,6 +37,16 @@
       this._pendingConnectClose = false;
       this._lastSyncedMix = null;
       this._lastSyncedSl = null;
+      this._armConfirmOpen = false;
+      this._pttPointerId = null;
+      this._pttKeyHeld = false;
+      this._pttHeldUi = false;
+      this._txAudioConfig = {
+        source: 'two-tone',
+        deviceId: '',
+        voiceProcessing: false,
+        wavName: '',
+      };
 
       this.state = new K4.RadioState();
       this.gate = new K4.RxOnlyGate('rx-only');
@@ -53,6 +63,19 @@
         omnibarBtn: document.getElementById('omnibar-btn'),
         audioToggleBtn: document.getElementById('audio-toggle'),
         audioLabel: document.querySelector('#audio-toggle .k4-audio-label'),
+        txPostureBar: document.getElementById('tx-posture-bar'),
+        txModeRxBtn: document.getElementById('tx-mode-rx'),
+        txModeTestBtn: document.getElementById('tx-mode-test'),
+        txModeArmedBtn: document.getElementById('tx-mode-armed'),
+        pttBtn: document.getElementById('ptt-btn'),
+        txArmConfirm: document.getElementById('tx-arm-confirm'),
+        txArmVfo: document.getElementById('tx-arm-vfo'),
+        txArmFreq: document.getElementById('tx-arm-freq'),
+        txArmMode: document.getElementById('tx-arm-mode'),
+        txArmPower: document.getElementById('tx-arm-power'),
+        txArmAnt: document.getElementById('tx-arm-ant'),
+        txArmCancelBtn: document.getElementById('tx-arm-cancel-btn'),
+        txArmConfirmBtn: document.getElementById('tx-arm-confirm-btn'),
         rxOnlyBadge: document.getElementById('rx-only-badge'),
         rxBlockedCount: document.querySelector('#rx-only-badge .k4-rx-blocked-count'),
         drawerToggleBtn: document.getElementById('drawer-toggle'),
@@ -370,6 +393,17 @@
         getMouseQsyMode: () => this._mouseQsyMode,
         onSetMouseQsyMode: (m) => this.setMouseQsyMode(m),
         onToggleAudio: () => this.toggleAudio(),
+        onSetTxPosture: (p) => this.setTxPosture(p),
+        onPanicAbort: () => this.panicAbortTx('ui-panic'),
+        getTxAudioConfig: () => this._txAudioConfig,
+        onSetTxAudioConfig: (patch) => this.setTxAudioConfig(patch),
+        onLoadTxWav: (file) => this.loadTxWavFile(file),
+        onOpenDrawer: () => {
+          if (!this._drawerOpen) {
+            this._drawerOpen = true;
+            this._applyDrawerState();
+          }
+        },
       });
 
       this.connectionDialog = new K4.ConnectionDialog({
@@ -444,12 +478,34 @@
         this._render();
       });
 
+      if (typeof this.audio.setTxPacketHandler === 'function') {
+        this.audio.setTxPacketHandler((pkt) => {
+          if (pkt && typeof this.client.sendTxAudioPacket === 'function') {
+            this.client.sendTxAudioPacket(pkt);
+          }
+        });
+      }
+
+      if (typeof this.client.on === 'function') {
+        this.client.on('txPttChange', (ev) => {
+          const active = Boolean(ev && ev.active);
+          if (active) {
+            this._startTxAudioIfVoiceMode();
+          } else if (typeof this.audio.stopTxCapture === 'function') {
+            this.audio.stopTxCapture();
+          }
+          this._render();
+        });
+      }
+
       this.state.on('change', (_snap, changedKey) => {
         if (
           changedKey === 'rxA.sMeterDbm' ||
           changedKey === 'rxB.sMeterDbm' ||
           changedKey === 'rxA.panMeta' ||
-          changedKey === 'rxB.panMeta'
+          changedKey === 'rxB.panMeta' ||
+          changedKey === 'txMeters' ||
+          changedKey === 'telemetry'
         ) {
           this._scheduleRender();
         } else {
@@ -467,7 +523,67 @@
       this._dom.audioToggleBtn.addEventListener('click', () => this.toggleAudio());
       this._dom.drawerToggleBtn.addEventListener('click', () => this.toggleDrawer());
 
-      // Global keyboard shortcuts (NEVER bind TX keys!)
+      // TX Safety Posture controls & 2-step Arm Confirmation
+      if (this._dom.txModeRxBtn) {
+        this._dom.txModeRxBtn.addEventListener('click', () => this.setTxPosture('rx-only'));
+      }
+      if (this._dom.txModeTestBtn) {
+        this._dom.txModeTestBtn.addEventListener('click', () => this.setTxPosture('tx-test'));
+      }
+      if (this._dom.txModeArmedBtn) {
+        this._dom.txModeArmedBtn.addEventListener('click', () => this.setTxPosture('tx-armed'));
+      }
+      if (this._dom.txArmCancelBtn) {
+        this._dom.txArmCancelBtn.addEventListener('click', () => this.closeArmConfirm());
+      }
+      if (this._dom.txArmConfirmBtn) {
+        this._dom.txArmConfirmBtn.addEventListener('click', () => this.confirmArmTx());
+      }
+
+      // Close arm confirmation popover on outside pointerdown
+      document.addEventListener('pointerdown', (e) => {
+        if (!this._armConfirmOpen || !this._dom.txArmConfirm) return;
+        if (
+          this._dom.txArmConfirm.contains(e.target) ||
+          (this._dom.txModeArmedBtn && this._dom.txModeArmedBtn.contains(e.target))
+        ) {
+          return;
+        }
+        this.closeArmConfirm();
+      });
+
+      // Hold-only PTT button (NEVER latches)
+      if (this._dom.pttBtn) {
+        const ptt = this._dom.pttBtn;
+        ptt.addEventListener('pointerdown', (e) => {
+          if (e.button !== 0 || ptt.disabled) return;
+          e.preventDefault();
+          this._pttPointerId = e.pointerId;
+          try {
+            ptt.setPointerCapture(e.pointerId);
+          } catch (_) {}
+          this._beginHoldPtt();
+        });
+        const stopPtrPtt = (e) => {
+          if (this._pttPointerId === null && !this._pttHeldUi) return;
+          if (e && e.pointerId != null && this._pttPointerId !== null && e.pointerId !== this._pttPointerId && e.type !== 'lostpointercapture') {
+            return;
+          }
+          try {
+            if (e && e.pointerId != null && ptt.hasPointerCapture && ptt.hasPointerCapture(e.pointerId)) {
+              ptt.releasePointerCapture(e.pointerId);
+            }
+          } catch (_) {}
+          this._endHoldPtt();
+        };
+        ptt.addEventListener('pointerup', stopPtrPtt);
+        ptt.addEventListener('pointercancel', stopPtrPtt);
+        ptt.addEventListener('lostpointercapture', stopPtrPtt);
+        ptt.addEventListener('contextmenu', (e) => e.preventDefault());
+        ptt.addEventListener('click', (e) => e.preventDefault());
+      }
+
+      // Global keyboard shortcuts & Hold-Only Spacebar PTT / Unconditional Escape Panic
       document.addEventListener('keydown', (e) => {
         if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
           e.preventDefault();
@@ -477,7 +593,22 @@
         }
 
         if (e.key === 'Escape') {
-          if (this.omnibar.isOpen() || this.connectionDialog.isOpen() || this.inspector.isMobileSheetOpen()) {
+          const snap = this._getSnapshot();
+          const txBusy = Boolean(
+            snap.txActive || snap.pttHeld || this._pttHeldUi || snap.atuTuning || Number(snap.txBufferCount) > 0
+          );
+          if (txBusy) {
+            e.preventDefault();
+            this.panicAbortTx('escape');
+            this.closeOverlays();
+            return;
+          }
+          if (
+            this.omnibar.isOpen() ||
+            this.connectionDialog.isOpen() ||
+            this.inspector.isMobileSheetOpen() ||
+            this._armConfirmOpen
+          ) {
             e.preventDefault();
             this.closeOverlays();
           }
@@ -486,8 +617,22 @@
 
         const tag = e.target && e.target.tagName ? e.target.tagName.toLowerCase() : '';
         const isEditing = tag === 'input' || tag === 'textarea' || tag === 'select' || (e.target && e.target.isContentEditable);
-        if (isEditing || this.omnibar.isOpen() || this.connectionDialog.isOpen()) {
+        const modalOpen = this.omnibar.isOpen() || this.connectionDialog.isOpen() || this._armConfirmOpen;
+        if (isEditing || modalOpen) {
           return;
+        }
+
+        if (e.code === 'Space') {
+          const snap = this._getSnapshot();
+          const posture = snap.txPosture || (typeof this.client.getTxPosture === 'function' ? this.client.getTxPosture() : 'rx-only');
+          if (posture !== 'rx-only' && !snap.txInhibit) {
+            e.preventDefault();
+            if (!e.repeat && !this._pttKeyHeld) {
+              this._pttKeyHeld = true;
+              this._beginHoldPtt();
+            }
+            return;
+          }
         }
 
         if (e.key === 'm' || e.key === 'M') {
@@ -511,21 +656,46 @@
           this.client.setDisplay(this._dispRx(snap), { panFrozen: !snap.panFrozen });
         } else if (e.key === '?') {
           e.preventDefault();
-          this.toast('Shortcuts: Cmd/Ctrl+K Jump · M Mute · F Freeze · ←/→ Step · +/- Span · Esc Close', 'info');
+          this.toast('Shortcuts: Cmd/Ctrl+K Jump · M Mute · F Freeze · Space Hold-PTT (when armed) · Esc TX Panic/Close', 'info');
         }
+      });
+
+      document.addEventListener('keyup', (e) => {
+        if (e.code === 'Space' && this._pttKeyHeld) {
+          e.preventDefault();
+          this._endHoldPtt();
+        }
+      });
+
+      window.addEventListener('blur', () => {
+        if (this._pttKeyHeld || this._pttHeldUi) {
+          this._endHoldPtt();
+        }
+      });
+
+      document.addEventListener('visibilitychange', () => {
+        if (document.hidden && (this._pttKeyHeld || this._pttHeldUi || this._getSnapshot().txActive)) {
+          this._endHoldPtt();
+        }
+      });
+
+      window.addEventListener('pagehide', () => {
+        this._endHoldPtt();
       });
 
       window.addEventListener('resize', () => {
         this.inspector.syncHost();
+        if (this._armConfirmOpen) this._positionArmPopover();
         this._scheduleRender();
       });
 
-      // Keep diagnostics crisp at 2 Hz while open
+      // Keep diagnostics & live TX VU/TOT crisp while open or transmitting
       setInterval(() => {
-        if (this._drawerOpen || this.inspector.isMobileSheetOpen()) {
-          this.inspector.update(this._getSnapshot());
+        const snap = this._getSnapshot();
+        if (this._drawerOpen || this.inspector.isMobileSheetOpen() || snap.txActive) {
+          this.inspector.update(snap);
         }
-      }, 500);
+      }, 200);
     }
 
     _handleStartup() {
@@ -565,6 +735,7 @@
 
     async connect(opts) {
       const finalOpts = Object.assign({}, this.connectionDialog.getOptions(), opts || {});
+      this._resetTxSafety();
       this._pendingConnectClose = true;
       try {
         await this.client.connect(finalOpts);
@@ -582,8 +753,210 @@
 
     disconnect() {
       this._pendingConnectClose = false;
+      this._resetTxSafety();
       this.client.disconnect();
       this.toast('Disconnected from radio', 'info');
+    }
+
+    _resetTxSafety() {
+      this.closeArmConfirm();
+      this._pttPointerId = null;
+      this._pttKeyHeld = false;
+      this._pttHeldUi = false;
+      if (this.audio && typeof this.audio.stopTxCapture === 'function') {
+        this.audio.stopTxCapture();
+      }
+      if (this.client && typeof this.client.setTxPosture === 'function') {
+        this.client.setTxPosture('rx-only');
+      } else if (this.gate && typeof this.gate.setPolicy === 'function') {
+        this.gate.setPolicy('rx-only');
+      }
+    }
+
+    _isVoiceOrAfDataMode(snap) {
+      const s = snap || this._getSnapshot();
+      const txVfo = s.activeTxVfo || (s.splitEnabled ? 'B' : 'A');
+      const rxS = txVfo === 'B' ? (s.rxB || {}) : (s.rxA || {});
+      const mode = Number(rxS.mode) || 0;
+      const sub = Number(rxS.dataSubMode) || 0;
+      return mode === 1 || mode === 2 || mode === 4 || mode === 5 || ((mode === 6 || mode === 9) && (sub === 0 || sub === 1));
+    }
+
+    _startTxAudioIfVoiceMode() {
+      if (!this.audio || typeof this.audio.startTxCapture !== 'function') return;
+      if (!this._isVoiceOrAfDataMode(this._getSnapshot())) return;
+      const cfg = this._txAudioConfig;
+      const secOk = typeof this.audio.isMicSecureContextAvailable === 'function'
+        ? this.audio.isMicSecureContextAvailable()
+        : Boolean(window.isSecureContext);
+      const source = cfg.source === 'mic' && !secOk ? 'two-tone' : (cfg.source || 'two-tone');
+      this.audio.startTxCapture({
+        source,
+        deviceId: cfg.deviceId || undefined,
+        voiceProcessing: Boolean(cfg.voiceProcessing),
+      }).catch((err) => {
+        this.toast(`TX audio capture unavailable: ${(err && err.message) || err}`, 'error');
+      });
+    }
+
+    setTxAudioConfig(patch) {
+      if (!patch || typeof patch !== 'object') return;
+      Object.assign(this._txAudioConfig, patch);
+      this._render();
+    }
+
+    async loadTxWavFile(file) {
+      if (!file || !this.audio || typeof this.audio.setTxWaveBuffer !== 'function') return;
+      try {
+        const buf = await file.arrayBuffer();
+        const AC = window.AudioContext || window.webkitAudioContext;
+        if (!AC) throw new Error('WebAudio unavailable');
+        const ctx = new AC();
+        const decoded = await ctx.decodeAudioData(buf);
+        this.audio.setTxWaveBuffer(decoded.getChannelData(0), decoded.sampleRate);
+        ctx.close().catch(() => {});
+        this._txAudioConfig.wavName = file.name;
+        this._txAudioConfig.source = 'wav';
+        this.toast(`Loaded TX WAV loop: ${file.name}`, 'success');
+        this._render();
+      } catch (err) {
+        this.toast(`WAV decode error: ${(err && err.message) || err}`, 'error');
+      }
+    }
+
+    setTxPosture(target) {
+      const next = target === 'tx-armed' ? 'tx-armed' : (target === 'tx-test' ? 'tx-test' : 'rx-only');
+      if (next === 'rx-only') {
+        this._endHoldPtt();
+        this.closeArmConfirm();
+        if (this.client && typeof this.client.setTxPosture === 'function') {
+          this.client.setTxPosture('rx-only');
+        }
+        this.toast('Receive-only firewall active', 'info');
+        this._render();
+        return;
+      }
+      if (next === 'tx-test') {
+        this.closeArmConfirm();
+        if (this.client && typeof this.client.setTxPosture === 'function') {
+          this.client.setTxPosture('tx-test');
+        }
+        this.toast('TX TEST (0W) active — zero RF output', 'info');
+        this._render();
+        return;
+      }
+      const cur = (this.client && typeof this.client.getTxPosture === 'function')
+        ? this.client.getTxPosture()
+        : (this._getSnapshot().txPosture || 'rx-only');
+      if (cur === 'tx-armed') {
+        this.closeArmConfirm();
+        return;
+      }
+      this.openArmConfirm();
+    }
+
+    openArmConfirm() {
+      if (!this._dom.txArmConfirm) return;
+      const snap = this._getSnapshot();
+      const txVfo = snap.activeTxVfo || (snap.splitEnabled ? 'B' : 'A');
+      const rxS = txVfo === 'B' ? (snap.rxB || {}) : (snap.rxA || {});
+      const hz = Math.max(0, Math.round(Number(rxS.freqHz) || 0));
+      const mhz = Math.floor(hz / 1000000);
+      const khz = String(Math.floor((hz % 1000000) / 1000)).padStart(3, '0');
+      const hzp = String(hz % 1000).padStart(3, '0');
+      const modeNames = { 1: 'LSB', 2: 'USB', 3: 'CW', 4: 'FM', 5: 'AM', 6: 'DATA', 7: 'CW-R', 9: 'DATA-R' };
+      const dataSubNames = ['DATA-A', 'AFSK-A', 'FSK-D', 'PSK-D'];
+      const modeCode = Number(rxS.mode) || 0;
+      const modeStr = (modeCode === 6 || modeCode === 9)
+        ? (dataSubNames[Number(rxS.dataSubMode) || 0] || 'DATA-A')
+        : (modeNames[modeCode] || 'USB');
+      const pRange = snap.powerRange === 'H' ? 'H' : 'L';
+      const watts = Number(snap.powerWatts ?? 10);
+      const antPort = Number(snap.txAntenna) || 1;
+      const antLabel = snap.antennaNames && snap.antennaNames[antPort]
+        ? `ANT${antPort} · ${snap.antennaNames[antPort]}`
+        : `ANT${antPort}`;
+
+      if (this._dom.txArmVfo) this._dom.txArmVfo.textContent = snap.splitEnabled ? `VFO ${txVfo} (SPLIT)` : `VFO ${txVfo}`;
+      if (this._dom.txArmFreq) this._dom.txArmFreq.textContent = `${mhz}.${khz}.${hzp} MHz`;
+      if (this._dom.txArmMode) this._dom.txArmMode.textContent = modeStr;
+      if (this._dom.txArmPower) {
+        this._dom.txArmPower.textContent = `${pRange === 'H' ? Math.round(watts) : watts.toFixed(1)} W (${pRange})`;
+      }
+      if (this._dom.txArmAnt) this._dom.txArmAnt.textContent = antLabel;
+
+      this._armConfirmOpen = true;
+      this._dom.txArmConfirm.hidden = false;
+      this._positionArmPopover();
+    }
+
+    _positionArmPopover() {
+      const pop = this._dom.txArmConfirm;
+      const anchor = this._dom.txModeArmedBtn;
+      if (!pop || !anchor || this._dom.txArmConfirm.hidden) return;
+      const rect = anchor.getBoundingClientRect();
+      const vw = window.innerWidth || 1280;
+      const top = Math.min((window.innerHeight || 720) - 240, Math.max(52, rect.bottom + 8));
+      const right = Math.max(12, Math.min(vw - 332, vw - rect.right));
+      pop.style.top = `${Math.round(top)}px`;
+      pop.style.right = `${Math.round(right)}px`;
+    }
+
+    closeArmConfirm() {
+      this._armConfirmOpen = false;
+      if (this._dom.txArmConfirm) {
+        this._dom.txArmConfirm.hidden = true;
+      }
+    }
+
+    confirmArmTx() {
+      this.closeArmConfirm();
+      if (this.client && typeof this.client.setTxPosture === 'function') {
+        this.client.setTxPosture('tx-armed', { confirmed: true });
+      }
+      this.toast('LIVE RF TX ARMED — Hold PTT or Spacebar to transmit', 'info');
+      this._render();
+    }
+
+    _beginHoldPtt() {
+      const snap = this._getSnapshot();
+      const posture = snap.txPosture || (this.client && typeof this.client.getTxPosture === 'function' ? this.client.getTxPosture() : 'rx-only');
+      if (posture === 'rx-only' || snap.txInhibit) return;
+      this._pttHeldUi = true;
+      if (this.client && typeof this.client.startPtt === 'function') {
+        this.client.startPtt({ maxSeconds: 180 });
+      }
+      this._render();
+    }
+
+    _endHoldPtt() {
+      const wasActive = this._pttHeldUi || this._pttKeyHeld || this._pttPointerId !== null;
+      this._pttPointerId = null;
+      this._pttKeyHeld = false;
+      this._pttHeldUi = false;
+      if (this.audio && typeof this.audio.stopTxCapture === 'function') {
+        this.audio.stopTxCapture();
+      }
+      if (wasActive && this.client && typeof this.client.stopPtt === 'function') {
+        this.client.stopPtt();
+      }
+      this._render();
+    }
+
+    panicAbortTx(reason = 'escape') {
+      this._pttPointerId = null;
+      this._pttKeyHeld = false;
+      this._pttHeldUi = false;
+      if (this.audio && typeof this.audio.stopTxCapture === 'function') {
+        this.audio.stopTxCapture();
+      }
+      if (this.client && typeof this.client.panicAbortTx === 'function') {
+        this.client.panicAbortTx(reason);
+      } else if (this.client && typeof this.client.stopPtt === 'function') {
+        this.client.stopPtt();
+      }
+      this.toast('TX / ATU / Keyer aborted (RX)', 'info');
+      this._render();
     }
 
     setTargetRx(rx, opts = {}) {
@@ -828,6 +1201,7 @@
     }
 
     closeOverlays() {
+      this.closeArmConfirm();
       this.omnibar.close();
       this.connectionDialog.close();
       this.inspector.closeMobileSheet();
@@ -907,12 +1281,42 @@
         this._dom.audioLabel.textContent = modeTxt;
       }
 
-      // RX-Only Badge count
+      // TX Safety Posture Bar, Hold-Only PTT & RX-Only Badge count
       const gStats = this.gate.getStats ? this.gate.getStats() : { blockedCatCount: 0, blockedBinaryCount: 0 };
       const blockedTotal = (gStats.blockedCatCount || 0) + (gStats.blockedBinaryCount || 0);
       this._dom.rxOnlyBadge.dataset.blocked = blockedTotal > 0 ? 'true' : 'false';
       this._dom.rxBlockedCount.hidden = blockedTotal === 0;
       this._dom.rxBlockedCount.textContent = String(blockedTotal);
+
+      const posture = snap.txPosture || (this.client && typeof this.client.getTxPosture === 'function' ? this.client.getTxPosture() : 'rx-only');
+      const transmitting = Boolean(snap.txActive || snap.atuTuning);
+      const badgeLabel = this._dom.rxOnlyBadge.querySelector('.k4-rx-badge-text');
+      if (badgeLabel) {
+        badgeLabel.textContent = posture === 'rx-only' ? 'SAFE' : (posture === 'tx-test' ? 'TEST' : (transmitting ? 'ON AIR' : 'ARMED'));
+      }
+      if (this._dom.txPostureBar) {
+        this._dom.txPostureBar.dataset.posture = posture;
+        this._dom.txPostureBar.dataset.transmitting = transmitting ? 'true' : 'false';
+      }
+      const syncPostureBtn = (btn, target) => {
+        if (!btn) return;
+        const active = posture === target;
+        btn.classList.toggle('is-active', active);
+        btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+      };
+      syncPostureBtn(this._dom.txModeRxBtn, 'rx-only');
+      syncPostureBtn(this._dom.txModeTestBtn, 'tx-test');
+      syncPostureBtn(this._dom.txModeArmedBtn, 'tx-armed');
+
+      if (this._dom.pttBtn) {
+        const pttEnabled = posture !== 'rx-only' && !snap.txInhibit;
+        this._dom.pttBtn.disabled = !pttEnabled;
+        const pttActive = Boolean(this._pttHeldUi || snap.pttHeld || snap.txActive);
+        this._dom.pttBtn.classList.toggle('is-held', Boolean(this._pttHeldUi || snap.pttHeld));
+        this._dom.pttBtn.classList.toggle('is-tx', Boolean(snap.txActive));
+        this._dom.pttBtn.setAttribute('aria-pressed', pttActive ? 'true' : 'false');
+        this._dom.pttBtn.textContent = snap.txActive ? (posture === 'tx-test' ? 'TEST TX' : 'ON AIR') : 'PTT';
+      }
 
       // Floating Panadapter HUD
       const rxS = (this._targetRx === 'B' ? snap.rxB : snap.rxA) || {};

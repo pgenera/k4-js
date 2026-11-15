@@ -10,6 +10,7 @@ import (
 	"math/rand"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -75,7 +76,7 @@ func TestSplitCATFramesWithTBSemicolons(t *testing.T) {
 }
 
 func TestRadioCATAndTxGateTracking(t *testing.T) {
-	r := NewRadio()
+	r := NewRxOnlyRadio()
 	reply, closeReq := r.HandleCAT("FA00007074000;MD$7;BW$0050;IS$0050;CW55;#SPN$24000;#MP1;SL4;MXAB.AB;EM0;", 1.0)
 	if closeReq {
 		t.Fatalf("unexpected close request")
@@ -507,15 +508,16 @@ func TestCATHardwareParityCommands(t *testing.T) {
 		t.Fatalf("IF = %q, want %q", ifRep, wantIF)
 	}
 
-	// AN; GET allowed vs AN<n>; SET blocked as TX/relay-unsafe
+	// AN; GET allowed vs AN<n>; SET blocked as TX/relay-unsafe in strict RX-only mode
 	if rep, _ := r.HandleCAT("AN;", 0.0); rep != "AN1;" {
 		t.Fatalf("AN; reply = %q, want AN1;", rep)
 	}
-	beforeBlocked := r.Stats().TxBlockedViolations
-	if rep, _ := r.HandleCAT("AN2;", 0.0); rep != "?;" {
+	rxOnly := NewRxOnlyRadio()
+	beforeBlocked := rxOnly.Stats().TxBlockedViolations
+	if rep, _ := rxOnly.HandleCAT("AN2;", 0.0); rep != "?;" {
 		t.Fatalf("AN2; SET reply = %q, want ?;", rep)
 	}
-	if r.Stats().TxBlockedViolations != beforeBlocked+1 {
+	if rxOnly.Stats().TxBlockedViolations != beforeBlocked+1 {
 		t.Fatalf("expected TxBlockedViolations increment for AN2;")
 	}
 
@@ -743,5 +745,532 @@ func TestItems1And2CATTelemetryFreezeAndOverflow(t *testing.T) {
 	}
 	if rep := r.PeriodicSystemInfoCAT(2.5); !strings.Contains(rep, "SIFPVS:") || !strings.Contains(rep, "SIDAV5:") {
 		t.Fatalf("PeriodicSystemInfoCAT = %q", rep)
+	}
+}
+
+func makeEm1S16AudioBytes(samplesPerCh int, amp int16) []byte {
+	out := make([]byte, samplesPerCh*4)
+	for i := 0; i < samplesPerCh; i++ {
+		val := uint16(int16(float64(amp) * math.Sin(2.0*math.Pi*1000.0*float64(i)/12000.0)))
+		binary.LittleEndian.PutUint16(out[i*4:i*4+2], val)
+		binary.LittleEndian.PutUint16(out[i*4+2:i*4+4], val)
+	}
+	return out
+}
+
+func TestPermanentDestructiveBlocklistAlwaysBlocked(t *testing.T) {
+	r := NewRadio()
+	if !r.AllowTx {
+		t.Fatalf("NewRadio() must default AllowTx = true")
+	}
+
+	// Passive telemetry subscriptions & safe GET queries must NOT increment TxCatCommands or TxBlockedViolations
+	passive := "TM1;PO1;SIFP1;SIRF1;SIDU1;SIRC1;TQ;TQX;TS;IN;PC;PCX;AT;TU;AN;ACT;ACN;FT;XT;MG;CP;ML;ML2;MI;MS;ES;DW;TE;VX;VXC;VG;VGV;VI;SD;SDC;PB;KS;KP;KY;RX;TU0;PB0;"
+	if rep, _ := r.HandleCAT(passive, 0.0); strings.Contains(rep, "?;") {
+		t.Fatalf("passive/GET TX inspection returned error in %q", rep)
+	}
+	st := r.Stats()
+	if st.TxCatCommands != 0 || st.TxBlockedViolations != 0 {
+		t.Fatalf("passive/GET should keep txCatCommands=0 and txBlockedViolations=0, got %+v", st)
+	}
+
+	// Permanent destructive/admin blocklist MUST always fail even when AllowTx == true
+	permBlocked := []string{
+		"EE1234;", "LBTEST;", "WM1;", "#CAL0;", "PS0;",
+		"RRP;", "RRC;", "RRT;", "RS;", "EC00;",
+		"SW01;", "SWT11;", "SWH11;",
+		"DARM1;", "DARS1;", "DAPM1;", "DAMP1;", "DARC1;",
+	}
+	for i, cmd := range permBlocked {
+		rep, _ := r.HandleCAT(cmd, float64(i)*0.1)
+		if rep != "?;" {
+			t.Fatalf("permanent blocked cmd %q returned %q, want ?;", cmd, rep)
+		}
+		if got := r.Stats().TxBlockedViolations; got != int64(i+1) {
+			t.Fatalf("after %q TxBlockedViolations=%d, want %d", cmd, got, i+1)
+		}
+	}
+	if r.Stats().TxCatCommands != 0 {
+		t.Fatalf("blocked commands must not increment txCatCommands, got %d", r.Stats().TxCatCommands)
+	}
+}
+
+func TestTxCatCommandsAndSafetyInhibitAndIF(t *testing.T) {
+	r := NewRadio()
+
+	// Power control L (tenths) vs H (watts) vs X (tenths mW) + PCX parity
+	if rep, _ := r.HandleCAT("PC050L;PC;PCX;", 0.0); rep != "PC050L;PC050L;PCX050L;" {
+		t.Fatalf("PC L reply = %q", rep)
+	}
+	if st := r.Stats(); st.PowerRange != "L" || math.Abs(st.PowerWatts-5.0) > 1e-6 {
+		t.Fatalf("PowerRange/PowerWatts after PC050L = %+v", st)
+	}
+	if rep, _ := r.HandleCAT("PC100H;PCX045H;PC;", 0.0); rep != "PC100H;PCX045H;PC045H;" {
+		t.Fatalf("PC/PCX H reply = %q", rep)
+	}
+	if st := r.Stats(); st.PowerRange != "H" || math.Abs(st.PowerWatts-45.0) > 1e-6 {
+		t.Fatalf("PowerRange/PowerWatts after PCX045H = %+v", st)
+	}
+	if rep, _ := r.HandleCAT("PC050X;PC;", 0.0); rep != "PC050X;PC050X;" {
+		t.Fatalf("PC X reply = %q", rep)
+	}
+
+	// Antenna ports, mask, and case-preserving ACN names
+	if rep, _ := r.HandleCAT("ACT1101;AN1;AN/;AN2;ACN2Inverted V;ACN2;", 0.0); rep != "ACT1101;AN1;AN3;AN2;ACN2Inverted V;ACN2Inverted V;" {
+		t.Fatalf("ACT/AN/ACN reply = %q", rep)
+	}
+
+	// ATU mode, FT/XT/AB, audio/VOX/DVR/keyer parameters
+	if rep, _ := r.HandleCAT("AT1;AT2;FT1;XT1;MG040;CP015;ML2025;MI1;MS10203;ES140;DW1;TE+02+00-01+00+00+00+00+00;", 0.0); rep != "AT1;AT2;FT1;XT1;MG040;CP015;ML2025;MI1;MS10203;ES140;DW1;TE+02+00-01+00+00+00+00+00;" {
+		t.Fatalf("voice/TX config reply = %q", rep)
+	}
+	if rep, _ := r.HandleCAT("VXC0;VXV1;VGV030;VGD025;VI015;SD1V020;KS025;KPBN115;", 0.0); rep != "VXC0;VXV1;VGV030;VGD025;VI015;SD1V020;KS025;KPBN115;" {
+		t.Fatalf("VOX/keyer config reply = %q", rep)
+	}
+
+	// AB3 copies VFO A params to VFO B
+	r.HandleCAT("FA00007074000;MD2;BW0240;IS0150;PA21;", 0.0)
+	abRep, _ := r.HandleCAT("AB3;", 0.0)
+	if abRep != "FB00007074000;MD$2;DT$0;BW$0240;IS$0150;" {
+		t.Fatalf("AB3 reply = %q", abRep)
+	}
+
+	// IF reflects XIT [24], TX [28], Split [32] while preserving 38-char K4 layout
+	r.HandleCAT("TX;", 0.1)
+	ifRep, _ := r.HandleCAT("IF;", 0.1)
+	if len(ifRep) != 38 || ifRep[24] != '1' || ifRep[28] != '1' || ifRep[32] != '1' {
+		t.Fatalf("IF during TX+XIT+Split = %q (len=%d, [24]=%c [28]=%c [32]=%c)", ifRep, len(ifRep), ifRep[24], ifRep[28], ifRep[32])
+	}
+
+	// DVR playback PB2 keys TX and PB0 drops back to RX
+	r.HandleCAT("RX;", 0.2)
+	if rep, _ := r.HandleCAT("PB2;", 0.3); rep != "PB2;TQ1;TQX1;" {
+		t.Fatalf("PB2 reply = %q", rep)
+	}
+	if !r.Stats().TxActive {
+		t.Fatalf("expected TxActive=true during PB2")
+	}
+	if rep, _ := r.HandleCAT("PB0;", 0.4); rep != "PB0;TQ0;TQX0;TM000000000000;PO0000;" {
+		t.Fatalf("PB0 drop reply = %q", rep)
+	}
+
+	// TX Inhibit (IN1) prevents TX and drops active TX immediately
+	r.HandleCAT("TX;", 0.5)
+	inRep, _ := r.HandleCAT("IN1;", 0.6)
+	if !strings.Contains(inRep, "IN1;") || !strings.Contains(inRep, "TQ0;") || r.Stats().TxActive {
+		t.Fatalf("IN1 did not drop active TX: rep=%q txActive=%v", inRep, r.Stats().TxActive)
+	}
+	if rep, _ := r.HandleCAT("TX;", 0.7); rep != "TQ0;TQX0;" || r.Stats().TxActive {
+		t.Fatalf("TX during IN1 must stay RX: rep=%q txActive=%v", rep, r.Stats().TxActive)
+	}
+	r.HandleCAT("IN0;", 0.8)
+
+	// RDY snapshot includes TX/ATU/ACN/PC/KS fields
+	snap, _ := r.HandleCAT("RDY;", 0.9)
+	for _, needle := range []string{"AN2;", "ACT1101;", "ACN2Inverted V;", "ACN3dummy;", "AT2;", "PC050X;", "MG040;", "CP015;", "KS025;", "KPBN115;"} {
+		if !strings.Contains(snap, needle) {
+			t.Fatalf("RDY snapshot missing %q", needle)
+		}
+	}
+	if r.Stats().TxCatCommands == 0 {
+		t.Fatalf("expected TxCatCommands > 0")
+	}
+}
+
+func TestTxTestModeZeroWattsAndInboundAudioTelemetry(t *testing.T) {
+	// 1. Verify ServerConfig{RxOnly: true} enforces strict RX-only over TCP
+	rxSrv, err := NewSimServer(ServerConfig{ListenAddr: "127.0.0.1:0", FPS: 10, RxOnly: true})
+	if err != nil {
+		t.Fatalf("NewSimServer rx-only: %v", err)
+	}
+	ctxRx, cancelRx := context.WithCancel(context.Background())
+	go func() { _ = rxSrv.Serve(ctxRx) }()
+
+	rxConn, err := net.DialTimeout("tcp", rxSrv.Addr(), 2*time.Second)
+	if err != nil {
+		t.Fatalf("dial rxSrv: %v", err)
+	}
+	_, _ = rxConn.Write([]byte(ExpectedAuthHex("")))
+	_, _ = rxConn.Write(EncodeCAT("AI5;TX;"))
+	_ = rxConn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	rxFramer := &StreamFramer{}
+	rxBuf := make([]byte, 4096)
+	sawReject := false
+	for i := 0; i < 8 && !sawReject; i++ {
+		n, rerr := rxConn.Read(rxBuf)
+		if n > 0 {
+			for _, p := range rxFramer.Push(rxBuf[:n]) {
+				if p[0] == TypeCAT && strings.Contains(string(p[3:]), "?;") {
+					sawReject = true
+				}
+			}
+		}
+		if rerr != nil {
+			break
+		}
+	}
+	rxConn.Close()
+	cancelRx()
+	rxSrv.Close()
+	if !sawReject || rxSrv.Radio().Stats().TxBlockedViolations == 0 {
+		t.Fatalf("expected RxOnly SimServer to block TX; sawReject=%v violations=%d", sawReject, rxSrv.Radio().Stats().TxBlockedViolations)
+	}
+
+	// 2. Verify TX-enabled SimServer receives 0x01 EM1 S16LE packets -> drives TM ALC/CMP/FWD & drops on disconnect
+	srv, err := NewSimServer(ServerConfig{ListenAddr: "127.0.0.1:0", FPS: 10})
+	if err != nil {
+		t.Fatalf("NewSimServer tx: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = srv.Serve(ctx) }()
+	defer srv.Close()
+
+	conn, err := net.DialTimeout("tcp", srv.Addr(), 2*time.Second)
+	if err != nil {
+		t.Fatalf("dial tx srv: %v", err)
+	}
+	_, _ = conn.Write([]byte(ExpectedAuthHex("")))
+	// Configure USB 100W, CP10, MG15, TS0, TX active
+	_, _ = conn.Write(EncodeCAT("AI5;MD2;PC100H;CP010;MG015;TS0;TM1;PO1;TX;"))
+
+	// Send framed 0x01 EM1 packets with ~3000 count sine (K4 1/32 wire convention)
+	pcm := makeEm1S16AudioBytes(240, 3000)
+	for seq := uint8(0); seq < 5; seq++ {
+		if _, werr := conn.Write(EncodeAudio(seq, 1, 240, AudioSampleRate12k, pcm)); werr != nil {
+			t.Fatalf("write EncodeAudio: %v", werr)
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+
+	// Read TM telemetry over wire reflecting inbound audio drive
+	framer := &StreamFramer{}
+	buf := make([]byte, 8192)
+	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	var liveAlc, liveCmp, liveFwd int
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && liveFwd == 0 {
+		n, rerr := conn.Read(buf)
+		if n > 0 {
+			for _, p := range framer.Push(buf[:n]) {
+				if len(p) > 3 && p[0] == TypeCAT {
+					for _, f := range SplitCATFrames(string(p[3:])) {
+						if strings.HasPrefix(f, "TM") && len(f) == 14 {
+							alc, _ := strconv.Atoi(f[2:5])
+							cmp, _ := strconv.Atoi(f[5:8])
+							fwd, _ := strconv.Atoi(f[8:11])
+							if fwd > 0 && alc > 0 {
+								liveAlc, liveCmp, liveFwd = alc, cmp, fwd
+							}
+						}
+					}
+				}
+			}
+		}
+		if rerr != nil {
+			break
+		}
+	}
+	if liveFwd <= 0 || liveAlc <= 0 || liveCmp <= 0 {
+		t.Fatalf("expected live TM from inbound 0x01 audio, got alc=%d cmp=%d fwd=%d", liveAlc, liveCmp, liveFwd)
+	}
+	if st := srv.Radio().Stats(); st.TxAudioPacketsIn < 5 || !st.TxActive || st.LastFwdTenthsW == 0 {
+		t.Fatalf("unexpected stats during live audio TX: %+v", st)
+	}
+
+	// Switch to TS1 (TX Test 0W Mode) + keep sending audio -> ALC/CMP respond while FWD stays 0.0W!
+	_, _ = conn.Write(EncodeCAT("TS1;"))
+	for seq := uint8(5); seq < 9; seq++ {
+		_, _ = conn.Write(EncodeAudio(seq, 1, 240, AudioSampleRate12k, pcm))
+		time.Sleep(25 * time.Millisecond)
+	}
+	var sawTestTm bool
+	deadline = time.Now().Add(1500 * time.Millisecond)
+	for time.Now().Before(deadline) && !sawTestTm {
+		n, rerr := conn.Read(buf)
+		if n > 0 {
+			for _, p := range framer.Push(buf[:n]) {
+				if len(p) > 3 && p[0] == TypeCAT {
+					for _, f := range SplitCATFrames(string(p[3:])) {
+						if strings.HasPrefix(f, "TM") && len(f) == 14 {
+							alc, _ := strconv.Atoi(f[2:5])
+							cmp, _ := strconv.Atoi(f[5:8])
+							fwd, _ := strconv.Atoi(f[8:11])
+							swr, _ := strconv.Atoi(f[11:14])
+							if srv.Radio().Stats().TxTestMode && alc > 0 && cmp > 0 && fwd == 0 && swr == 0 {
+								sawTestTm = true
+							}
+						}
+					}
+				}
+			}
+		}
+		if rerr != nil {
+			break
+		}
+	}
+	if !sawTestTm {
+		t.Fatalf("expected TS1 mode to keep ALC/CMP active with 0W FWD and 0 SWR")
+	}
+
+	// Closing the last TCP socket must ForceRx() safely
+	conn.Close()
+	for i := 0; i < 40 && srv.Radio().Stats().TxActive; i++ {
+		time.Sleep(25 * time.Millisecond)
+	}
+	if srv.Radio().Stats().TxActive {
+		t.Fatalf("expected ForceRx() on last client disconnect")
+	}
+}
+
+func TestKat4AtuSwrConvergenceAndPersistenceAndAbort(t *testing.T) {
+	r := NewRadio()
+
+	// ANT3 dummy load is 1.0:1 across bands
+	r.HandleCAT("AN3;TX;", 0.0)
+	if st := r.Stats(); st.LastSwrTenths != 10 {
+		t.Fatalf("ANT3 dummy SWR = %d, want 10 (1.0:1)", st.LastSwrTenths)
+	}
+	r.HandleCAT("RX;", 0.1)
+
+	// ANT1 on 20m (Band 5) starts unmatched (~2.8:1)
+	r.HandleCAT("FA00014074000;AN1;", 0.2)
+	if r.Stats().AtuMatched {
+		t.Fatalf("expected 20m ANT1 unmatched initially")
+	}
+	if rep, _ := r.HandleCAT("TU3;", 1.0); !strings.Contains(rep, "TU3;") || !strings.Contains(rep, "TQ1;") {
+		t.Fatalf("TU3 start reply = %q", rep)
+	}
+	if st := r.Stats(); !st.AtuTuning || !st.TxActive || st.AtuMode != 2 {
+		t.Fatalf("unexpected state during TU3: %+v", st)
+	}
+
+	var swrHistory []int
+	var doneMsg string
+	for step := 1; step <= 14; step++ {
+		tSec := 1.0 + float64(step)*0.1
+		cat := r.StepTx(tSec)
+		for _, f := range SplitCATFrames(cat) {
+			if strings.HasPrefix(f, "TM") && len(f) == 14 {
+				swr, _ := strconv.Atoi(f[11:14])
+				if swr > 0 {
+					swrHistory = append(swrHistory, swr)
+				}
+			}
+		}
+		if strings.Contains(cat, "TU0;TQ0;") {
+			doneMsg = cat
+			break
+		}
+	}
+	if doneMsg == "" || !strings.Contains(doneMsg, "TM000000000000;PO0000;") {
+		t.Fatalf("expected TU3 completion emission, got %q", doneMsg)
+	}
+	if len(swrHistory) < 4 || swrHistory[0] < 24 || swrHistory[len(swrHistory)-1] != 11 {
+		t.Fatalf("unexpected SWR convergence history: %v", swrHistory)
+	}
+	for i := 1; i < len(swrHistory); i++ {
+		if swrHistory[i] > swrHistory[i-1] {
+			t.Fatalf("SWR must converge monotonically down: %v", swrHistory)
+		}
+	}
+	if st := r.Stats(); st.AtuTuning || st.TxActive || !st.AtuMatched {
+		t.Fatalf("expected matched idle state after TU3: %+v", st)
+	}
+	// Verify match persisted on (20m, ANT1)
+	r.HandleCAT("TX;", 3.0)
+	if r.Stats().LastSwrTenths != 11 {
+		t.Fatalf("expected persisted 1.1:1 SWR on 20m ANT1, got %d", r.Stats().LastSwrTenths)
+	}
+	r.HandleCAT("RX;", 3.1)
+
+	// Switch to 40m (unmatched) and verify TU0 abort + RX abort
+	r.HandleCAT("FA00007074000;", 3.2)
+	if r.Stats().AtuMatched {
+		t.Fatalf("40m ANT1 should be unmatched before tuning")
+	}
+	r.HandleCAT("TU4;", 4.0)
+	r.StepTx(4.3)
+	if rep, _ := r.HandleCAT("TU0;", 4.35); !strings.HasPrefix(rep, "TU0;TQ0;") {
+		t.Fatalf("TU0 abort reply = %q, want TU0;TQ0;...", rep)
+	}
+	if st := r.Stats(); st.AtuTuning || st.TxActive || st.AtuMatched {
+		t.Fatalf("state after TU0 abort: %+v", st)
+	}
+
+	r.HandleCAT("TU3;", 5.0)
+	if rep, _ := r.HandleCAT("RX;", 5.2); !strings.HasPrefix(rep, "TU0;TQ0;") {
+		t.Fatalf("RX abort during TU3 reply = %q, want TU0;TQ0;...", rep)
+	}
+	if st := r.Stats(); st.AtuTuning || st.TxActive {
+		t.Fatalf("state after RX abort: %+v", st)
+	}
+}
+
+func parseSiField(cat, prefix, key string) (float64, bool) {
+	for _, f := range SplitCATFrames(cat) {
+		if !strings.HasPrefix(f, prefix) {
+			continue
+		}
+		for _, kv := range strings.Split(strings.TrimPrefix(f, prefix), ",") {
+			if strings.HasPrefix(kv, key+":") {
+				v, err := strconv.ParseFloat(strings.TrimPrefix(kv, key+":"), 64)
+				if err == nil {
+					return v, true
+				}
+			}
+		}
+	}
+	return 0, false
+}
+
+func TestElectricalAndThermalPhysics(t *testing.T) {
+	r := NewRadio()
+	r.HandleCAT("AI4;SIFP1;SIRF1;SIDU1;", 0.0)
+
+	rxSi := r.PeriodicSystemInfoCAT(0.5)
+	rxIs, okIs := parseSiField(rxSi, "SIFP", "IS")
+	rxVs, okVs := parseSiField(rxSi, "SIFP", "VS")
+	rxPt, okPt := parseSiField(rxSi, "SIRF", "PT")
+	rxLt, okLt := parseSiField(rxSi, "SIRF", "LT")
+	_, okDuc := parseSiField(rxSi, "SIDU", "T")
+	if !okIs || !okVs || !okPt || !okLt || !okDuc {
+		t.Fatalf("missing expected SI fields in %q", rxSi)
+	}
+	if rxIs > 2.0 || rxVs < 13.7 || math.Abs(rxPt-25.0) > 0.2 {
+		t.Fatalf("unexpected RX baseline IS=%.2f VS=%.2f PT=%.1f", rxIs, rxVs, rxPt)
+	}
+
+	// TS1 Test Mode TX draws ~3.2 A bias
+	r.HandleCAT("MD3;PC100H;TS1;TX;", 1.0)
+	ts1Si := r.PeriodicSystemInfoCAT(1.2)
+	ts1Is, _ := parseSiField(ts1Si, "SIFP", "IS")
+	if ts1Is < 2.9 || ts1Is > 3.6 {
+		t.Fatalf("TS1 supply current IS=%.2f A, want ~3.2 A", ts1Is)
+	}
+
+	// 100W full-power carrier heats PA/LPA and sags VS with ~18.5 A IS
+	r.HandleCAT("TS0;", 1.5)
+	for sec := 2.0; sec <= 12.0; sec += 0.5 {
+		r.StepTx(sec)
+	}
+	txSi := r.PeriodicSystemInfoCAT(12.2)
+	txIs, _ := parseSiField(txSi, "SIFP", "IS")
+	txVs, _ := parseSiField(txSi, "SIFP", "VS")
+	txPt, _ := parseSiField(txSi, "SIRF", "PT")
+	txLt, _ := parseSiField(txSi, "SIRF", "LT")
+	txPa, _ := parseSiField(txSi, "SIRF", "PA")
+	if txIs < 17.5 || txPa < 15.0 || txVs >= rxVs-0.55 {
+		t.Fatalf("100W electrical sag mismatch: IS=%.2f PA=%.2f VS=%.2f (rxVS=%.2f)", txIs, txPa, txVs, rxVs)
+	}
+	if txPt <= rxPt+15.0 || txLt <= rxLt+5.0 {
+		t.Fatalf("expected PA/LPA thermal rise in 100W TX: PT %.1f->%.1f, LT %.1f->%.1f", rxPt, txPt, rxLt, txLt)
+	}
+
+	// Return to RX and cool down
+	r.HandleCAT("RX;", 12.5)
+	for sec := 13.0; sec <= 28.0; sec += 0.5 {
+		r.StepTx(sec)
+	}
+	coolSi := r.PeriodicSystemInfoCAT(28.2)
+	coolIs, _ := parseSiField(coolSi, "SIFP", "IS")
+	coolVs, _ := parseSiField(coolSi, "SIFP", "VS")
+	coolPt, _ := parseSiField(coolSi, "SIRF", "PT")
+	if coolIs > 2.0 || coolVs < 13.7 || coolPt >= txPt-5.0 {
+		t.Fatalf("expected cooldown in RX: IS=%.2f VS=%.2f PT=%.1f (peak %.1f)", coolIs, coolVs, coolPt, txPt)
+	}
+}
+
+func TestKyKeyerBufferDrainAndAbort(t *testing.T) {
+	r := NewRadio()
+	r.HandleCAT("MD3;KS020;", 0.0) // 20 WPM => 0.06s per char
+
+	rep, _ := r.HandleCAT("KY CQ DE K4;", 1.0)
+	if rep != "KY0;TQ1;TQX1;" || !r.Stats().TxActive {
+		t.Fatalf("KY enqueue reply = %q, txActive=%v", rep, r.Stats().TxActive)
+	}
+	if tb, _ := r.HandleCAT("TB;", 1.0); tb != "TB800;" {
+		t.Fatalf("TB after 8-char KY = %q, want TB800;", tb)
+	}
+
+	// >45 chars marks KY1 full and clamps TB digit 0 at 9
+	longText := strings.Repeat("A", 42)
+	repFull, _ := r.HandleCAT("KY "+longText+";", 1.01)
+	if repFull != "KY1;TQ1;TQX1;" {
+		t.Fatalf("expected KY1 buffer full reply, got %q", repFull)
+	}
+	if tb, _ := r.HandleCAT("TB;", 1.01); tb != "TB900;" {
+		t.Fatalf("TB when >9 chars queued = %q, want TB900;", tb)
+	}
+
+	// KY @ aborts immediately and drops TX
+	abortRep, _ := r.HandleCAT("KY @;", 1.02)
+	if abortRep != "KY0;TQ0;TQX0;TM000000000000;PO0000;" || r.Stats().TxActive {
+		t.Fatalf("KY @ abort reply = %q, txActive=%v", abortRep, r.Stats().TxActive)
+	}
+	if tb, _ := r.HandleCAT("TB;", 1.03); tb != "TB000;" {
+		t.Fatalf("TB after KY @ = %q, want TB000;", tb)
+	}
+
+	// Asynchronous drain at KS WPM
+	r.HandleCAT("KY TEST;", 2.0) // 4 chars: drains at 2.06, 2.12, 2.18, 2.24
+	if tb, _ := r.HandleCAT("TB;", 2.07); tb != "TB300;" {
+		t.Fatalf("TB after 1 char period = %q, want TB300;", tb)
+	}
+	if tb, _ := r.HandleCAT("TB;", 2.13); tb != "TB200;" {
+		t.Fatalf("TB after 2 char periods = %q, want TB200;", tb)
+	}
+	stepOut := r.StepTx(2.25)
+	if !strings.Contains(stepOut, "KY0;TQ0;TQX0;TM000000000000;PO0000;") || r.Stats().TxActive {
+		t.Fatalf("expected StepTx completion after full KY drain, got %q txActive=%v", stepOut, r.Stats().TxActive)
+	}
+}
+
+func TestExtendedDebugStatsJSON(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	httpAddr := ln.Addr().String()
+	ln.Close()
+
+	srv, err := NewSimServer(ServerConfig{
+		ListenAddr:  "127.0.0.1:0",
+		FPS:         15,
+		ControlHTTP: httpAddr,
+	})
+	if err != nil {
+		t.Fatalf("NewSimServer: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = srv.Serve(ctx) }()
+	defer srv.Close()
+
+	srv.Radio().HandleCAT("AN3;PC050L;TS1;", 0.0)
+	resp, err := http.Get("http://" + httpAddr + "/debug/stats")
+	if err != nil {
+		t.Fatalf("GET /debug/stats: %v", err)
+	}
+	defer resp.Body.Close()
+
+	var payload map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode JSON: %v", err)
+	}
+
+	requiredKeys := []string{
+		"totalConnections", "authPassed", "authFailed", "txBlockedViolations", "lastBlockedTxCmd",
+		"faHz", "fbHz", "modeA", "modeB",
+		"txCatCommands", "txAudioPacketsIn", "txActive", "txTestMode", "atuTuning", "atuMatched",
+		"lastFwdTenthsW", "lastSwrTenths", "lastAlcBars", "powerWatts", "powerRange", "txAntenna", "atuMode",
+	}
+	for _, k := range requiredKeys {
+		if _, ok := payload[k]; !ok {
+			t.Fatalf("/debug/stats missing key %q in %+v", k, payload)
+		}
+	}
+	if payload["txAntenna"] != float64(3) || payload["powerRange"] != "L" || payload["powerWatts"] != float64(5) || payload["txTestMode"] != true || payload["atuMatched"] != true {
+		t.Fatalf("unexpected extended /debug/stats values: %+v", payload)
 	}
 }

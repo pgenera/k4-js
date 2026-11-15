@@ -5,6 +5,68 @@
 
   const VALID_POLICIES = new Set(['rx-only', 'tx-enabled']);
 
+  // Permanent factory/calibration/admin/switch-emulation prefixes blocked in ALL policies.
+  const PERMANENT_BLOCKED_PREFIXES = [
+    '#CAL',
+    'DARM',
+    'DARS',
+    'DAPM',
+    'DAMP',
+    'DARC',
+    'RRP',
+    'RRC',
+    'RRT',
+    'SWT',
+    'SWH',
+    'EE',
+    'LB',
+    'WM',
+    'PS',
+    'RS',
+    'EC',
+    'SW',
+  ].sort((a, b) => b.length - a.length);
+
+  // Operational TX/ATU/keyer/voice prefixes permitted when policy === 'tx-enabled'.
+  const TX_ENABLED_PREFIXES = [
+    'ACT',
+    'ACN',
+    'PCX',
+    'TQX',
+    'TX',
+    'RX',
+    'TU',
+    'AT',
+    'AN',
+    'FT',
+    'XT',
+    'AB',
+    'PC',
+    'TM',
+    'PO',
+    'TQ',
+    'IN',
+    'TS',
+    'KY',
+    'KS',
+    'KP',
+    'MG',
+    'MI',
+    'MS',
+    'CP',
+    'ML',
+    'VX',
+    'VG',
+    'VI',
+    'SD',
+    'ES',
+    'DW',
+    'TE',
+    'PB',
+    'RP',
+    'PL',
+  ].sort((a, b) => b.length - a.length);
+
   // Explicit TX, keyer, DVR, power, remote-admin, hardware-config, and front-panel switch prefixes blocked in rx-only mode.
   const BLOCKED_PREFIXES = [
     'DARM',
@@ -185,7 +247,32 @@
     );
   }
 
+  function normalizeCatToken(rawToken) {
+    const kyMatch = rawToken.match(/^(KY[ RW]?)([\s\S]*)$/i);
+    if (kyMatch) {
+      return kyMatch[1].toUpperCase() + kyMatch[2];
+    }
+    const acnMatch = rawToken.match(/^(ACN[1-5])([\s\S]*)$/i);
+    if (acnMatch) {
+      return acnMatch[1].toUpperCase() + acnMatch[2];
+    }
+    return rawToken.toUpperCase();
+  }
+
+  function checkPermanentBlocklist(cmdUpper) {
+    for (let i = 0; i < PERMANENT_BLOCKED_PREFIXES.length; i++) {
+      const bp = PERMANENT_BLOCKED_PREFIXES[i];
+      if (cmdUpper.startsWith(bp)) {
+        return { allowed: false, reason: `Destructive/admin prefix ${bp} permanently blocked` };
+      }
+    }
+    return null;
+  }
+
   function isCatAllowedInRxOnly(cmdUpper) {
+    const perm = checkPermanentBlocklist(cmdUpper);
+    if (perm) return perm;
+
     if (
       cmdUpper === 'RX' ||
       cmdUpper === 'SP0' ||
@@ -198,7 +285,28 @@
       cmdUpper === 'FT0' ||
       cmdUpper === 'IF' ||
       cmdUpper === 'TQ' ||
+      cmdUpper === 'TQX' ||
       cmdUpper === 'IN' ||
+      cmdUpper === 'TS' ||
+      cmdUpper === 'AT' ||
+      cmdUpper === 'ACT' ||
+      /^ACN[1-5]$/.test(cmdUpper) ||
+      cmdUpper === 'PC' ||
+      cmdUpper === 'PCX' ||
+      cmdUpper === 'XT' ||
+      cmdUpper === 'TU0' ||
+      cmdUpper === 'TM1' ||
+      cmdUpper === 'PO1' ||
+      cmdUpper === 'MG' ||
+      cmdUpper === 'MI' ||
+      cmdUpper === 'MS' ||
+      cmdUpper === 'CP' ||
+      /^ML[0-2]$/.test(cmdUpper) ||
+      cmdUpper === 'KS' ||
+      cmdUpper === 'KP' ||
+      cmdUpper === 'VXC' ||
+      cmdUpper === 'VXV' ||
+      cmdUpper === 'VXD' ||
       cmdUpper === 'BG' ||
       cmdUpper === 'PP' ||
       cmdUpper === 'PP1' ||
@@ -242,8 +350,35 @@
     return { allowed: false, reason: 'Unrecognized command blocked by default-deny rx-only policy' };
   }
 
+  function isCatAllowedInTxEnabled(cmdUpper) {
+    const perm = checkPermanentBlocklist(cmdUpper);
+    if (perm) return perm;
+
+    if (isCatAllowedInRxOnly(cmdUpper).allowed) {
+      return { allowed: true, reason: null };
+    }
+
+    if (
+      /^VX(?:[CVD][01]?)?$/.test(cmdUpper) ||
+      /^VG(?:[VD](?:\d{1,3})?)?$/.test(cmdUpper) ||
+      /^KP(?:[AB][NR]\d{2,3})?$/.test(cmdUpper) ||
+      /^KY(?:[01]|[ RW][\s\S]*)?$/.test(cmdUpper) ||
+      /^ACN[1-5][\s\S]*$/.test(cmdUpper)
+    ) {
+      return { allowed: true, reason: null };
+    }
+
+    for (let i = 0; i < TX_ENABLED_PREFIXES.length; i++) {
+      if (matchPrefixBoundary(cmdUpper, TX_ENABLED_PREFIXES[i])) {
+        return { allowed: true, reason: null };
+      }
+    }
+
+    return { allowed: false, reason: 'Unrecognized command blocked by default-deny tx-enabled policy' };
+  }
+
   /**
-   * Client-side safety gate enforcing rx-only CAT and outbound binary packet rules.
+   * Client-side safety gate enforcing rx-only / tx-enabled CAT and outbound binary packet rules.
    */
   class RxOnlyGate extends K4.EventEmitter {
     /**
@@ -260,6 +395,7 @@
         throw new RangeError(`Unsupported RxOnlyGate policy: ${policy}`);
       }
       this._policy = policy;
+      this._txAudioAllowed = false;
       this._stats = {
         blockedCatCount: 0,
         blockedBinaryCount: 0,
@@ -268,11 +404,43 @@
     }
 
     /**
+     * Switch gate operating policy between 'rx-only' and 'tx-enabled'.
+     * Disarming to 'rx-only' automatically disallows outbound TX audio.
+     * @param {'rx-only'|'tx-enabled'} policy
+     */
+    setPolicy(policy) {
+      if (!VALID_POLICIES.has(policy)) {
+        throw new RangeError(`Unsupported RxOnlyGate policy: ${policy}`);
+      }
+      this._policy = policy;
+      if (policy === 'rx-only') {
+        this._txAudioAllowed = false;
+      }
+      this.emit('policy', { policy });
+    }
+
+    /**
      * Return active gate policy ('rx-only' or 'tx-enabled').
      * @returns {string}
      */
     getPolicy() {
       return this._policy;
+    }
+
+    /**
+     * Allow or block outbound 0x01 TX audio frames while in 'tx-enabled'.
+     * @param {boolean} allowed
+     */
+    setTxAudioAllowed(allowed) {
+      this._txAudioAllowed = Boolean(allowed);
+    }
+
+    /**
+     * Return whether outbound 0x01 TX audio flag is armed.
+     * @returns {boolean}
+     */
+    isTxAudioAllowed() {
+      return this._txAudioAllowed;
     }
 
     _recordBlocked(entry) {
@@ -307,14 +475,14 @@
         const rawToken = tokens[i].trim();
         if (!rawToken) continue;
         const upperToken = rawToken.toUpperCase();
-        const terminated = upperToken + ';';
+        const normalized = normalizeCatToken(rawToken);
+        const terminated = normalized + ';';
 
-        if (this._policy === 'tx-enabled') {
-          allowed.push(terminated);
-          continue;
-        }
+        const verdict =
+          this._policy === 'tx-enabled'
+            ? isCatAllowedInTxEnabled(upperToken)
+            : isCatAllowedInRxOnly(upperToken);
 
-        const verdict = isCatAllowedInRxOnly(upperToken);
         if (verdict.allowed) {
           allowed.push(terminated);
         } else {
@@ -338,22 +506,25 @@
 
     /**
      * Inspect an outbound K4 binary packet type byte.
-     * In rx-only mode, only 0x00 (CAT) is permitted; outbound 0x01 audio is blocked.
+     * Always allows 0x00 (CAT); allows 0x01 (TX audio) only when policy === 'tx-enabled' and txAudioAllowed === true.
      * @param {number} typeByte
      * @returns {boolean}
      */
     inspectBinary(typeByte) {
-      if (this._policy === 'tx-enabled') {
+      if (typeByte === 0x00) {
         return true;
       }
-      if (typeByte === 0x00) {
+      if (typeByte === 0x01 && this._policy === 'tx-enabled' && this._txAudioAllowed === true) {
         return true;
       }
       this._stats.blockedBinaryCount++;
       this._recordBlocked({
         kind: 'binary',
         typeByte,
-        reason: `Outbound binary packet type 0x${Number(typeByte).toString(16).padStart(2, '0')} blocked in rx-only mode`,
+        reason:
+          typeByte === 0x01
+            ? `Outbound 0x01 TX audio blocked (policy=${this._policy}, txAudioAllowed=${this._txAudioAllowed})`
+            : `Outbound binary packet type 0x${Number(typeByte).toString(16).padStart(2, '0')} blocked`,
         timestamp: Date.now(),
       });
       return false;
@@ -366,6 +537,7 @@
     getStats() {
       return {
         policy: this._policy,
+        txAudioAllowed: this._txAudioAllowed,
         blockedCatCount: this._stats.blockedCatCount,
         blockedBinaryCount: this._stats.blockedBinaryCount,
         totalBlockedCount: this._stats.blockedCatCount + this._stats.blockedBinaryCount,

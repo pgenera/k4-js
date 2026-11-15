@@ -327,8 +327,8 @@
   flex-direction: column;
   justify-content: center;
   gap: 3px;
-  min-width: 162px;
-  width: 170px;
+  min-width: 184px;
+  width: auto;
   flex: 0 0 auto;
   padding: 3px 7px;
   border-radius: var(--radius-sm);
@@ -338,16 +338,16 @@
 
 .k4-smeter-head {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   justify-content: space-between;
   gap: 4px;
   white-space: nowrap;
 }
 
 .k4-smeter-title {
-  font-size: 9.5px;
+  font-size: 9px;
   font-weight: 700;
-  letter-spacing: 0.05em;
+  letter-spacing: 0.04em;
   color: var(--text-dim);
   text-transform: uppercase;
   white-space: nowrap;
@@ -357,7 +357,7 @@
 .k4-smeter-dbm {
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
-  font-size: 10.5px;
+  font-size: 10px;
   font-weight: 600;
   color: var(--text-primary);
   white-space: nowrap;
@@ -436,8 +436,12 @@
   }
 
   .k4-smeter-slot {
-    min-width: 152px;
-    width: 158px;
+    min-width: 146px;
+    width: auto;
+  }
+
+  .k4-smeter-title {
+    display: none;
   }
 }
 
@@ -861,8 +865,8 @@
 /* Inspector Drawer & Mobile Sheet Contents */
 .k4-panel-tabs {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 4px;
+  grid-template-columns: 1.32fr 0.72fr 0.96fr 0.86fr 1.14fr;
+  gap: 3px;
   padding: 8px;
   border-bottom: 1px solid var(--border-hairline);
   flex: 0 0 auto;
@@ -870,15 +874,25 @@
 
 .k4-tab-btn {
   height: 30px;
-  padding: 0 6px;
+  padding: 0 3px;
   border-radius: var(--radius-sm);
   border: 1px solid transparent;
   background: transparent;
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   cursor: pointer;
   transition: background-color 110ms ease, color 110ms ease, border-color 110ms ease;
+}
+
+@media (min-width: 960px) and (max-width: 1239px) {
+  .k4-tab-btn {
+    padding: 0 2px;
+    font-size: 9.5px;
+  }
 }
 
 .k4-tab-btn:hover {
@@ -1832,4 +1846,734 @@
   border-color: var(--accent-danger-border);
   background: var(--accent-danger-soft);
   color: #FFE4E6;
+}
+
+/* =========================================================================
+   TX Safety Posture Bar, Hold-Only PTT & 2-Step Arm Confirmation
+   ========================================================================= */
+.k4-tx-posture-bar {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  padding: 2px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--border-subtle);
+  background: rgba(15, 23, 42, 0.72);
+  transition: border-color 140ms ease, box-shadow 140ms ease;
+}
+
+.k4-tx-posture-bar[data-posture="tx-test"] {
+  border-color: rgba(245, 158, 11, 0.65);
+  border-style: dashed;
+}
+
+.k4-tx-posture-bar[data-posture="tx-armed"] {
+  border-color: rgba(244, 63, 94, 0.72);
+  box-shadow: 0 0 0 1px rgba(244, 63, 94, 0.18);
+}
+
+.k4-tx-posture-bar[data-transmitting="true"] {
+  border-color: #FB7185;
+  box-shadow: 0 0 12px rgba(244, 63, 94, 0.35);
+}
+
+.k4-tx-posture-bar[data-posture="tx-test"] .k4-rx-badge {
+  border-color: rgba(245, 158, 11, 0.45);
+  background: rgba(245, 158, 11, 0.14);
+  color: #FCD34D;
+}
+
+.k4-tx-posture-bar[data-posture="tx-armed"] .k4-rx-badge {
+  border-color: rgba(244, 63, 94, 0.55);
+  background: rgba(244, 63, 94, 0.18);
+  color: #FDA4AF;
+}
+
+.k4-tx-posture-seg {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.k4-posture-btn {
+  height: 24px;
+  padding: 0 6px;
+  border-radius: var(--radius-pill);
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+
+.k4-posture-btn:hover {
+  color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.k4-posture-btn.is-active[data-posture-target="rx-only"] {
+  background: var(--accent-rx-only-soft);
+  border-color: var(--accent-rx-only-border);
+  color: var(--accent-rx-only);
+}
+
+.k4-posture-btn.is-active[data-posture-target="tx-test"] {
+  background: rgba(245, 158, 11, 0.2);
+  border-color: rgba(245, 158, 11, 0.65);
+  color: #FCD34D;
+}
+
+.k4-posture-btn.is-active[data-posture-target="tx-armed"] {
+  background: rgba(244, 63, 94, 0.22);
+  border-color: rgba(244, 63, 94, 0.72);
+  color: #FFE4E6;
+}
+
+.k4-ptt-btn {
+  height: 24px;
+  min-width: 44px;
+  padding: 0 8px;
+  border-radius: var(--radius-pill);
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  background: rgba(30, 41, 59, 0.85);
+  color: var(--text-secondary);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: none;
+  transition: background-color 90ms ease, border-color 90ms ease, color 90ms ease, box-shadow 90ms ease;
+}
+
+.k4-ptt-btn:disabled {
+  opacity: 0.42;
+  cursor: not-allowed;
+}
+
+.k4-ptt-btn:not(:disabled):hover {
+  border-color: rgba(251, 113, 133, 0.65);
+  color: #FFFFFF;
+}
+
+.k4-tx-posture-bar[data-posture="tx-test"] .k4-ptt-btn:not(:disabled) {
+  border-color: rgba(245, 158, 11, 0.65);
+  color: #FDE68A;
+}
+
+.k4-tx-posture-bar[data-posture="tx-armed"] .k4-ptt-btn:not(:disabled) {
+  border-color: rgba(244, 63, 94, 0.75);
+  background: rgba(190, 18, 60, 0.35);
+  color: #FFE4E6;
+}
+
+.k4-ptt-btn.is-held,
+.k4-ptt-btn.is-tx {
+  background: #E11D48 !important;
+  border-color: #FDA4AF !important;
+  color: #FFFFFF !important;
+  box-shadow: 0 0 14px rgba(225, 29, 72, 0.65);
+}
+
+.k4-tx-posture-bar[data-posture="tx-test"] .k4-ptt-btn.is-held,
+.k4-tx-posture-bar[data-posture="tx-test"] .k4-ptt-btn.is-tx {
+  background: #D97706 !important;
+  border-color: #FDE68A !important;
+  box-shadow: 0 0 12px rgba(245, 158, 11, 0.55);
+}
+
+/* 2-step arm confirmation popover (outside #top-bar so overflow:hidden never clips) */
+.k4-tx-arm-popover {
+  position: fixed;
+  top: 56px;
+  right: 16px;
+  z-index: 75;
+  width: min(320px, calc(100vw - 24px));
+  padding: 14px;
+  border-radius: var(--radius-md);
+  border: 1px solid rgba(244, 63, 94, 0.55);
+  background: #111622;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.65), 0 0 0 1px rgba(244, 63, 94, 0.16);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.k4-tx-arm-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.k4-tx-arm-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.k4-tx-arm-warn-pill {
+  padding: 2px 7px;
+  border-radius: var(--radius-pill);
+  border: 1px solid rgba(244, 63, 94, 0.65);
+  background: rgba(244, 63, 94, 0.18);
+  color: #FDA4AF;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+}
+
+.k4-tx-arm-sub {
+  margin: 0;
+  font-size: 11.5px;
+  color: var(--text-secondary);
+  line-height: 1.4;
+}
+
+.k4-tx-arm-summary {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-subtle);
+  background: rgba(9, 11, 16, 0.65);
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.k4-tx-arm-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11.5px;
+}
+
+.k4-tx-arm-row dt {
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
+.k4-tx-arm-row dd {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.k4-tx-arm-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.k4-btn--danger {
+  border-color: rgba(244, 63, 94, 0.72);
+  background: rgba(225, 29, 72, 0.24);
+  color: #FFE4E6;
+  font-weight: 700;
+}
+
+.k4-btn--danger:hover {
+  background: rgba(225, 29, 72, 0.38);
+  border-color: #FB7185;
+}
+
+.k4-btn--amber {
+  border-color: rgba(245, 158, 11, 0.72);
+  background: rgba(217, 119, 6, 0.22);
+  color: #FDE68A;
+  font-weight: 700;
+}
+
+.k4-btn--amber:hover {
+  background: rgba(217, 119, 6, 0.36);
+}
+
+.k4-btn--search-hot {
+  border-color: #F59E0B !important;
+  background: rgba(245, 158, 11, 0.28) !important;
+  color: #FEF3C7 !important;
+  box-shadow: 0 0 0 1px rgba(245, 158, 11, 0.45);
+}
+
+/* =========================================================================
+   Dual-Mode S-Meter / TX Meter Cluster
+   ========================================================================= */
+.k4-meter-mode-btn {
+  height: 14px;
+  padding: 0 4px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--border-subtle);
+  background: rgba(15, 23, 42, 0.85);
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 8.5px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.k4-meter-mode-btn:hover {
+  color: var(--text-primary);
+  border-color: var(--border-default);
+}
+
+.k4-meter-mode-btn.is-tx {
+  border-color: rgba(244, 63, 94, 0.65);
+  background: rgba(244, 63, 94, 0.16);
+  color: #FDA4AF;
+}
+
+.k4-smeter-rx-pane[hidden],
+.k4-tx-meter-cluster[hidden] {
+  display: none !important;
+}
+
+.k4-tx-meter-cluster {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 136px;
+}
+
+.k4-tx-meter-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.k4-tx-meter-tag {
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.07em;
+  color: #FDA4AF;
+}
+
+.k4-tx-meter-tag.is-test {
+  color: #FCD34D;
+}
+
+.k4-tx-meter-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 3px 8px;
+}
+
+.k4-tx-bar-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.k4-tx-bar-meta {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 4px;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 9.5px;
+  line-height: 1.1;
+}
+
+.k4-tx-bar-lbl {
+  color: var(--text-muted);
+  font-weight: 700;
+}
+
+.k4-tx-bar-val {
+  color: var(--text-primary);
+  font-weight: 700;
+}
+
+.k4-tx-bar-track {
+  position: relative;
+  height: 5px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+
+.k4-tx-bar-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 0%;
+  border-radius: 3px;
+  transition: width 60ms linear, background-color 100ms ease;
+}
+
+.k4-tx-bar-fill--pwr {
+  background: linear-gradient(90deg, #38BDF8 0%, #60A5FA 100%);
+}
+
+.k4-tx-bar-fill--swr-ok {
+  background: #10B981;
+}
+
+.k4-tx-bar-fill--swr-warn {
+  background: #F59E0B;
+}
+
+.k4-tx-bar-fill--swr-crit {
+  background: #F43F5E;
+}
+
+.k4-tx-bar-fill--alc {
+  background: #34D399;
+}
+
+.k4-tx-bar-fill--alc-hot {
+  background: #F43F5E;
+}
+
+.k4-tx-bar-sweet {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 57.1%;
+  width: 14.3%;
+  background: rgba(16, 185, 129, 0.28);
+  border-left: 1px solid rgba(52, 211, 153, 0.7);
+  border-right: 1px solid rgba(52, 211, 153, 0.7);
+  pointer-events: none;
+}
+
+.k4-tx-bar-fill--cmp {
+  background: #A78BFA;
+}
+
+/* =========================================================================
+   Compact Live Sensor Strip & VFO TX Indicators
+   ========================================================================= */
+.k4-sensor-strip {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 4px;
+  width: 100%;
+  padding: 6px 8px;
+  border: 0;
+  border-bottom: 1px solid var(--border-hairline);
+  background: rgba(11, 15, 25, 0.9);
+  color: var(--text-primary);
+  text-align: left;
+  cursor: pointer;
+  flex: 0 0 auto;
+  transition: background-color 110ms ease;
+}
+
+.k4-sensor-strip:hover {
+  background: rgba(30, 41, 59, 0.6);
+}
+
+.k4-sensor-pill {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 3px 5px;
+  border-radius: var(--radius-xs);
+  border: 1px solid var(--border-hairline);
+  background: rgba(255, 255, 255, 0.025);
+  min-width: 0;
+}
+
+.k4-sensor-pill-lbl {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+}
+
+.k4-sensor-pill-val {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.k4-sensor-pill[data-level="warn"] {
+  border-color: rgba(245, 158, 11, 0.55);
+  background: rgba(245, 158, 11, 0.12);
+}
+
+.k4-sensor-pill[data-level="warn"] .k4-sensor-pill-val {
+  color: #FCD34D;
+}
+
+.k4-sensor-pill[data-level="crit"] {
+  border-color: rgba(244, 63, 94, 0.65);
+  background: rgba(244, 63, 94, 0.15);
+}
+
+.k4-sensor-pill[data-level="crit"] .k4-sensor-pill-val {
+  color: #FDA4AF;
+}
+
+.k4-tx-target-tag {
+  padding: 1px 5px;
+  border-radius: var(--radius-xs);
+  border: 1px solid rgba(245, 158, 11, 0.5);
+  background: rgba(245, 158, 11, 0.14);
+  color: #FCD34D;
+  font-size: 9.5px;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+}
+
+.k4-tx-target-tag.is-tx-live {
+  border-color: rgba(244, 63, 94, 0.8);
+  background: #E11D48;
+  color: #FFFFFF;
+}
+
+.k4-tx-target-tag.is-tx-test {
+  border-color: rgba(245, 158, 11, 0.8);
+  background: #D97706;
+  color: #FFFFFF;
+}
+
+.k4-vfo.is-transmitting {
+  box-shadow: inset 0 0 0 1px rgba(244, 63, 94, 0.65);
+  border-radius: var(--radius-sm);
+}
+
+/* =========================================================================
+   TX / ATU Inspector Pane Cards
+   ========================================================================= */
+.k4-tx-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-subtle);
+  background: rgba(15, 23, 42, 0.72);
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+.k4-tx-banner[data-state="tuning"] {
+  border-color: rgba(245, 158, 11, 0.65);
+  background: rgba(245, 158, 11, 0.14);
+  color: #FDE68A;
+}
+
+.k4-tx-banner[data-state="matched"] {
+  border-color: rgba(16, 185, 129, 0.55);
+  background: rgba(16, 185, 129, 0.12);
+  color: #6EE7B7;
+}
+
+.k4-tx-banner[data-state="warn"] {
+  border-color: rgba(244, 63, 94, 0.65);
+  background: rgba(244, 63, 94, 0.16);
+  color: #FDA4AF;
+}
+
+.k4-tx-inline-alert {
+  padding: 7px 9px;
+  border-radius: var(--radius-sm);
+  border: 1px solid rgba(245, 158, 11, 0.45);
+  background: rgba(245, 158, 11, 0.1);
+  color: #FDE68A;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.k4-tx-inline-alert--danger {
+  border-color: rgba(244, 63, 94, 0.6);
+  background: rgba(244, 63, 94, 0.14);
+  color: #FFE4E6;
+}
+
+.k4-tx-vu-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.k4-tx-vu-track {
+  position: relative;
+  height: 7px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+
+.k4-tx-vu-fill {
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(90deg, #10B981 0%, #34D399 68%, #F59E0B 88%, #F43F5E 100%);
+  transition: width 55ms linear;
+}
+
+.k4-ky-textarea {
+  width: 100%;
+  min-height: 54px;
+  padding: 7px 9px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-default);
+  background: rgba(9, 11, 16, 0.72);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  resize: vertical;
+}
+
+.k4-ky-textarea:focus {
+  outline: none;
+  border-color: var(--accent-vfo-a);
+}
+
+.k4-tb-track {
+  height: 6px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+
+.k4-tb-fill {
+  height: 100%;
+  width: 0%;
+  background: #38BDF8;
+  transition: width 90ms ease, background-color 120ms ease;
+}
+
+.k4-tb-fill.is-full {
+  background: #F43F5E;
+}
+
+.k4-sensor-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.k4-sensor-tile {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-hairline);
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.k4-sensor-tile-lbl {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.k4-sensor-tile-val {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.k4-sensor-tile[data-level="warn"] {
+  border-color: rgba(245, 158, 11, 0.55);
+  background: rgba(245, 158, 11, 0.1);
+}
+
+.k4-sensor-tile[data-level="warn"] .k4-sensor-tile-val {
+  color: #FCD34D;
+}
+
+.k4-sensor-tile[data-level="crit"] {
+  border-color: rgba(244, 63, 94, 0.65);
+  background: rgba(244, 63, 94, 0.14);
+}
+
+.k4-sensor-tile[data-level="crit"] .k4-sensor-tile-val {
+  color: #FDA4AF;
+}
+
+.k4-om-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.k4-om-badge {
+  padding: 2px 7px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--border-subtle);
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.k4-om-badge.is-present {
+  border-color: rgba(56, 189, 248, 0.45);
+  background: rgba(56, 189, 248, 0.12);
+  color: #7DD3FC;
+}
+
+@media (max-width: 1480px) {
+  .k4-tx-posture-bar .k4-rx-badge-text {
+    display: none;
+  }
+
+  .k4-posture-btn {
+    padding: 0 5px;
+    font-size: 9px;
+  }
+
+  .k4-ptt-btn {
+    min-width: 36px;
+    padding: 0 6px;
+    font-size: 9.5px;
+  }
+}
+
+@media (max-width: 959px) {
+  .k4-mobile-nav {
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+  }
+
+  .k4-tx-posture-bar {
+    margin-left: auto;
+    gap: 2px;
+    padding: 2px;
+  }
+
+  .k4-tx-posture-bar .k4-rx-badge {
+    height: 24px;
+    padding: 0 5px;
+  }
+
+  .k4-posture-btn {
+    height: 24px;
+    padding: 0 6px;
+    font-size: 9px;
+    letter-spacing: 0.01em;
+  }
+
+  .k4-ptt-btn {
+    height: 24px;
+    min-width: 36px;
+    padding: 0 7px;
+    font-size: 9px;
+    letter-spacing: 0.03em;
+  }
 }

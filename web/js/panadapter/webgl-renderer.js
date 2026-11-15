@@ -302,6 +302,290 @@ void main() {
     ctx.closePath();
   }
 
+  function collectStatusPills(snapshot, primaryRxState) {
+    const pills = [];
+    if (primaryRxState && primaryRxState.adcOverflow) {
+      pills.push({
+        text: 'ADC OVF',
+        fill: 'rgba(225, 29, 72, 0.92)',
+        stroke: null,
+        textColor: '#FFF1F2',
+      });
+    }
+    if (snapshot.panFrozen) {
+      pills.push({
+        text: 'FROZEN',
+        fill: 'rgba(56, 189, 248, 0.24)',
+        stroke: 'rgba(56, 189, 248, 0.78)',
+        textColor: '#E0F2FE',
+      });
+    }
+    if (snapshot.txInhibit) {
+      pills.push({
+        text: 'TX INHIBIT',
+        fill: 'rgba(225, 29, 72, 0.92)',
+        stroke: 'rgba(253, 164, 175, 0.85)',
+        textColor: '#FFF1F2',
+      });
+    }
+    if (snapshot.atuTuning) {
+      const swr =
+        snapshot.txMeters &&
+        Number.isFinite(snapshot.txMeters.swr) &&
+        snapshot.txMeters.swr > 0
+          ? snapshot.txMeters.swr.toFixed(1)
+          : '-.-';
+      pills.push({
+        text: 'ATU TUNE · SWR ' + swr + ':1',
+        fill: 'rgba(244, 63, 94, 0.92)',
+        stroke: 'rgba(254, 205, 211, 0.85)',
+        textColor: '#FFF1F2',
+      });
+    }
+    if (
+      snapshot.txTestMode &&
+      (snapshot.txActive || snapshot.txPosture === 'tx-test')
+    ) {
+      pills.push({
+        text: 'TX TEST · 0W',
+        fill: 'rgba(245, 158, 11, 0.24)',
+        stroke: 'rgba(245, 158, 11, 0.85)',
+        textColor: '#FEF3C7',
+      });
+    }
+    return pills;
+  }
+
+  function layoutStatusPills(ctx, specRect, pills, monoFont) {
+    if (!pills || pills.length === 0) return [];
+    const font = 'bold 9.5px ' + monoFont;
+    ctx.font = font;
+    const minLeft = specRect.x + Math.min(120, specRect.w * 0.35);
+    let pillRight = specRect.x + specRect.w - 8;
+    let pillY = specRect.y + 6;
+    const placed = [];
+    for (let i = 0; i < pills.length; i++) {
+      const p = pills[i];
+      const w = ctx.measureText(p.text).width + 10;
+      const h = 16;
+      if (i > 0 && pillRight - w < minLeft) {
+        pillY += 20;
+        pillRight = specRect.x + specRect.w - 8;
+      }
+      const x = Math.max(specRect.x + 4, pillRight - w);
+      placed.push({
+        x,
+        y: pillY,
+        w,
+        h,
+        text: p.text,
+        fill: p.fill,
+        stroke: p.stroke,
+        textColor: p.textColor,
+        font,
+      });
+      pillRight = x - 6;
+    }
+    return placed;
+  }
+
+  function pickNonOverlappingY(x, w, h, candidateYs, occupiedBoxes, specRect) {
+    const minY = specRect.y + 4;
+    const maxY = Math.max(minY, specRect.y + specRect.h - h - 4);
+    for (let i = 0; i < candidateYs.length; i++) {
+      const cy = clamp(candidateYs[i], minY, maxY);
+      const overlaps = occupiedBoxes.some(
+        (b) =>
+          x < b.x + b.w + 3 &&
+          x + w + 3 > b.x &&
+          cy < b.y + b.h + 2 &&
+          cy + h + 2 > b.y
+      );
+      if (!overlaps) return cy;
+    }
+    return clamp(candidateYs[candidateYs.length - 1], minY, maxY);
+  }
+
+  function drawTxOverlayOnSpectrum({
+    ctx,
+    specRect,
+    paneRx,
+    dualPanMode,
+    panCenterHz,
+    userSpanHz,
+    viewLeftHz,
+    viewRightHz,
+    cwPitchHz,
+    snapshot,
+    rxA,
+    rxB,
+    txOverlay,
+    txPosture,
+    isLiveTx,
+    occupiedBoxes,
+    monoFont,
+  }) {
+    if (!txOverlay) return null;
+    const txShown =
+      txPosture !== 'rx-only' || txOverlay.isSplitOrXit || isLiveTx;
+    if (!txShown) return null;
+
+    const txState = txOverlay.txVfo === 'B' ? rxB : rxA;
+    const txPinHz = K4.SpectrumGeometry.displayMarkerHz(
+      Object.assign({}, txState, { freqHz: txOverlay.carrierHz }),
+      cwPitchHz
+    );
+
+    const splitEnabled = Boolean(snapshot.splitEnabled);
+    const xitEnabled = Boolean(snapshot.xitEnabled);
+    let txLabel = 'TX';
+    if (splitEnabled && xitEnabled) {
+      txLabel = 'TX B·XIT';
+    } else if (splitEnabled) {
+      txLabel = 'TX B';
+    } else if (xitEnabled) {
+      txLabel = 'XIT';
+    }
+
+    let curtainFill;
+    let curtainEdge;
+    let pinColor;
+    let badgeFill;
+    let badgeStroke;
+    let badgeText;
+    if (isLiveTx) {
+      curtainFill = 'rgba(244, 63, 94, 0.24)';
+      curtainEdge = '#F43F5E';
+      pinColor = '#F43F5E';
+      badgeFill = '#F43F5E';
+      badgeStroke = '#FDA4AF';
+      badgeText = '#FFF1F2';
+    } else if (txPosture === 'tx-armed') {
+      curtainFill = 'rgba(244, 63, 94, 0.12)';
+      curtainEdge = 'rgba(244, 63, 94, 0.65)';
+      pinColor = 'rgba(251, 113, 133, 0.90)';
+      badgeFill = 'rgba(14, 19, 29, 0.90)';
+      badgeStroke = 'rgba(244, 63, 94, 0.85)';
+      badgeText = '#FDA4AF';
+    } else {
+      curtainFill = 'rgba(251, 146, 60, 0.11)';
+      curtainEdge = 'rgba(251, 146, 60, 0.68)';
+      pinColor = 'rgba(251, 146, 60, 0.88)';
+      badgeFill = 'rgba(14, 19, 29, 0.90)';
+      badgeStroke = 'rgba(251, 146, 60, 0.85)';
+      badgeText = '#FDBA74';
+    }
+
+    const lowX = K4.SpectrumGeometry.xFromRfFreq(
+      txOverlay.lowHz,
+      specRect.x,
+      specRect.w,
+      panCenterHz,
+      userSpanHz
+    );
+    const highX = K4.SpectrumGeometry.xFromRfFreq(
+      txOverlay.highHz,
+      specRect.x,
+      specRect.w,
+      panCenterHz,
+      userSpanHz
+    );
+    if (highX >= specRect.x && lowX <= specRect.x + specRect.w) {
+      const leftClamped = Math.max(specRect.x, lowX);
+      const rightClamped = Math.min(specRect.x + specRect.w, highX);
+      const curW = Math.max(1, rightClamped - leftClamped);
+      ctx.fillStyle = curtainFill;
+      ctx.fillRect(leftClamped, specRect.y, curW, specRect.h);
+
+      ctx.save();
+      if (!isLiveTx) ctx.setLineDash([4, 3]);
+      ctx.strokeStyle = curtainEdge;
+      ctx.lineWidth = isLiveTx ? 1.5 : 1;
+      ctx.beginPath();
+      ctx.moveTo(Math.round(lowX) + 0.5, specRect.y);
+      ctx.lineTo(Math.round(lowX) + 0.5, specRect.y + specRect.h);
+      ctx.moveTo(Math.round(highX) + 0.5, specRect.y);
+      ctx.lineTo(Math.round(highX) + 0.5, specRect.y + specRect.h);
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    if (txPinHz >= viewLeftHz && txPinHz <= viewRightHz) {
+      const txX = K4.SpectrumGeometry.xFromRfFreq(
+        txPinHz,
+        specRect.x,
+        specRect.w,
+        panCenterHz,
+        userSpanHz
+      );
+      ctx.save();
+      if (!isLiveTx) ctx.setLineDash([4, 3]);
+      ctx.strokeStyle = pinColor;
+      ctx.lineWidth = isLiveTx ? 2.0 : 1.5;
+      ctx.beginPath();
+      ctx.moveTo(txX, specRect.y);
+      ctx.lineTo(txX, specRect.y + specRect.h);
+      ctx.stroke();
+      ctx.restore();
+
+      ctx.font = 'bold 9.5px ' + monoFont;
+      const bw = ctx.measureText(txLabel).width + 10;
+      const bh = 15;
+      const bx = clamp(
+        txX - bw / 2,
+        specRect.x + 4,
+        specRect.x + specRect.w - bw - 4
+      );
+      const by = pickNonOverlappingY(
+        bx,
+        bw,
+        bh,
+        [specRect.y + 5, specRect.y + 24, specRect.y + 43, specRect.y + 62],
+        occupiedBoxes,
+        specRect
+      );
+      drawRoundedPill(ctx, bx, by, bw, bh, 4);
+      ctx.fillStyle = badgeFill;
+      ctx.fill();
+      if (badgeStroke) {
+        ctx.strokeStyle = badgeStroke;
+        ctx.lineWidth = 1;
+        ctx.stroke();
+      }
+      ctx.fillStyle = badgeText;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(txLabel, bx + bw / 2, by + bh / 2 + 0.5);
+    } else if (dualPanMode !== 2 || txOverlay.txVfo === paneRx) {
+      const isLeft = txPinHz < viewLeftHz;
+      const badge = (isLeft ? '◀ ' : '') + txLabel + (isLeft ? '' : ' ▶');
+      ctx.font = 'bold 9.5px ' + monoFont;
+      const bw = ctx.measureText(badge).width + 10;
+      const bh = 15;
+      const bx = isLeft ? specRect.x + 6 : specRect.x + specRect.w - bw - 6;
+      const by = pickNonOverlappingY(
+        bx,
+        bw,
+        bh,
+        [specRect.y + 24, specRect.y + 43, specRect.y + 62],
+        occupiedBoxes,
+        specRect
+      );
+      drawRoundedPill(ctx, bx, by, bw, bh, 4);
+      ctx.fillStyle = badgeFill;
+      ctx.fill();
+      ctx.strokeStyle = badgeStroke;
+      ctx.lineWidth = 1;
+      ctx.stroke();
+      ctx.fillStyle = badgeText;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(badge, bx + bw / 2, by + bh / 2 + 0.5);
+    }
+
+    return txPinHz;
+  }
+
   function drawOverlayAndMiniPan({
     overlayCtx,
     miniPanBox,
@@ -538,6 +822,7 @@ void main() {
         }
       }
 
+      const occupiedBoxes = [];
       for (let vi = 0; vi < vfosToDraw.length; vi++) {
         const vfo = vfosToDraw[vi];
         const pb = K4.SpectrumGeometry.computePassbandRange(vfo.state, cwPitchHz);
@@ -652,6 +937,7 @@ void main() {
           ctx.textAlign = 'center';
           ctx.textBaseline = 'middle';
           ctx.fillText(pillText, pillX + pillW / 2, pillY + pillH / 2 + 0.5);
+          occupiedBoxes.push({ x: pillX, y: pillY, w: pillW, h: pillH });
         } else if (vfo.primary || subRxEnabled) {
           // Off-screen VFO direction badge
           const isLeft = markerHz < viewLeftHz;
@@ -670,6 +956,7 @@ void main() {
           ctx.textAlign = 'center';
           ctx.textBaseline = 'middle';
           ctx.fillText(badge, bx + bw / 2, by + 8.5);
+          occupiedBoxes.push({ x: bx, y: by, w: bw, h: 16 });
         }
 
         // RIT RX offset marker & badge when active
@@ -706,38 +993,63 @@ void main() {
         }
       }
 
-      // Status pills (ADC Overflow / Pan Freeze) in top-right corner of spectrum
-      {
-        let pillRight = specRect.x + specRect.w - 8;
-        const pillY = specRect.y + 6;
-        if (primaryRxState && primaryRxState.adcOverflow) {
-          const ovText = 'ADC OVF';
-          ctx.font = 'bold 9.5px ' + monoFont;
-          const ovW = ctx.measureText(ovText).width + 10;
-          drawRoundedPill(ctx, pillRight - ovW, pillY, ovW, 16, 4);
-          ctx.fillStyle = 'rgba(225, 29, 72, 0.92)';
-          ctx.fill();
-          ctx.fillStyle = '#FFF1F2';
-          ctx.textAlign = 'center';
-          ctx.textBaseline = 'middle';
-          ctx.fillText(ovText, pillRight - ovW / 2, pillY + 8.5);
-          pillRight -= ovW + 6;
-        }
-        if (snapshot.panFrozen) {
-          const frzText = 'FROZEN';
-          ctx.font = 'bold 9.5px ' + monoFont;
-          const frzW = ctx.measureText(frzText).width + 10;
-          drawRoundedPill(ctx, pillRight - frzW, pillY, frzW, 16, 4);
-          ctx.fillStyle = 'rgba(56, 189, 248, 0.24)';
-          ctx.fill();
-          ctx.strokeStyle = 'rgba(56, 189, 248, 0.78)';
+      // Compute top-right status pills first so TX badge avoids them, then draw TX overlay & pills
+      const statusPills = layoutStatusPills(
+        ctx,
+        specRect,
+        collectStatusPills(snapshot, primaryRxState),
+        monoFont
+      );
+      for (let pi = 0; pi < statusPills.length; pi++) {
+        occupiedBoxes.push(statusPills[pi]);
+      }
+
+      const txPosture = snapshot.txPosture || 'rx-only';
+      const txSnap = Object.assign({}, snapshot, { rxA, rxB });
+      const txOverlay =
+        K4.SpectrumGeometry &&
+        typeof K4.SpectrumGeometry.computeTxOverlay === 'function'
+          ? K4.SpectrumGeometry.computeTxOverlay(txSnap)
+          : null;
+      const isLiveTx = Boolean(
+        snapshot.txActive || snapshot.atuTuning || (txOverlay && txOverlay.active)
+      );
+      const txPinHz = drawTxOverlayOnSpectrum({
+        ctx,
+        specRect,
+        paneRx,
+        dualPanMode,
+        panCenterHz,
+        userSpanHz,
+        viewLeftHz,
+        viewRightHz,
+        cwPitchHz,
+        snapshot,
+        rxA,
+        rxB,
+        txOverlay,
+        txPosture,
+        isLiveTx,
+        occupiedBoxes,
+        monoFont,
+      });
+
+      // Status pills (ADC Overflow / Pan Freeze / TX Inhibit / ATU Tune / TX Test)
+      for (let pi = 0; pi < statusPills.length; pi++) {
+        const p = statusPills[pi];
+        ctx.font = p.font;
+        drawRoundedPill(ctx, p.x, p.y, p.w, p.h, 4);
+        ctx.fillStyle = p.fill;
+        ctx.fill();
+        if (p.stroke) {
+          ctx.strokeStyle = p.stroke;
           ctx.lineWidth = 1;
           ctx.stroke();
-          ctx.fillStyle = '#E0F2FE';
-          ctx.textAlign = 'center';
-          ctx.textBaseline = 'middle';
-          ctx.fillText(frzText, pillRight - frzW / 2, pillY + 8.5);
         }
+        ctx.fillStyle = p.textColor;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(p.text, p.x + p.w / 2, p.y + p.h / 2 + 0.5);
       }
 
       if (dualPanMode === 2) {
@@ -888,6 +1200,26 @@ void main() {
             ctx.lineTo(mx, wfRect.y + wfRect.h);
             ctx.stroke();
           }
+        }
+        if (txPinHz !== null && txPinHz >= viewLeftHz && txPinHz <= viewRightHz) {
+          const txWfX = K4.SpectrumGeometry.xFromRfFreq(
+            txPinHz,
+            wfRect.x,
+            wfRect.w,
+            panCenterHz,
+            userSpanHz
+          );
+          ctx.save();
+          if (!isLiveTx) ctx.setLineDash([3, 3]);
+          ctx.strokeStyle = isLiveTx
+            ? 'rgba(244, 63, 94, 0.72)'
+            : 'rgba(251, 146, 60, 0.42)';
+          ctx.lineWidth = isLiveTx ? 1.5 : 1;
+          ctx.beginPath();
+          ctx.moveTo(txWfX, wfRect.y);
+          ctx.lineTo(txWfX, wfRect.y + wfRect.h);
+          ctx.stroke();
+          ctx.restore();
         }
         ctx.restore();
       }

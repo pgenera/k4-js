@@ -84,6 +84,8 @@
       this._connGen = 0;
       this._pingTimer = null;
       this._tbPollTimer = null;
+      this._totTimer = null;
+      this._txPosture = 'rx-only';
       if (this.state && typeof this.state.on === 'function') {
         this.state.on('change', () => this._syncTbPolling());
       }
@@ -104,6 +106,9 @@
         miniPanPacketsIn: 0,
         audioPacketsIn: 0,
       };
+
+      // Always initialize in mandatory 'rx-only' safety posture regardless of passed gate/state.
+      this._disarmToRxOnly({ silentCat: true, emitPttChange: false });
 
       this.state.on('change', (snapshot, changedKey) => {
         this.emit('state', snapshot, changedKey);
@@ -206,8 +211,57 @@
       }, 350);
     }
 
+    _clearTotTimer() {
+      if (this._totTimer !== null) {
+        clearTimeout(this._totTimer);
+        this._totTimer = null;
+      }
+    }
+
+    _disarmToRxOnly({ silentCat = false, emitPttChange = true, sendDisconnectRx = false } = {}) {
+      this._clearTotTimer();
+      const snap = this.state ? this.state.getSnapshot() : {};
+      const wasActive = Boolean(snap.pttHeld || snap.txActive || snap.atuTuning);
+
+      this.gate.setPolicy('rx-only');
+      this.gate.setTxAudioAllowed(false);
+      this._txPosture = 'rx-only';
+
+      if (this.state && typeof this.state.updateTxSafety === 'function') {
+        this.state.updateTxSafety(
+          {
+            operatingPolicy: 'rx-only',
+            txPosture: 'rx-only',
+            pttHeld: false,
+            txStartedAt: null,
+            txActive: false,
+            atuTuning: false,
+            atuTuneKind: null,
+          },
+          'txPosture'
+        );
+      }
+
+      if (emitPttChange) {
+        this.emit('txPttChange', {
+          active: false,
+          posture: 'rx-only',
+          testMode: false,
+        });
+      }
+
+      if (!silentCat && (wasActive || sendDisconnectRx) && isWsOpen(this._ws)) {
+        try {
+          this.sendCat(snap.atuTuning ? 'TU0;RX;' : 'RX;');
+        } catch (_) {
+          // Ignore teardown errors.
+        }
+      }
+    }
+
     _stopKeepalive() {
       this._stopTbPolling();
+      this._clearTotTimer();
       if (this._pingTimer !== null) {
         clearInterval(this._pingTimer);
         this._pingTimer = null;
@@ -228,7 +282,7 @@
         'FA;FB;MD;MD$;DT;DT$;BW;BW$;IS;IS$;CW;VT;VT$;LK;LK$;SB;FT;SMH;SMH$;' +
         '#SPN;#SPN$;#REF;#REF$;#SCL;#AVG;#WBS;#AR;#DPM;#MP;#MP$;#FXT;TD;TD$;MX;' +
         'SQ;SQ$;AP;AP$;RT;RT$;RO;RO$;DV;OV;OV$;#FRZ;#FPS;#NB;#NB$;#NBL;#NBL$;#DSM;#WFH;' +
-        'SIFP1;SIRF1;SIDA1;';
+        'SIFP1;SIRF1;SIDA1;TM1;PO1;SIDU1;SIRC1;';
       this.sendCat(bootstrapCat);
       this._syncTbPolling();
 
@@ -260,6 +314,7 @@
     }
 
     _sendCleanDisconnectCat() {
+      this._disarmToRxOnly({ silentCat: false, emitPttChange: true });
       if (isWsOpen(this._ws)) {
         try {
           this.sendCat('RRN;');
@@ -373,9 +428,11 @@
       const encodeModeOpt = opts.encodeMode !== undefined ? opts.encodeMode : 'auto';
       const latencyTierOpt = opts.latencyTier !== undefined ? opts.latencyTier : 2;
 
-      // Close any existing socket cleanly before opening a fresh session.
+      // Close any existing socket cleanly before opening a fresh session, and enforce 'rx-only'.
       if (this._ws) {
         this.disconnect();
+      } else {
+        this._disarmToRxOnly({ silentCat: true, emitPttChange: true });
       }
 
       const gen = ++this._connGen;
@@ -519,6 +576,7 @@
             if (this._ws === ws) {
               this._ws = null;
             }
+            this._disarmToRxOnly({ silentCat: true, emitPttChange: true });
 
             if (!opened) {
               if (!this._manualDisconnect && attemptIdx + 1 < attempts.length) {
@@ -593,6 +651,9 @@
       this._detachPagehide();
 
       const ws = this._ws;
+      const wsWasOpen = isWsOpen(ws);
+      this._disarmToRxOnly({ silentCat: !wsWasOpen, emitPttChange: true });
+
       if (ws) {
         ws.onopen = null;
         ws.onmessage = null;
@@ -1138,6 +1199,468 @@
       }
       this.state.update({ diversityEnabled: false }, 'diversityEnabled');
       return this.sendCat('DV0;DV;');
+    }
+
+    /**
+     * Query read-only TX, ATU, antenna, voice, and keyer parameters cleanly.
+     */
+    refreshTxState() {
+      return this.sendCat(
+        'TQX;IN;TS;PC;PCX;AT;AN;ACT;ACN1;ACN2;ACN3;XT;MG;MI;MS;CP;ML0;ML1;ML2;KS;KP;VXC;VXV;VXD;'
+      );
+    }
+
+    /**
+     * Return current TX safety posture ('rx-only', 'tx-test', or 'tx-armed').
+     * @returns {'rx-only'|'tx-test'|'tx-armed'}
+     */
+    getTxPosture() {
+      return this._txPosture;
+    }
+
+    /**
+     * Set active TX operating posture ('rx-only', 'tx-test', or 'tx-armed').
+     * Disarming to 'rx-only' sets gate policy first so no stray TX command can leak.
+     * @param {'rx-only'|'tx-test'|'tx-armed'} posture
+     * @param {{ silentCat?: boolean }} [opts]
+     */
+    setTxPosture(posture, opts = {}) {
+      if (posture !== 'rx-only' && posture !== 'tx-test' && posture !== 'tx-armed') {
+        throw new RangeError(`Unsupported TX posture: ${posture}`);
+      }
+      const silentCat = Boolean(opts && opts.silentCat);
+      if (posture === 'rx-only') {
+        this._disarmToRxOnly({ silentCat, emitPttChange: true });
+        return { sent: !silentCat, allowed: [], blocked: [], sanitized: '' };
+      }
+
+      this._clearTotTimer();
+      this.gate.setTxAudioAllowed(false);
+      this._txPosture = posture;
+      this.gate.setPolicy('tx-enabled');
+
+      const isTest = posture === 'tx-test';
+      this.state.updateTxSafety(
+        {
+          operatingPolicy: 'tx-enabled',
+          txPosture: posture,
+          txTestMode: isTest,
+          pttHeld: false,
+          txStartedAt: null,
+        },
+        'txPosture'
+      );
+
+      this.emit('txPttChange', {
+        active: false,
+        posture,
+        testMode: isTest,
+      });
+
+      if (silentCat) {
+        return { sent: false, allowed: [], blocked: [], sanitized: '' };
+      }
+      return this.sendCat(isTest ? 'TS1;TM1;PO1;' : 'TS0;TM1;PO1;');
+    }
+
+    /**
+     * Engage hold-only PTT in 'tx-test' or 'tx-armed', arming outbound 0x01 TX audio and TOT deadman timer.
+     * @param {{ maxSeconds?: number }} [opts]
+     */
+    startPtt(opts = {}) {
+      const snap = this.state.getSnapshot();
+      if (this._txPosture === 'rx-only' || this.gate.getPolicy() !== 'tx-enabled') {
+        return { sent: false, blocked: true, allowed: [], sanitized: '', reason: 'TX posture is rx-only' };
+      }
+      if (snap.txInhibit) {
+        return { sent: false, blocked: true, allowed: [], sanitized: '', reason: 'TX INHIBIT active' };
+      }
+      if (!isWsOpen(this._ws)) {
+        return { sent: false, blocked: false, allowed: [], sanitized: '', reason: 'Not connected' };
+      }
+
+      this._clearTotTimer();
+      this.state.resetTxMeterPeaks();
+      this.gate.setTxAudioAllowed(true);
+
+      const startedAt = snap.pttHeld && snap.txStartedAt ? snap.txStartedAt : Date.now();
+      this.state.updateTxSafety({ pttHeld: true, txStartedAt: startedAt }, 'pttHeld');
+
+      const requestedSec = opts && Number(opts.maxSeconds);
+      const timeoutSec =
+        Number.isFinite(requestedSec) && requestedSec > 0
+          ? requestedSec
+          : Number.isFinite(snap.txTimeoutSec) && snap.txTimeoutSec > 0
+          ? snap.txTimeoutSec
+          : 180;
+
+      this._totTimer = setTimeout(() => {
+        this._totTimer = null;
+        this.panicAbortTx('timeout');
+      }, Math.max(100, Math.round(timeoutSec * 1000)));
+
+      const res = this.sendCat('TX;TM1;PO1;');
+      this.emit('txPttChange', {
+        active: true,
+        posture: this._txPosture,
+        testMode: this._txPosture === 'tx-test' || Boolean(snap.txTestMode),
+      });
+      return res;
+    }
+
+    /**
+     * Release hold-only PTT, stop outbound TX audio, clear TOT timer, and return to RX (RX;).
+     */
+    stopPtt() {
+      this._clearTotTimer();
+      this.gate.setTxAudioAllowed(false);
+      this.state.updateTxSafety({ pttHeld: false, txStartedAt: null }, 'pttHeld');
+      this.emit('txPttChange', {
+        active: false,
+        posture: this._txPosture,
+        testMode: this._txPosture === 'tx-test',
+      });
+      return this.sendCat('RX;');
+    }
+
+    /**
+     * Send an outbound 0x01 TX audio packet gated by RxOnlyGate policy and txAudioAllowed.
+     * @param {Uint8Array} payloadUint8
+     * @returns {{ sent: boolean, blocked: boolean }}
+     */
+    sendTxAudioPacket(payloadUint8) {
+      return this.sendBinary(0x01, payloadUint8);
+    }
+
+    /**
+     * Unconditional emergency panic TX/ATU/keyer abort (TU0;KY @;RX;).
+     * @param {string} [reason='panic']
+     */
+    panicAbortTx(reason = 'panic') {
+      this._clearTotTimer();
+      this.gate.setTxAudioAllowed(false);
+      this.state.updateTxSafety(
+        {
+          pttHeld: false,
+          txStartedAt: null,
+          txActive: false,
+          atuTuning: false,
+          atuTuneKind: null,
+          txBufferCount: 0,
+        },
+        'txActive'
+      );
+      this.emit('txPttChange', {
+        active: false,
+        posture: this._txPosture,
+        testMode: this._txPosture === 'tx-test',
+        reason,
+      });
+      this.emit('txPanic', { reason, timestamp: Date.now() });
+      return this.sendCat('TU0;KY @;RX;');
+    }
+
+    /**
+     * Select TX antenna port (AN1..AN3).
+     * @param {number} port
+     */
+    setTxAntenna(port) {
+      const p = clamp(Math.round(Number(port) || 1), 1, 3);
+      const res = this.sendCat(K4.CatCodec.builders.txAntenna(p) + 'AN;');
+      if (res.blocked.length === 0) {
+        this.state.update({ txAntenna: p }, 'txAntenna');
+      }
+      return res;
+    }
+
+    /**
+     * Set KAT4 ATU mode (1 = BYPASS, 2 = AUTO). Never emits AT0.
+     * @param {number} mode
+     */
+    setAtuMode(mode) {
+      const m = clamp(Math.round(Number(mode) || 1), 1, 2);
+      const res = this.sendCat(K4.CatCodec.builders.atuMode(m) + 'AT;');
+      if (res.blocked.length === 0) {
+        this.state.update({ atuMode: m }, 'atuMode');
+      }
+      return res;
+    }
+
+    /**
+     * Start TX tune or KAT4 ATU tune (1=tune, 2=tune LP, 3=ATU tune, 4=ATU extended search).
+     * @param {number} [kind=3]
+     */
+    startAtuTune(kind = 3) {
+      const k = clamp(Math.round(Number(kind) || 3), 1, 4);
+      if (this.state.getSnapshot().txInhibit) {
+        return {
+          sent: false,
+          allowed: [],
+          blocked: [K4.CatCodec.builders.atuTune(k)],
+          sanitized: '',
+          reason: 'TX INHIBIT active',
+        };
+      }
+      this.state.resetTxMeterPeaks();
+      const res = this.sendCat(K4.CatCodec.builders.atuTune(k) + 'TM1;PO1;');
+      if (res.blocked.length === 0) {
+        this.state.update({ atuTuning: true, atuTuneKind: k }, 'atuTuning');
+      }
+      return res;
+    }
+
+    /**
+     * Abort active ATU tune or tune cycle (TU0;RX;).
+     */
+    stopAtuTune() {
+      this.state.update({ atuTuning: false, atuTuneKind: null }, 'atuTuning');
+      return this.sendCat('TU0;RX;');
+    }
+
+    /**
+     * Set RF power output in watts ('L' 0.1..10.0 W, 'H' 1..110 W, or 'X' mW range).
+     * @param {number} watts
+     * @param {'L'|'H'|'X'} [range]
+     */
+    setPowerWatts(watts, range) {
+      const cmd = K4.CatCodec.builders.power(watts, range);
+      const res = this.sendCat(cmd + 'PC;');
+      if (res.blocked.length === 0) {
+        const parsed = K4.CatCodec.parseCommand(cmd);
+        if (parsed) {
+          this.state.applyParsedCat(parsed);
+        }
+      }
+      return res;
+    }
+
+    /**
+     * Toggle Split operation (FT0/FT1).
+     * @param {boolean} on
+     */
+    setSplit(on) {
+      const enabled = Boolean(on);
+      const res = this.sendCat(K4.CatCodec.builders.split(enabled) + 'FT;');
+      if (res.blocked.length === 0) {
+        this.state.update(
+          { splitEnabled: enabled, activeTxVfo: enabled ? 'B' : 'A' },
+          'splitEnabled'
+        );
+      }
+      return res;
+    }
+
+    /**
+     * Configure Quick Split: copy VFO A -> B (AB3), tune VFO B to FA + offsetHz, and enable FT1.
+     * @param {number} [offsetHz=1000]
+     */
+    setupQuickSplit(offsetHz = 1000) {
+      const snap = this.state.getSnapshot();
+      const baseHz = snap.rxA && Number.isFinite(snap.rxA.freqHz) ? snap.rxA.freqHz : 14074000;
+      const targetHz = Math.round(clamp(baseHz + (Number(offsetHz) || 0), 100000, 54000000));
+      const cmd =
+        K4.CatCodec.builders.vfoCopy(3) +
+        K4.CatCodec.builders.freq('B', targetHz) +
+        K4.CatCodec.builders.split(true) +
+        'FB;MD$;FT;';
+      const res = this.sendCat(cmd);
+      if (res.blocked.length === 0) {
+        this.state.updateRx(
+          'B',
+          {
+            freqHz: targetHz,
+            mode: snap.rxA ? snap.rxA.mode : undefined,
+            dataSubMode: snap.rxA ? snap.rxA.dataSubMode : undefined,
+          },
+          'rxB.freqHz'
+        );
+        this.state.update({ splitEnabled: true, activeTxVfo: 'B' }, 'splitEnabled');
+      }
+      return res;
+    }
+
+    /**
+     * Enable/disable XIT (XT0/XT1) and optionally adjust RIT/XIT offset (RO).
+     * @param {boolean|null|undefined} on
+     * @param {number|null|undefined} [offsetHz]
+     */
+    setXit(on, offsetHz) {
+      const cmds = [];
+      const hasOn = on !== undefined && on !== null;
+      const hasOffset = offsetHz !== undefined && offsetHz !== null;
+      if (hasOn) {
+        cmds.push(K4.CatCodec.builders.xit(Boolean(on)));
+      }
+      if (hasOffset) {
+        const hz = Math.round(clamp(Number(offsetHz) || 0, -9999, 9999));
+        cmds.push(K4.CatCodec.builders.ritOffset('A', hz), 'RO;');
+      }
+      if (hasOn) {
+        cmds.push('XT;');
+      }
+      if (cmds.length === 0) {
+        return { sent: false, allowed: [], blocked: [], sanitized: '' };
+      }
+      const res = this.sendCat(cmds.join(''));
+      if (res.blocked.length === 0) {
+        if (hasOn) {
+          this.state.update({ xitEnabled: Boolean(on) }, 'xitEnabled');
+        }
+        if (hasOffset) {
+          const hz = Math.round(clamp(Number(offsetHz) || 0, -9999, 9999));
+          this.state.updateRx('A', { ritOffsetHz: hz }, 'rxA.rit');
+        }
+      }
+      return res;
+    }
+
+    /**
+     * Set TX microphone gain (MG, 0..80).
+     * @param {number} v
+     */
+    setMicGain(v) {
+      const val = Math.round(clamp(Number(v) || 0, 0, 80));
+      const res = this.sendCat(K4.CatCodec.builders.micGain(val) + 'MG;');
+      if (res.blocked.length === 0) {
+        this.state.update({ micGain: val }, 'micGain');
+      }
+      return res;
+    }
+
+    /**
+     * Set speech compressor level in dB (CP, 0..30).
+     * @param {number} v
+     */
+    setCompression(v) {
+      const val = Math.round(clamp(Number(v) || 0, 0, 30));
+      const res = this.sendCat(K4.CatCodec.builders.compLevel(val) + 'CP;');
+      if (res.blocked.length === 0) {
+        this.state.update({ compDbSet: val }, 'compDbSet');
+      }
+      return res;
+    }
+
+    /**
+     * Set TX monitor sidetone/audio level (ML, channel 0=CW, 1=Data, 2=Voice, 0..100).
+     * @param {number} channel
+     * @param {number} v
+     */
+    setTxMonitor(channel, v) {
+      const ch = clamp(Math.round(Number(channel) || 0), 0, 2);
+      const val = clamp(Math.round(Number(v) || 0), 0, 100);
+      const res = this.sendCat(K4.CatCodec.builders.txMonitor(ch, val) + 'ML' + ch + ';');
+      if (res.blocked.length === 0) {
+        const key = ch === 0 ? 'monCw' : ch === 1 ? 'monData' : 'monVoice';
+        this.state.update({ [key]: val }, key);
+      }
+      return res;
+    }
+
+    /**
+     * Select TX microphone input source (MI, 0..4).
+     * @param {number} v
+     */
+    setMicInput(v) {
+      const idx = clamp(Math.round(Number(v) || 0), 0, 4);
+      const res = this.sendCat(K4.CatCodec.builders.micInput(idx) + 'MI;');
+      if (res.blocked.length === 0) {
+        this.state.update({ micInput: idx }, 'micInput');
+      }
+      return res;
+    }
+
+    /**
+     * Toggle VOX / QSK for 'C' (CW), 'V' (Voice), or 'D' (Data) (VXmn;).
+     * @param {'C'|'V'|'D'} modeChar
+     * @param {boolean} on
+     */
+    setVox(modeChar, on) {
+      const mc = String(modeChar || 'V').toUpperCase();
+      const c = mc === 'C' || mc === 'V' || mc === 'D' ? mc : 'V';
+      const enabled = Boolean(on);
+      const res = this.sendCat(K4.CatCodec.builders.vox(c, enabled) + 'VX' + c + ';');
+      if (res.blocked.length === 0) {
+        const key = c === 'C' ? 'voxCw' : c === 'V' ? 'voxVoice' : 'voxData';
+        this.state.update({ [key]: enabled }, 'vox');
+      }
+      return res;
+    }
+
+    /**
+     * Play or stop DVR memory slot (PB0=stop, PB1..PB8=play).
+     * @param {number} slot
+     */
+    playDvr(slot) {
+      const s = clamp(Math.round(Number(slot) || 0), 0, 8);
+      return this.sendCat(K4.CatCodec.builders.dvrPlay(s));
+    }
+
+    /**
+     * Set CW keyer speed in WPM (KS, 8..100).
+     * @param {number} wpm
+     */
+    setCwSpeed(wpm) {
+      const w = clamp(Math.round(Number(wpm) || 20), 8, 100);
+      const res = this.sendCat(K4.CatCodec.builders.cwSpeed(w) + 'KS;');
+      if (res.blocked.length === 0) {
+        this.state.update({ cwSpeedWpm: w }, 'cwSpeedWpm');
+      }
+      return res;
+    }
+
+    /**
+     * Configure keyer iambic mode ('A'|'B'), paddle order ('N'|'R'), and weight (90..125, step 5) (KP).
+     * @param {{ iambic?: 'A'|'B', order?: 'N'|'R', paddleOrder?: 'N'|'R', weight?: number }} [opts]
+     */
+    setKeyerPaddle(opts = {}) {
+      const cur = this.state.getSnapshot();
+      const o = opts && typeof opts === 'object' ? opts : {};
+      const iambic =
+        String(o.iambic || cur.keyerIambic || 'A').toUpperCase() === 'B' ? 'B' : 'A';
+      const order =
+        String(o.order || o.paddleOrder || cur.keyerPaddleOrder || 'N').toUpperCase() === 'R'
+          ? 'R'
+          : 'N';
+      const rawWeight =
+        o.weight !== undefined && o.weight !== null ? Number(o.weight) : cur.keyerWeight || 110;
+      const weight = clamp(Math.round(rawWeight / 5) * 5, 90, 125);
+      const res = this.sendCat(K4.CatCodec.builders.keyerPaddle(iambic, order, weight) + 'KP;');
+      if (res.blocked.length === 0) {
+        this.state.update(
+          { keyerIambic: iambic, keyerPaddleOrder: order, keyerWeight: weight },
+          'keyerPaddle'
+        );
+      }
+      return res;
+    }
+
+    /**
+     * Enqueue CW or direct DATA text into the K4 KY keyer buffer.
+     * @param {string} text
+     * @param {' '|'W'|'R'} [mode=' ']
+     */
+    sendKeyerText(text, mode = ' ') {
+      const clean = String(text || '').replace(/[;\r\n]/g, '').slice(0, 60);
+      if (!clean) {
+        return { sent: false, allowed: [], blocked: [], sanitized: '' };
+      }
+      if (clean.trim() !== '@' && this.state.getSnapshot().txInhibit) {
+        return {
+          sent: false,
+          allowed: [],
+          blocked: [K4.CatCodec.builders.keyerText(clean, mode)],
+          sanitized: '',
+          reason: 'TX INHIBIT active',
+        };
+      }
+      return this.sendCat(K4.CatCodec.builders.keyerText(clean, mode) + 'KY;');
+    }
+
+    /**
+     * Immediately clear the KY keyer buffer (KY @;).
+     */
+    clearKeyerBuffer() {
+      return this.sendCat(K4.CatCodec.builders.keyerAbort() + 'KY;');
     }
   }
 

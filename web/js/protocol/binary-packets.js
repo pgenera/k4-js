@@ -87,6 +87,36 @@
   }
 
   /**
+   * Encode an outbound 0x01 TX audio packet with a 7-byte K4 ver=0x01 header.
+   * Uses DataView for header fields and byte copies for odd offset 7 safety.
+   * @param {Object} [opts]
+   * @returns {Uint8Array}
+   */
+  function encodeAudio(opts = {}) {
+    const o = opts && typeof opts === 'object' ? opts : {};
+    const seq = Number.isFinite(Number(o.seq)) ? Number(o.seq) : 0;
+    const encodeMode = Number.isFinite(Number(o.encodeMode)) ? Number(o.encodeMode) : 1;
+    const sampleRateCode = Number.isFinite(Number(o.sampleRateCode)) ? Number(o.sampleRateCode) : 0;
+    const audioU8 = (o.audioBytes ? toUint8(o.audioBytes) : null) || new Uint8Array(0);
+    const frameSamplesPerCh = Number.isFinite(Number(o.frameSamplesPerCh))
+      ? Math.max(0, Math.floor(Number(o.frameSamplesPerCh)))
+      : (audioU8.byteLength >>> 1);
+
+    const out = new Uint8Array(7 + audioU8.byteLength);
+    const dv = new DataView(out.buffer, out.byteOffset, out.byteLength);
+    dv.setUint8(0, 0x01);
+    dv.setUint8(1, 0x01);
+    dv.setUint8(2, seq & 0xff);
+    dv.setUint8(3, encodeMode & 0xff);
+    dv.setUint16(4, frameSamplesPerCh & 0xffff, true);
+    dv.setUint8(6, sampleRateCode & 0xff);
+    if (audioU8.byteLength > 0) {
+      out.set(audioU8, 7);
+    }
+    return out;
+  }
+
+  /**
    * Parse a 0x02 PAN spectrum payload (27-byte LE header + bin bytes).
    * @param {Uint8Array|ArrayBuffer|ArrayBufferView} payload
    * @returns {Object|null}
@@ -185,6 +215,7 @@
     parse,
     parseCat,
     parseAudio,
+    encodeAudio,
     parsePan,
     parseMiniPan,
     panBinToDbm,
