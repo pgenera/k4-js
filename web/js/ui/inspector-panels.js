@@ -873,7 +873,11 @@
         const btn = el('button', 'k4-choice-pill', `${hz / 1000}k`);
         btn.type = 'button';
         btn.addEventListener('click', () => {
-          this.client.setDisplay(this._dispRx(), { panSpanHz: hz });
+          const rx = this._dispRx();
+          if (this.panadapter && typeof this.panadapter.resetViewport === 'function') {
+            this.panadapter.resetViewport(rx, { syncRadioSpan: false });
+          }
+          this.client.setDisplay(rx, { panSpanHz: hz });
         });
         spanGrid.appendChild(btn);
         this._refs.spanBtns.push({ hz, btn });
@@ -888,7 +892,11 @@
         value: 48,
         formatValue: (v) => `${v} kHz`,
         onInput: (v) => {
-          this.client.setDisplay(this._dispRx(), { panSpanHz: v * 1000 });
+          const rx = this._dispRx();
+          if (this.panadapter && typeof this.panadapter.resetViewport === 'function') {
+            this.panadapter.resetViewport(rx, { syncRadioSpan: false });
+          }
+          this.client.setDisplay(rx, { panSpanHz: v * 1000 });
         },
       });
       spanCard.appendChild(this._refs.spanSlider.row);
@@ -957,8 +965,12 @@
       centerBtn.type = 'button';
       centerBtn.addEventListener('click', () => {
         const rx = this._dispRx();
-        const b = this._builders();
-        this._sendCat(b.centerPan ? b.centerPan(rx) : rx === 'B' ? 'FC$;' : 'FC;');
+        if (this.panadapter && typeof this.panadapter.resetViewport === 'function') {
+          this.panadapter.resetViewport(rx, { syncRadioSpan: true });
+        } else {
+          const b = this._builders();
+          this._sendCat(b.centerPan ? b.centerPan(rx) : rx === 'B' ? 'FC$;' : 'FC;');
+        }
       });
       const arNowBtn = el('button', 'k4-choice-pill', 'Auto-Ref Now (#AR1)');
       arNowBtn.type = 'button';
@@ -1870,7 +1882,10 @@
         this._refs.dispBadge.textContent = `PAN ${dispRx}`;
         this._refs.dispBadge.classList.toggle('is-amber', dispRx === 'B');
       }
-      const spanHz = Number(dispS.panSpanHz) || 48000;
+      const spanHz =
+        (this.panadapter && typeof this.panadapter.getVisibleSpanHz === 'function'
+          ? this.panadapter.getVisibleSpanHz(dispRx)
+          : Number(dispS.panSpanHz)) || 48000;
       if (this._refs.spanBtns) {
         for (let i = 0; i < this._refs.spanBtns.length; i++) {
           const { hz, btn } = this._refs.spanBtns[i];

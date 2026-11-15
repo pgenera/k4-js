@@ -75,6 +75,7 @@
         onSelectTarget: (rx) => this.setTargetRx(rx),
         onToggleWheelRit: () => this.toggleWheelRitMode(),
         onNotify: (msg, level) => this.toast(msg, level),
+        onViewportChange: () => this._scheduleRender(),
       });
 
       if (this.panadapter.setPalette) this.panadapter.setPalette(this._palette);
@@ -97,6 +98,13 @@
 
     _mountStageOverlays() {
       const stage = this._dom.panStage;
+      stage.addEventListener(
+        'wheel',
+        (e) => {
+          if (e.ctrlKey || e.metaKey) e.preventDefault();
+        },
+        { passive: false }
+      );
 
       // Top-left panadapter HUD pill
       const hudTop = el('div', 'k4-pan-hud-top');
@@ -180,6 +188,20 @@
       zoomOutBtn.title = 'Zoom span out (wider)';
       zoomOutBtn.addEventListener('click', () => this._stepSpan(1));
       group.appendChild(zoomOutBtn);
+
+      this._hudCenterBtn = el('button', 'k4-hud-btn', 'Center');
+      this._hudCenterBtn.type = 'button';
+      this._hudCenterBtn.dataset.testid = 'hud-center-btn';
+      this._hudCenterBtn.hidden = true;
+      this._hudCenterBtn.title = 'Re-center zoomed panadapter viewport on VFO (FC)';
+      this._hudCenterBtn.addEventListener('click', () => {
+        const snap = this._getSnapshot();
+        const dispRx = this._dispRx(snap);
+        if (this.panadapter && this.panadapter.resetViewport) {
+          this.panadapter.resetViewport(dispRx, { syncRadioSpan: true });
+        }
+      });
+      group.appendChild(this._hudCenterBtn);
 
       group.appendChild(el('span', 'k4-hud-sep'));
 
@@ -707,7 +729,10 @@
       const snap = this._getSnapshot();
       const dispRx = this._dispRx(snap);
       const rxS = (dispRx === 'B' ? snap.rxB : snap.rxA) || {};
-      const cur = Number(rxS.panSpanHz) || 48000;
+      const cur =
+        (this.panadapter && typeof this.panadapter.getVisibleSpanHz === 'function'
+          ? this.panadapter.getVisibleSpanHz(dispRx)
+          : Number(rxS.panSpanHz)) || 48000;
       let bestIdx = 0;
       let bestDiff = Infinity;
       for (let i = 0; i < SPAN_STEPS_HZ.length; i++) {
@@ -718,7 +743,16 @@
         }
       }
       const nextIdx = Math.max(0, Math.min(SPAN_STEPS_HZ.length - 1, bestIdx + dir));
-      this.client.setDisplay(dispRx, { panSpanHz: SPAN_STEPS_HZ[nextIdx] });
+      const targetSpanHz = SPAN_STEPS_HZ[nextIdx];
+      if (this.panadapter && typeof this.panadapter.applyMapZoom === 'function') {
+        const res = this.panadapter.applyMapZoom(dispRx, {
+          targetSpanHz,
+          anchorFrac: 0.5,
+        });
+        this.client.setDisplay(dispRx, { panSpanHz: res.radioSpanHz });
+      } else {
+        this.client.setDisplay(dispRx, { panSpanHz: targetSpanHz });
+      }
     }
 
     _toggleTicker() {
@@ -898,7 +932,21 @@
           : 'Left=A, Right=B (in either pane)';
       this._hudTargetBtn.title = `K4 Mouse (${qsyDesc}). Wheel tunes ${this._wheelRitMode ? `VFO ${this._targetRx} RIT` : `VFO ${this._targetRx}`}. Click/Right-click to switch A/B; middle-click or Shift-click to toggle RIT wheel.`;
       this._hudStepBtn.textContent = `Step: ${rxS.stepHz >= 1000 ? `${rxS.stepHz / 1000}k` : `${rxS.stepHz || 100} Hz`}`;
-      this._hudSpanReadout.textContent = `${Math.round((dispS.panSpanHz || 48000) / 1000)} kHz`;
+      const visSpanHz =
+        (this.panadapter && typeof this.panadapter.getVisibleSpanHz === 'function'
+          ? this.panadapter.getVisibleSpanHz(dispRx)
+          : dispS.panSpanHz) || 48000;
+      this._hudSpanReadout.textContent =
+        visSpanHz < 20000 && visSpanHz % 1000 !== 0
+          ? `${(visSpanHz / 1000).toFixed(1)} kHz`
+          : `${Math.round(visSpanHz / 1000)} kHz`;
+      if (this._hudCenterBtn) {
+        this._hudCenterBtn.hidden = !(
+          this.panadapter &&
+          typeof this.panadapter.isViewportOffset === 'function' &&
+          this.panadapter.isViewportOffset(dispRx)
+        );
+      }
       const dpm = snap.dualPanMode === 1 ? 1 : snap.dualPanMode === 2 ? 2 : 0;
       this._hudDualBtn.textContent = dpm === 2 ? '2x' : dpm === 1 ? '1xB' : '1x';
       this._hudDualBtn.classList.toggle('is-active', dpm === 2);

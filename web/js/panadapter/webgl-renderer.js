@@ -207,7 +207,10 @@ void main() {
       return null;
     }
     const tierSpanHz = Math.max(1000, (pane.tierKHz || 48) * 1000);
-    const tierLeft = pane.panCenterHz - tierSpanHz * 0.5;
+    const streamCenter = Number.isFinite(pane.streamCenterHz)
+      ? pane.streamCenterHz
+      : pane.panCenterHz;
+    const tierLeft = streamCenter - tierSpanHz * 0.5;
     const tierU = (freqHz - tierLeft) / tierSpanHz;
     if (tierU < 0 || tierU > 1) return null;
     const n = pane.shownDbm.length;
@@ -234,6 +237,7 @@ void main() {
       container.insertBefore(surface, container.firstChild);
     } else {
       surface.setAttribute('data-testid', 'pan-canvas');
+      surface.style.touchAction = 'none';
     }
 
     let glCanvas = surface.querySelector(':scope > .k4-pan-gl');
@@ -471,7 +475,12 @@ void main() {
       if (frameState && frameState.peakHold && pane && pane.binsReady && pane.peakDbm) {
         const peakBins = pane.peakDbm;
         const n = peakBins.length;
-        const crop = K4.SpectrumGeometry.computeCrop(userSpanHz, pane.tierKHz);
+        const crop = K4.SpectrumGeometry.computeViewportCrop(
+          panCenterHz,
+          userSpanHz,
+          pane.streamCenterHz,
+          pane.tierKHz
+        );
         ctx.strokeStyle = 'rgba(248, 250, 252, 0.48)';
         ctx.lineWidth = 1;
         ctx.beginPath();
@@ -1617,7 +1626,12 @@ void main() {
         gl.bufferData(gl.ARRAY_BUFFER, this._specVerts.byteLength, gl.DYNAMIC_DRAW);
       }
 
-      const crop = K4.SpectrumGeometry.computeCrop(pane.userSpanHz, pane.tierKHz);
+      const crop = K4.SpectrumGeometry.computeViewportCrop(
+        pane.panCenterHz,
+        pane.userSpanHz,
+        pane.streamCenterHz,
+        pane.tierKHz
+      );
       const minDbm = Number.isFinite(pane.refDbm) ? pane.refDbm : -110;
       const scaleDb = Math.max(10, pane.scaleDb || 80);
 
@@ -1707,7 +1721,12 @@ void main() {
           : 48000;
       const tierKHz =
         paneState && Number.isFinite(paneState.tierKHz) ? paneState.tierKHz : 48;
-      const crop = K4.SpectrumGeometry.computeCrop(userSpanHz, tierKHz);
+      const crop = K4.SpectrumGeometry.computeViewportCrop(
+        viewCenterHz,
+        userSpanHz,
+        paneState && paneState.streamCenterHz,
+        tierKHz
+      );
       const viewLeftHz = viewCenterHz - userSpanHz * 0.5;
 
       // Compute Float64 -> normalized Float32 per-row horizontal projections
@@ -2010,7 +2029,12 @@ void main() {
 
       const ctx = this.ctx;
       const n = bins.length;
-      const crop = K4.SpectrumGeometry.computeCrop(pane.userSpanHz, pane.tierKHz);
+      const crop = K4.SpectrumGeometry.computeViewportCrop(
+        pane.panCenterHz,
+        pane.userSpanHz,
+        pane.streamCenterHz,
+        pane.tierKHz
+      );
       const minDbm = Number.isFinite(pane.refDbm) ? pane.refDbm : -110;
       const scaleDb = Math.max(10, pane.scaleDb || 80);
       const maxDbm = minDbm + scaleDb;
@@ -2107,7 +2131,12 @@ void main() {
         const px32 = ring.wfPixels32;
         const packed = this._packedLut;
         const bgColor = packed[0];
-        const crop = K4.SpectrumGeometry.computeCrop(userSpanHz, tierKHz);
+        const crop = K4.SpectrumGeometry.computeViewportCrop(
+          viewCenterHz,
+          userSpanHz,
+          paneState && paneState.streamCenterHz,
+          tierKHz
+        );
         const viewLeftHz = viewCenterHz - userSpanHz * 0.5;
         const binCount = ring.binCount;
         const indexRing = ring.indexRing;

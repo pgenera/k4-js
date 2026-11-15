@@ -83,6 +83,33 @@
       };
     },
 
+    computeViewportCrop(viewCenterHz, viewSpanHz, streamCenterHz, tierKHz) {
+      const safeTierKHz = Number.isFinite(tierKHz) && tierKHz > 0 ? tierKHz : 48;
+      const tierSpanHz = Math.max(1000, safeTierKHz * 1000);
+      const spanHz =
+        Number.isFinite(viewSpanHz) && viewSpanHz > 0 ? viewSpanHz : tierSpanHz;
+      if (!Number.isFinite(viewCenterHz) || !Number.isFinite(streamCenterHz)) {
+        const spanRatio = clamp(spanHz / tierSpanHz, 0.01, 1.0);
+        const leftRatio = 0.5 * (1.0 - spanRatio);
+        return {
+          tierSpanHz,
+          spanRatio,
+          leftRatio,
+          rightRatio: leftRatio + spanRatio,
+        };
+      }
+      const spanRatio = Math.max(0.005, spanHz / tierSpanHz);
+      const streamLeftHz = streamCenterHz - tierSpanHz * 0.5;
+      const viewLeftHz = viewCenterHz - spanHz * 0.5;
+      const leftRatio = (viewLeftHz - streamLeftHz) / tierSpanHz;
+      return {
+        tierSpanHz,
+        spanRatio,
+        leftRatio,
+        rightRatio: leftRatio + spanRatio,
+      };
+    },
+
     displayMarkerHz(rxState, cwPitchHz = 500) {
       const freq = rxState && Number.isFinite(rxState.freqHz) ? rxState.freqHz : 14074000;
       const mode = rxState ? rxState.mode : 2;

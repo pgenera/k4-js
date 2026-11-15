@@ -544,6 +544,54 @@ def run_file_origin_e2e(client: MarionetteClient, ws_url: str, password: str, st
         "VFO A lock cleared (LK0)",
     )
 
+    # Map-style cursor-anchored Ctrl+wheel zoom + HUD Center button
+    pre_zoom = client.execute_script(
+        """
+        const surf = document.querySelector('.k4-pan-surface');
+        const rect = surf.getBoundingClientRect();
+        const frame = globalThis.k4App.panadapter.getFrameState().panes.A;
+        const layout = globalThis.k4App.panadapter._renderer.getLayouts()[0];
+        const xPx = layout.specRect.x + layout.specRect.w * 0.75;
+        const anchorRf = K4.SpectrumGeometry.rfFreqFromX(xPx, layout.specRect.x, layout.specRect.w, frame.panCenterHz, frame.userSpanHz);
+        surf.dispatchEvent(new WheelEvent('wheel', {
+          bubbles: true,
+          cancelable: true,
+          ctrlKey: true,
+          deltaY: -120,
+          clientX: rect.left + xPx,
+          clientY: rect.top + layout.specRect.y + 40,
+        }));
+        const postFrame = globalThis.k4App.panadapter.getFrameState().panes.A;
+        const postAnchorRf = K4.SpectrumGeometry.rfFreqFromX(xPx, layout.specRect.x, layout.specRect.w, postFrame.panCenterHz, postFrame.userSpanHz);
+        return {
+          preSpan: frame.userSpanHz,
+          postSpan: postFrame.userSpanHz,
+          anchorRf,
+          postAnchorRf,
+          isOffset: globalThis.k4App.panadapter.isViewportOffset('A'),
+        };
+        """
+    )
+    assert pre_zoom["postSpan"] < pre_zoom["preSpan"], f"Ctrl+wheel did not zoom in: {pre_zoom}"
+    assert pre_zoom["isOffset"] is True, f"Off-center Ctrl+wheel did not mark viewport offset: {pre_zoom}"
+    assert abs(pre_zoom["postAnchorRf"] - pre_zoom["anchorRf"]) <= 50, (
+        f"Ctrl+wheel shifted anchor RF: {pre_zoom}"
+    )
+    assert http_get_json(stats_url)["faHz"] == fa_before_lock, "Ctrl+wheel map zoom must not detune VFO A"
+    wait_until(
+        lambda: client.execute_script(
+            "const b = document.querySelector('[data-testid=\"hud-center-btn\"]'); return b && b.hidden === false;"
+        ),
+        "HUD Center button becomes visible when zoomed off-center",
+    )
+    client.click_element(client.find_element('[data-testid="hud-center-btn"]'))
+    wait_until(
+        lambda: client.execute_script(
+            "const b = document.querySelector('[data-testid=\"hud-center-btn\"]'); return !globalThis.k4App.panadapter.isViewportOffset('A') && b && b.hidden === true;"
+        ),
+        "HUD Center button re-centers viewport and hides",
+    )
+
     # Cmd/Ctrl+K Omnibar jump to 7.074 (7074000 Hz)
     client.click_element(client.find_element('[data-testid="omnibar-btn"]'))
     wait_until(

@@ -53,10 +53,22 @@
       this._pinchStartSpanHz = 48000;
       this._pinchLastSentSpanHz = 0;
       this._pinchRx = 'A';
+      this._pinchPlotLeft = 0;
+      this._pinchPlotWidth = 800;
+      this._pinchAnchorRfHz = 14074000;
+      this._pinchSentFirst = false;
 
+      this._inSafariGesture = false;
+      this._gestureStartSpanHz = 48000;
+      this._gestureAnchorRfHz = 14074000;
+      this._gestureRx = 'A';
+
+      this._axisPanLastX = 0;
       this._lastPanSendMs = -1e9;
       this._lastEdgeSendMs = -1e9;
-      this._lastPinchSendMs = -1e9;
+      this._lastSpanSendMs = -1e9;
+      this._spanFlushTimer = null;
+      this._pendingSpan = null;
       this._lastRightHandledMs = -1e9;
       this._lastLockWarnMs = -1e9;
 
@@ -68,6 +80,10 @@
       this._onContextMenu = this._handleContextMenu.bind(this);
       this._onAuxClick = this._handleAuxClick.bind(this);
       this._onWheel = this._handleWheel.bind(this);
+      this._onDblClick = this._handleDblClick.bind(this);
+      this._onGestureStart = this._handleGestureStart.bind(this);
+      this._onGestureChange = this._handleGestureChange.bind(this);
+      this._onGestureEnd = this._handleGestureEnd.bind(this);
 
       surface.addEventListener('pointerdown', this._onPointerDown);
       surface.addEventListener('pointermove', this._onPointerMove);
@@ -77,6 +93,16 @@
       surface.addEventListener('contextmenu', this._onContextMenu);
       surface.addEventListener('auxclick', this._onAuxClick);
       surface.addEventListener('wheel', this._onWheel, { passive: false });
+      surface.addEventListener('dblclick', this._onDblClick);
+      surface.addEventListener('gesturestart', this._onGestureStart, {
+        passive: false,
+      });
+      surface.addEventListener('gesturechange', this._onGestureChange, {
+        passive: false,
+      });
+      surface.addEventListener('gestureend', this._onGestureEnd, {
+        passive: false,
+      });
     }
 
     _getLocalPoint(e) {
@@ -440,12 +466,74 @@
       }
     }
 
+    _sendSpanThrottled(rx, spanHz, forceImmediate = false) {
+      const clamped = clamp(Math.round(spanHz), 6000, 368000);
+      const now = performance.now();
+      if (forceImmediate || now - this._lastSpanSendMs >= THROTTLE_MS) {
+        if (this._spanFlushTimer) {
+          clearTimeout(this._spanFlushTimer);
+          this._spanFlushTimer = null;
+        }
+        this._pendingSpan = null;
+        this._lastSpanSendMs = now;
+        this._sendSpan(rx, clamped);
+        return;
+      }
+      this._pendingSpan = { rx, spanHz: clamped };
+      if (!this._spanFlushTimer) {
+        const delay = Math.max(8, THROTTLE_MS - (now - this._lastSpanSendMs));
+        this._spanFlushTimer = setTimeout(() => {
+          this._spanFlushTimer = null;
+          if (this._destroyed || !this._pendingSpan) return;
+          const p = this._pendingSpan;
+          this._pendingSpan = null;
+          this._lastSpanSendMs = performance.now();
+          this._sendSpan(p.rx, p.spanHz);
+        }, delay);
+      }
+    }
+
+    _flushPendingSpan() {
+      if (this._pendingSpan) {
+        const p = this._pendingSpan;
+        this._sendSpanThrottled(p.rx, p.spanHz, true);
+      }
+    }
+
     _pinchDist() {
       const pts = Array.from(this._touches.values());
       if (pts.length < 2) return 40;
       const dx = pts[0].x - pts[1].x;
       const dy = pts[0].y - pts[1].y;
-      return Math.max(16, Math.hypot(dx, dy * 0.35));
+      return Math.max(16, Math.hypot(dx, dy));
+    }
+
+    _pinchMidpoint() {
+      const pts = Array.from(this._touches.values());
+      if (pts.length < 2) return { x: 0, y: 0 };
+      return {
+        x: (pts[0].x + pts[1].x) * 0.5,
+        y: (pts[0].y + pts[1].y) * 0.5,
+      };
+    }
+
+    _applyAxisPanDrag(xPx, isFinal) {
+      const hit = this._dragHit;
+      if (!hit || !this.view || typeof this.view.panViewportByHz !== 'function') {
+        return;
+      }
+      const plotW = Math.max(1, hit.layout.specRect.w);
+      const dxStep = xPx - this._axisPanLastX;
+      this._axisPanLastX = xPx;
+      const curSpan =
+        typeof this.view.getVisibleSpanHz === 'function'
+          ? this.view.getVisibleSpanHz(this._dragRx)
+          : hit.userSpanHz;
+      const deltaHz = -(dxStep / plotW) * curSpan;
+      const res = this.view.panViewportByHz(this._dragRx, deltaHz);
+      if (res) {
+        this._sendSpanThrottled(this._dragRx, res.radioSpanHz, Boolean(isFinal));
+      }
     }
 
     _handlePointerDown(e) {
@@ -467,13 +555,26 @@
         }
 
         if (this._touches.size === 2) {
+          const mid = this._pinchMidpoint();
+          const midHit = this._hitTest(mid.x, mid.y) || hit;
           this._dragMode = 'pinch';
           this._wasPinched = true;
           this._dragExceeded = false;
+          this._pinchSentFirst = false;
           this._pinchStartDist = this._pinchDist();
-          this._pinchStartSpanHz = hit ? hit.userSpanHz : 48000;
+          this._pinchStartSpanHz = midHit ? midHit.userSpanHz : 48000;
           this._pinchLastSentSpanHz = this._pinchStartSpanHz;
-          this._pinchRx = hit && hit.paneRx === 'B' ? 'B' : 'A';
+          this._pinchRx = midHit && midHit.paneRx === 'B' ? 'B' : 'A';
+          this._pinchPlotLeft = midHit ? midHit.layout.specRect.x : 0;
+          this._pinchPlotWidth = midHit ? Math.max(1, midHit.layout.specRect.w) : 800;
+          const uMid0 = clamp(
+            (mid.x - this._pinchPlotLeft) / this._pinchPlotWidth,
+            0,
+            1
+          );
+          const center0 = midHit ? midHit.panCenterHz : 14074000;
+          this._pinchAnchorRfHz =
+            center0 + (uMid0 - 0.5) * this._pinchStartSpanHz;
         } else if (this._touches.size === 1) {
           this._wasPinched = false;
           this._dragMode = 'pan';
@@ -526,6 +627,28 @@
         return;
       }
 
+      if (
+        hit &&
+        hit.inAxis &&
+        this.view &&
+        typeof this.view.panViewportByHz === 'function'
+      ) {
+        this._dragMode = 'axis-pan';
+        this._activePointerId = e.pointerId;
+        this._startX = xPx;
+        this._startY = yPx;
+        this._axisPanLastX = xPx;
+        this._dragExceeded = false;
+        this._dragRx = hit.paneRx === 'B' ? 'B' : 'A';
+        this._dragHit = hit;
+        try {
+          this.surface.setPointerCapture(e.pointerId);
+        } catch (_err) {
+          // ignore
+        }
+        return;
+      }
+
       this._dragMode = 'pan';
       this._activePointerId = e.pointerId;
       this._startX = xPx;
@@ -555,16 +678,30 @@
           entry.y = yPx;
         }
         if (this._touches.size === 2 && this._dragMode === 'pinch') {
-          const now = performance.now();
-          if (now - this._lastPinchSendMs < THROTTLE_MS) return;
           const dist = this._pinchDist();
+          const mid = this._pinchMidpoint();
           const ratio = this._pinchStartDist / dist;
-          const targetSpan = this._pinchStartSpanHz * ratio;
-          const nextSpan = SPAN_LADDER_HZ[nearestSpanIndex(targetSpan)];
-          if (nextSpan !== this._pinchLastSentSpanHz) {
-            this._pinchLastSentSpanHz = nextSpan;
-            this._lastPinchSendMs = now;
-            this._sendSpan(this._pinchRx, nextSpan);
+          const targetSpanHz = clamp(this._pinchStartSpanHz * ratio, 6000, 368000);
+          const uMid = clamp(
+            (mid.x - this._pinchPlotLeft) / Math.max(1, this._pinchPlotWidth),
+            0,
+            1
+          );
+          const firstEvent = !this._pinchSentFirst;
+          this._pinchSentFirst = true;
+          if (this.view && typeof this.view.applyMapZoom === 'function') {
+            const res = this.view.applyMapZoom(this._pinchRx, {
+              targetSpanHz,
+              anchorFrac: uMid,
+              anchorFreqHz: this._pinchAnchorRfHz,
+            });
+            this._sendSpanThrottled(this._pinchRx, res.radioSpanHz, firstEvent);
+          } else {
+            const nextSpan = Math.round(targetSpanHz);
+            if (nextSpan !== this._pinchLastSentSpanHz) {
+              this._pinchLastSentSpanHz = nextSpan;
+              this._sendSpanThrottled(this._pinchRx, nextSpan, firstEvent);
+            }
           }
           return;
         }
@@ -596,7 +733,9 @@
       }
 
       if (
-        (this._dragMode === 'edge' || this._dragMode === 'pan') &&
+        (this._dragMode === 'edge' ||
+          this._dragMode === 'pan' ||
+          this._dragMode === 'axis-pan') &&
         e.pointerId === this._activePointerId
       ) {
         if (
@@ -609,6 +748,9 @@
           if (this._dragMode === 'edge') {
             this.surface.style.cursor = 'ew-resize';
             this._applyEdgeDrag(xPx, false);
+          } else if (this._dragMode === 'axis-pan') {
+            this.surface.style.cursor = 'grabbing';
+            this._applyAxisPanDrag(xPx, false);
           } else {
             this.surface.style.cursor = 'grabbing';
             this._applyPanDrag(xPx, Boolean(e.altKey), false);
@@ -617,7 +759,11 @@
         return;
       }
 
-      this.surface.style.cursor = edgeHint ? 'ew-resize' : 'crosshair';
+      this.surface.style.cursor = edgeHint
+        ? 'ew-resize'
+        : hit && hit.inAxis
+        ? 'grab'
+        : 'crosshair';
     }
 
     _handlePointerUp(e) {
@@ -626,6 +772,9 @@
 
       if (e.pointerType === 'touch') {
         this._touches.delete(e.pointerId);
+        if (this._dragMode === 'pinch' && this._touches.size < 2) {
+          this._flushPendingSpan();
+        }
         if (e.type === 'pointerup' && this._touches.size === 0) {
           if (!this._wasPinched) {
             if (this._dragExceeded) {
@@ -654,10 +803,16 @@
         // ignore
       }
 
-      if (this._dragMode === 'edge' || this._dragMode === 'pan') {
+      if (
+        this._dragMode === 'edge' ||
+        this._dragMode === 'pan' ||
+        this._dragMode === 'axis-pan'
+      ) {
         if (this._dragExceeded) {
           if (this._dragMode === 'edge') {
             this._applyEdgeDrag(xPx, true);
+          } else if (this._dragMode === 'axis-pan') {
+            this._applyAxisPanDrag(xPx, true);
           } else {
             this._applyPanDrag(xPx, Boolean(e.altKey), true);
           }
@@ -713,11 +868,34 @@
       if (!hit) return;
 
       if (e.ctrlKey || e.metaKey || hit.inAxis) {
+        if (this._inSafariGesture) return;
+        const modeScale =
+          e.deltaMode === 1 ? 32 : e.deltaMode === 2 ? 320 : 1;
+        const rawDelta =
+          Math.abs(e.deltaY) >= Math.abs(e.deltaX) ? e.deltaY : e.deltaX;
+        const dyPx = rawDelta * modeScale;
+        if (!Number.isFinite(dyPx) || dyPx === 0) return;
+
+        const zoomRate =
+          (e.ctrlKey || e.metaKey) && Math.abs(dyPx) < 50 ? 0.0065 : 0.0032;
+        const factor = Math.exp(clamp(dyPx, -180, 180) * zoomRate);
+        const u = clamp(
+          (xPx - hit.layout.specRect.x) / Math.max(1, hit.layout.specRect.w),
+          0,
+          1
+        );
         const spanRx = hit.paneRx === 'B' ? 'B' : 'A';
-        const curIdx = nearestSpanIndex(hit.userSpanHz);
-        const dir = e.deltaY < 0 ? -1 : 1;
-        const nextIdx = clamp(curIdx + dir, 0, SPAN_LADDER_HZ.length - 1);
-        this._sendSpan(spanRx, SPAN_LADDER_HZ[nextIdx]);
+        if (this.view && typeof this.view.applyMapZoom === 'function') {
+          const res = this.view.applyMapZoom(spanRx, { factor, anchorFrac: u });
+          this._sendSpanThrottled(spanRx, res.radioSpanHz);
+        } else {
+          const nextSpan = clamp(
+            Math.round(hit.userSpanHz * factor),
+            6000,
+            368000
+          );
+          this._sendSpanThrottled(spanRx, nextSpan);
+        }
         return;
       }
 
@@ -777,9 +955,86 @@
       }
     }
 
+    _handleDblClick(e) {
+      if (this._destroyed) return;
+      const { xPx, yPx } = this._getLocalPoint(e);
+      const hit = this._hitTest(xPx, yPx);
+      if (
+        hit &&
+        hit.inAxis &&
+        this.view &&
+        typeof this.view.resetViewport === 'function'
+      ) {
+        if (typeof e.preventDefault === 'function') e.preventDefault();
+        this.view.resetViewport(hit.paneRx, { syncRadioSpan: true });
+      }
+    }
+
+    _handleGestureStart(e) {
+      if (typeof e.preventDefault === 'function') e.preventDefault();
+      if (this._destroyed || !this.view || typeof this.view.applyMapZoom !== 'function') {
+        return;
+      }
+      const { xPx, yPx } = this._getLocalPoint(e);
+      const hit = this._hitTest(xPx, yPx);
+      if (!hit) return;
+      this._inSafariGesture = true;
+      this._gestureRx = hit.paneRx === 'B' ? 'B' : 'A';
+      this._gestureStartSpanHz = hit.userSpanHz;
+      const u = clamp(
+        (xPx - hit.layout.specRect.x) / Math.max(1, hit.layout.specRect.w),
+        0,
+        1
+      );
+      this._gestureAnchorRfHz = hit.panCenterHz + (u - 0.5) * hit.userSpanHz;
+    }
+
+    _handleGestureChange(e) {
+      if (typeof e.preventDefault === 'function') e.preventDefault();
+      if (
+        this._destroyed ||
+        !this._inSafariGesture ||
+        !this.view ||
+        typeof this.view.applyMapZoom !== 'function'
+      ) {
+        return;
+      }
+      const scale = Number(e.scale);
+      if (!Number.isFinite(scale) || scale <= 0) return;
+      const { xPx, yPx } = this._getLocalPoint(e);
+      const hit = this._hitTest(xPx, yPx);
+      const u = hit
+        ? clamp(
+            (xPx - hit.layout.specRect.x) / Math.max(1, hit.layout.specRect.w),
+            0,
+            1
+          )
+        : 0.5;
+      const targetSpanHz = clamp(this._gestureStartSpanHz / scale, 6000, 368000);
+      const res = this.view.applyMapZoom(this._gestureRx, {
+        targetSpanHz,
+        anchorFrac: u,
+        anchorFreqHz: this._gestureAnchorRfHz,
+      });
+      if (res) {
+        this._sendSpanThrottled(this._gestureRx, res.radioSpanHz);
+      }
+    }
+
+    _handleGestureEnd(e) {
+      if (typeof e.preventDefault === 'function') e.preventDefault();
+      this._inSafariGesture = false;
+      this._flushPendingSpan();
+    }
+
     destroy() {
       if (this._destroyed) return;
       this._destroyed = true;
+      if (this._spanFlushTimer) {
+        clearTimeout(this._spanFlushTimer);
+        this._spanFlushTimer = null;
+      }
+      this._pendingSpan = null;
       this.surface.removeEventListener('pointerdown', this._onPointerDown);
       this.surface.removeEventListener('pointermove', this._onPointerMove);
       this.surface.removeEventListener('pointerup', this._onPointerUp);
@@ -788,6 +1043,10 @@
       this.surface.removeEventListener('contextmenu', this._onContextMenu);
       this.surface.removeEventListener('auxclick', this._onAuxClick);
       this.surface.removeEventListener('wheel', this._onWheel);
+      this.surface.removeEventListener('dblclick', this._onDblClick);
+      this.surface.removeEventListener('gesturestart', this._onGestureStart);
+      this.surface.removeEventListener('gesturechange', this._onGestureChange);
+      this.surface.removeEventListener('gestureend', this._onGestureEnd);
     }
   }
 

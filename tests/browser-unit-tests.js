@@ -1652,6 +1652,222 @@
     }
   });
 
+  test('22. Map-style cursor-anchored Ctrl+wheel & 2-finger pinch zoom preserve anchor RF without detuning VFO', () => {
+    const host = document.createElement('div');
+    host.style.width = '800px';
+    host.style.height = '360px';
+    document.body.appendChild(host);
+
+    const state = new K4.RadioState();
+    const spanCalls = [];
+    const tunes = [];
+    const cats = [];
+    const client = {
+      setDisplay: (rx, patch) => {
+        spanCalls.push({ rx, patch });
+        if (patch && Number.isFinite(patch.panSpanHz)) {
+          state.updateRx(rx, { panSpanHz: patch.panSpanHz }, rx === 'B' ? 'rxB.display' : 'rxA.display');
+        }
+      },
+      tune: (rx, hz) => tunes.push({ rx, hz }),
+      sendCat: (cmd) => cats.push(cmd),
+    };
+
+    const view = new K4.PanadapterView({ container: host, state, client, renderer: '2d' });
+    try {
+      const bins = new Uint8Array(1024).fill(42);
+      // Place a peak tone at +12 kHz from 14074000 Hz => 14086000 Hz (u = 0.75 of 48 kHz tier)
+      bins[768] = 110;
+      view.pushPanPacket({
+        type: 2,
+        rx: 'A',
+        centerFreqHz: 14074000,
+        sampleRateKHz: 48,
+        bins,
+      });
+      view._renderNow(false);
+
+      const surface = host.querySelector('.k4-pan-surface');
+      const rect = surface.getBoundingClientRect();
+      const layouts = view._renderer.getLayouts();
+      const specRect = layouts[0].specRect;
+
+      // 1) Ctrl+wheel zoom in at u = 0.75 (14,086,000 Hz)
+      const anchorX = rect.left + specRect.x + specRect.w * 0.75;
+      const anchorY = rect.top + specRect.y + specRect.h * 0.5;
+      const preRf = K4.SpectrumGeometry.rfFreqFromX(
+        specRect.x + specRect.w * 0.75,
+        specRect.x,
+        specRect.w,
+        view.getFrameState().panes.A.panCenterHz,
+        view.getFrameState().panes.A.userSpanHz
+      );
+      assert(Math.abs(preRf - 14086000) < 5, `Pre-zoom RF at u=0.75 is 14086000 (got ${preRf})`);
+
+      surface.dispatchEvent(
+        new WheelEvent('wheel', {
+          bubbles: true,
+          cancelable: true,
+          ctrlKey: true,
+          deltaY: -120,
+          clientX: anchorX,
+          clientY: anchorY,
+        })
+      );
+
+      assertEqual(tunes.length, 0, 'Ctrl+wheel map zoom must NOT detune VFO A/B');
+      assertEqual(state.getSnapshot().rxA.freqHz, 14074000, 'VFO A freqHz stays unchanged');
+      assert(spanCalls.length >= 1, 'Ctrl+wheel requested updated #SPN coverage');
+
+      const frameAfterWheel = view.getFrameState().panes.A;
+      assert(frameAfterWheel.userSpanHz < 48000, `Expected zoomed span < 48000, got ${frameAfterWheel.userSpanHz}`);
+      assert(view.isViewportOffset('A'), 'Off-center zoom marks viewport offset');
+
+      const postRf = K4.SpectrumGeometry.rfFreqFromX(
+        specRect.x + specRect.w * 0.75,
+        specRect.x,
+        specRect.w,
+        frameAfterWheel.panCenterHz,
+        frameAfterWheel.userSpanHz
+      );
+      assert(
+        Math.abs(postRf - preRf) <= 30,
+        `Anchor RF at cursor u=0.75 stayed pinned (before=${preRf}, after=${postRf})`
+      );
+
+      const sentSpan = spanCalls[spanCalls.length - 1].patch.panSpanHz;
+      const neededSpan =
+        frameAfterWheel.userSpanHz + 2 * Math.abs(frameAfterWheel.panCenterHz - 14074000);
+      assert(
+        sentSpan >= neededSpan - 2,
+        `Requested #SPN (${sentSpan}) covers full offset viewport (>= ${neededSpan})`
+      );
+
+      // Verify async K4 #SPN echo preserves custom viewport
+      state.applyParsedCat(K4.CatCodec.parseCommand(`#SPN${sentSpan};`));
+      assertEqual(
+        view.getVisibleSpanHz('A'),
+        frameAfterWheel.userSpanHz,
+        '#SPN echo preserves custom zoomed span'
+      );
+      assert(
+        Math.abs(view.getFrameState().panes.A.panCenterHz - frameAfterWheel.panCenterHz) <= 1,
+        '#SPN echo preserves custom off-center centerHz'
+      );
+
+      // Verify computeViewportCrop places the 14086000 Hz FFT bin (uTier = 768/1023) at uView ~ 0.75
+      const crop = K4.SpectrumGeometry.computeViewportCrop(
+        frameAfterWheel.panCenterHz,
+        frameAfterWheel.userSpanHz,
+        frameAfterWheel.streamCenterHz,
+        48
+      );
+      const peakUView = (0.75 - crop.leftRatio) / crop.spanRatio;
+      assert(
+        Math.abs(peakUView - 0.75) < 0.01,
+        `computeViewportCrop projects 14086000 Hz bin back to cursor u=0.75 (got ${peakUView.toFixed(4)})`
+      );
+
+      // 2) Two-finger touch pinch spread + simultaneous midpoint pan
+      const midRfBeforePinch = K4.SpectrumGeometry.rfFreqFromX(
+        specRect.x + specRect.w * 0.5,
+        specRect.x,
+        specRect.w,
+        frameAfterWheel.panCenterHz,
+        frameAfterWheel.userSpanHz
+      );
+      surface.dispatchEvent(
+        new PointerEvent('pointerdown', {
+          bubbles: true,
+          pointerId: 31,
+          pointerType: 'touch',
+          clientX: rect.left + specRect.x + specRect.w * 0.375,
+          clientY: anchorY,
+        })
+      );
+      surface.dispatchEvent(
+        new PointerEvent('pointerdown', {
+          bubbles: true,
+          pointerId: 32,
+          pointerType: 'touch',
+          clientX: rect.left + specRect.x + specRect.w * 0.625,
+          clientY: anchorY,
+        })
+      );
+      // Double spread (0.25 -> 0.50) and pan midpoint from u=0.50 -> u=0.65
+      surface.dispatchEvent(
+        new PointerEvent('pointermove', {
+          bubbles: true,
+          pointerId: 31,
+          pointerType: 'touch',
+          clientX: rect.left + specRect.x + specRect.w * 0.4,
+          clientY: anchorY,
+        })
+      );
+      surface.dispatchEvent(
+        new PointerEvent('pointermove', {
+          bubbles: true,
+          pointerId: 32,
+          pointerType: 'touch',
+          clientX: rect.left + specRect.x + specRect.w * 0.9,
+          clientY: anchorY,
+        })
+      );
+
+      const frameAfterPinch = view.getFrameState().panes.A;
+      assert(
+        frameAfterPinch.userSpanHz < frameAfterWheel.userSpanHz,
+        `2-finger pinch spread zooms further in (${frameAfterPinch.userSpanHz} < ${frameAfterWheel.userSpanHz})`
+      );
+      const rfAtMovedMid = K4.SpectrumGeometry.rfFreqFromX(
+        specRect.x + specRect.w * 0.65,
+        specRect.x,
+        specRect.w,
+        frameAfterPinch.panCenterHz,
+        frameAfterPinch.userSpanHz
+      );
+      assert(
+        Math.abs(rfAtMovedMid - midRfBeforePinch) <= 50,
+        `Pinch tracks translated midpoint RF (expected=${midRfBeforePinch}, got=${rfAtMovedMid})`
+      );
+      surface.dispatchEvent(
+        new PointerEvent('pointerup', {
+          bubbles: true,
+          pointerId: 31,
+          pointerType: 'touch',
+          clientX: rect.left + specRect.x + specRect.w * 0.4,
+          clientY: anchorY,
+        })
+      );
+      surface.dispatchEvent(
+        new PointerEvent('pointerup', {
+          bubbles: true,
+          pointerId: 32,
+          pointerType: 'touch',
+          clientX: rect.left + specRect.x + specRect.w * 0.9,
+          clientY: anchorY,
+        })
+      );
+      assertEqual(tunes.length, 0, '2-finger pinch + pan never detunes VFO');
+
+      // 3) External preset #SPN change (non-echo) clears custom viewport
+      state.applyParsedCat(K4.CatCodec.parseCommand('#SPN72000;'));
+      assertEqual(view.getVisibleSpanHz('A'), 72000, 'External #SPN72000 overrides custom zoom');
+      assertEqual(view.isViewportOffset('A'), false, 'External #SPN re-centers viewport');
+
+      // 4) Zoom again then resetViewport sends FC;
+      view.applyMapZoom('A', { targetSpanHz: 18000, anchorFrac: 0.75 });
+      assertEqual(view.isViewportOffset('A'), true, 'applyMapZoom off-center sets offset');
+      view.resetViewport('A', { syncRadioSpan: true });
+      assertEqual(view.isViewportOffset('A'), false, 'resetViewport clears offset');
+      assertEqual(view.getMetrics().panCenterHz, 14074000, 'resetViewport returns center to stream center');
+      assert(cats.includes('FC;'), 'resetViewport sends FC;');
+    } finally {
+      view.destroy();
+      host.remove();
+    }
+  });
+
   async function runAll() {
     const resultsEl = document.getElementById('results');
     const summaryEl = document.getElementById('summary');
