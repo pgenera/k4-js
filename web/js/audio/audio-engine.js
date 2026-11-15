@@ -8,6 +8,7 @@
   const DRIFT_NUDGE = 0.002;
   const UNDERRUN_FADE_SAMPLES = 16;
   const AF_FFT_SIZE = 1024;
+  const AF_FFT_MASK = AF_FFT_SIZE - 1;
   const AF_TAP_SAMPLE_RATE = 12000;
   const MAX_RECORD_SECONDS = 300;
   const TX_SAMPLE_RATE = 12000;
@@ -22,6 +23,24 @@
   const VALID_MIX_MODES = new Set([
     'A.B', 'AB.AB', 'A.-A', 'A.AB', 'AB.B', 'AB.A', 'B.AB', 'B.B', 'B.A', 'A.A',
   ]);
+
+  const MODE_LABEL_FALLBACK = Object.freeze({
+    1: 'LSB',
+    2: 'USB',
+    3: 'CW',
+    4: 'FM',
+    5: 'AM',
+    6: 'DATA',
+    7: 'CW-R',
+    9: 'DATA-R',
+  });
+
+  const DATA_SUBMODE_FALLBACK = Object.freeze({
+    0: 'DATA-A',
+    1: 'AFSK-A',
+    2: 'FSK-D',
+    3: 'PSK-D',
+  });
 
   function clamp(v, min, max) {
     return v < min ? min : (v > max ? max : v);
@@ -249,8 +268,175 @@
     return { win, sum };
   }
 
+  function buildFftTwiddles(n) {
+    const stages = [];
+    for (let size = 2; size <= n; size <<= 1) {
+      const half = size >> 1;
+      const wRe = new Float64Array(half);
+      const wIm = new Float64Array(half);
+      const step = (-2 * Math.PI) / size;
+      for (let j = 0; j < half; j++) {
+        const angle = step * j;
+        wRe[j] = Math.cos(angle);
+        wIm[j] = Math.sin(angle);
+      }
+      stages.push({ size, half, wRe, wIm });
+    }
+    return stages;
+  }
+
   const AF_BIT_REV = buildBitRevTable(AF_FFT_SIZE);
   const AF_HANN = buildHannWindow(AF_FFT_SIZE);
+  const AF_TWIDDLE_STAGES = buildFftTwiddles(AF_FFT_SIZE);
+
+  function getMediaSession() {
+    const nav = typeof navigator !== 'undefined' ? navigator : globalThis.navigator;
+    if (nav && 'mediaSession' in nav && nav.mediaSession) {
+      return nav.mediaSession;
+    }
+    return null;
+  }
+
+  function formatFreqMHz(hz) {
+    const absHz = Math.round(Math.abs(hz));
+    const mhz = Math.floor(absHz / 1000000);
+    const khz = Math.floor((absHz % 1000000) / 1000);
+    const sub = absHz % 1000;
+    return (
+      (hz < 0 ? '-' : '') +
+      mhz +
+      '.' +
+      String(khz).padStart(3, '0') +
+      '.' +
+      String(sub).padStart(3, '0')
+    );
+  }
+
+  function resolveFreqDisplay(val) {
+    if (val === null || val === undefined) return '';
+    if (typeof val === 'object') {
+      return resolveFreqDisplay(val.freqHz);
+    }
+    if (typeof val === 'number' && Number.isFinite(val)) {
+      return formatFreqMHz(val) + ' MHz';
+    }
+    if (typeof val === 'string') {
+      const s = val.trim();
+      if (!s) return '';
+      if (/^\d+$/.test(s)) {
+        const n = Number(s);
+        if (Number.isFinite(n)) return formatFreqMHz(n) + ' MHz';
+      }
+      return s.endsWith('MHz') || s.endsWith('kHz') ? s : s + ' MHz';
+    }
+    return '';
+  }
+
+  function resolveModeDisplay(modeVal, rxObj) {
+    if (modeVal !== undefined && modeVal !== null && modeVal !== '') {
+      if (typeof modeVal === 'string') return modeVal.trim();
+      if (typeof modeVal === 'number') {
+        if ((modeVal === 6 || modeVal === 9) && rxObj && rxObj.dataSubMode !== undefined) {
+          const subMap = K4.DATA_SUBMODES || DATA_SUBMODE_FALLBACK;
+          const subLabel = subMap[rxObj.dataSubMode] || 'DATA-A';
+          return modeVal === 9 ? `${subLabel} R` : subLabel;
+        }
+        const mInfo = K4.MODES && K4.MODES[modeVal];
+        return (mInfo && (mInfo.label || mInfo.key)) || MODE_LABEL_FALLBACK[modeVal] || '';
+      }
+    }
+    if (rxObj && typeof rxObj === 'object') {
+      if (typeof rxObj.modeLabel === 'string' && rxObj.modeLabel.trim()) {
+        return rxObj.modeLabel.trim();
+      }
+      if (typeof rxObj.mode === 'number' || typeof rxObj.mode === 'string') {
+        return resolveModeDisplay(rxObj.mode, rxObj);
+      }
+    }
+    return '';
+  }
+
+  function resolveBandDisplay(freqHzOrObj, rxObj) {
+    if (rxObj && rxObj.band && (rxObj.band.label || rxObj.band.id)) {
+      return rxObj.band.label || rxObj.band.id;
+    }
+    const hz = typeof freqHzOrObj === 'number'
+      ? freqHzOrObj
+      : (rxObj && typeof rxObj.freqHz === 'number' ? rxObj.freqHz : NaN);
+    if (Number.isFinite(hz) && Array.isArray(K4.BANDS)) {
+      for (let i = 0; i < K4.BANDS.length; i++) {
+        const b = K4.BANDS[i];
+        if (hz >= b.startHz && hz <= b.endHz) {
+          return b.label || b.id || '';
+        }
+      }
+    }
+    return '';
+  }
+
+  function computeLinearMixWeights(gainA, gainB, subRxEnabled, balance, mixMode, outWeights) {
+    const gA = clamp(gainA, 0, 1);
+    const gB = subRxEnabled ? clamp(gainB, 0, 1) : 0;
+    const bal = clamp(balance, -1, 1);
+    const balL = bal > 0 ? 1.0 - bal : 1.0;
+    const balR = bal < 0 ? 1.0 + bal : 1.0;
+    const abA = subRxEnabled ? 0.5 * gA : gA;
+    const abB = subRxEnabled ? 0.5 * gB : 0;
+
+    let wLA = gA;
+    let wLB = 0;
+    let wRA = gA;
+    let wRB = 0;
+
+    switch (mixMode) {
+      case 'A.B':
+        wLA = gA; wLB = 0;
+        wRA = subRxEnabled ? 0 : gA; wRB = subRxEnabled ? gB : 0;
+        break;
+      case 'AB.AB':
+        wLA = abA; wLB = abB;
+        wRA = abA; wRB = abB;
+        break;
+      case 'A.-A':
+        wLA = gA; wLB = 0;
+        wRA = -gA; wRB = 0;
+        break;
+      case 'A.AB':
+        wLA = gA; wLB = 0;
+        wRA = abA; wRB = abB;
+        break;
+      case 'AB.B':
+        wLA = abA; wLB = abB;
+        wRA = 0; wRB = gB;
+        break;
+      case 'AB.A':
+        wLA = abA; wLB = abB;
+        wRA = gA; wRB = 0;
+        break;
+      case 'B.AB':
+        wLA = 0; wLB = gB;
+        wRA = abA; wRB = abB;
+        break;
+      case 'B.B':
+        wLA = 0; wLB = gB;
+        wRA = 0; wRB = gB;
+        break;
+      case 'B.A':
+        wLA = 0; wLB = gB;
+        wRA = gA; wRB = 0;
+        break;
+      case 'A.A':
+      default:
+        wLA = gA; wLB = 0;
+        wRA = gA; wRB = 0;
+        break;
+    }
+
+    outWeights[0] = wLA * balL;
+    outWeights[1] = wLB * balL;
+    outWeights[2] = wRA * balR;
+    outWeights[3] = wRB * balR;
+  }
 
   /**
    * Browser Web Audio receiver engine supporting K4 PCM (EM0/EM1) and WebCodecs Opus (EM2/EM3),
@@ -262,6 +448,8 @@
     constructor(opts = {}) {
       super();
       this.state = opts.state || null;
+      this._onMuteChange = typeof opts.onMuteChange === 'function' ? opts.onMuteChange : null;
+      this._onMediaAction = typeof opts.onMediaAction === 'function' ? opts.onMediaAction : null;
 
       this._ctx = null;
       this._workletNode = null;
@@ -284,7 +472,31 @@
       this._lastStateSl = 2;
       this._lastStateEncodeMode = 1;
       this._lastConnStatus = 'disconnected';
+      this._lastRttMs = null;
+      this._lastStateRttMs = null;
       this._unsubState = null;
+
+      // OS MediaSession & silent <audio> keep-alive state
+      this._keepAliveAudio = null;
+      this._keepAliveBlobUrl = null;
+      this._mediaMetaKey = '';
+      this._mediaHandlersRegistered = false;
+      this._lastMetaFreqA = null;
+      this._lastMetaModeA = null;
+      this._lastMetaDataA = null;
+      this._lastMetaFreqB = null;
+      this._lastMetaModeB = null;
+      this._lastMetaDataB = null;
+      this._lastMetaSubRx = null;
+      this._lastMetaRadioId = null;
+
+      // Performance telemetry counters
+      this._perf = {
+        afFftRuns: 0,
+        afFftSkips: 0,
+        mediaMetaUpdates: 0,
+        mediaMetaSkips: 0,
+      };
 
       if (this.state) {
         this._hydrateInitialState(this.state);
@@ -303,6 +515,8 @@
       this._resampLastSrcRate = 0;
       this._resampScratchL = new Float32Array(4096);
       this._resampScratchR = new Float32Array(4096);
+      this._workletMsgScratch = { type: 'audio', main: null, sub: null };
+      this._workletTransferScratch = [null, null];
 
       // ScriptProcessor underrun fade state
       this._hasPlayed = false;
@@ -343,6 +557,11 @@
       this._fftIm = new Float32Array(AF_FFT_SIZE);
       this._afBinsDb = new Float32Array(AF_FFT_SIZE >> 1).fill(-110);
       this._afHasComputed = false;
+      this._afWriteGen = 0;
+      this._lastAfGen = -1;
+      this._lastAfMaxHz = 0;
+      this._lastAfResult = null;
+      this._tapMixWeights = new Float64Array(4);
       this._tapMixOpts = {
         gainA: 1,
         gainB: 1,
@@ -414,6 +633,18 @@
       this._micOpenPromise = null;
     }
 
+    get ctx() {
+      return this._ctx;
+    }
+
+    get running() {
+      return this._started;
+    }
+
+    get muted() {
+      return this._muted;
+    }
+
     _readSnapshot(stateObj) {
       if (!stateObj) return null;
       if (typeof stateObj.getSnapshot === 'function') return stateObj.getSnapshot();
@@ -444,8 +675,18 @@
       this._lastStateEncodeMode = em;
       this._encodeMode = em;
 
-      if (snap.connection && snap.connection.status) {
-        this._lastConnStatus = snap.connection.status;
+      if (snap.connection) {
+        if (snap.connection.status) {
+          this._lastConnStatus = snap.connection.status;
+        }
+        if (
+          typeof snap.connection.rttMs === 'number' &&
+          Number.isFinite(snap.connection.rttMs) &&
+          snap.connection.rttMs >= 0
+        ) {
+          this._lastStateRttMs = snap.connection.rttMs;
+          this._lastRttMs = snap.connection.rttMs;
+        }
       }
     }
 
@@ -484,11 +725,54 @@
         }
       }
 
-      const connStatus = snap.connection && snap.connection.status;
+      const conn = snap.connection;
+      const connStatus = conn && conn.status;
       if (connStatus && connStatus !== this._lastConnStatus) {
         this._lastConnStatus = connStatus;
         if (connStatus === 'disconnected' || connStatus === 'connecting') {
           this._expectedSeq = null;
+        }
+      }
+
+      if (conn) {
+        const nextRtt = typeof conn.rttMs === 'number' && Number.isFinite(conn.rttMs) && conn.rttMs >= 0
+          ? conn.rttMs
+          : null;
+        if (nextRtt !== this._lastStateRttMs) {
+          this._lastStateRttMs = nextRtt;
+          this._lastRttMs = nextRtt;
+        }
+      }
+
+      if (this._started && getMediaSession()) {
+        const rxA = snap.rxA;
+        const rxB = snap.rxB;
+        const fA = rxA ? rxA.freqHz : 0;
+        const mA = rxA ? rxA.mode : 0;
+        const dA = rxA ? rxA.dataSubMode : 0;
+        const fB = rxB ? rxB.freqHz : 0;
+        const mB = rxB ? rxB.mode : 0;
+        const dB = rxB ? rxB.dataSubMode : 0;
+        const rid = conn ? conn.radioId : '';
+        if (
+          fA !== this._lastMetaFreqA ||
+          mA !== this._lastMetaModeA ||
+          dA !== this._lastMetaDataA ||
+          fB !== this._lastMetaFreqB ||
+          mB !== this._lastMetaModeB ||
+          dB !== this._lastMetaDataB ||
+          subOn !== this._lastMetaSubRx ||
+          rid !== this._lastMetaRadioId
+        ) {
+          this._lastMetaFreqA = fA;
+          this._lastMetaModeA = mA;
+          this._lastMetaDataA = dA;
+          this._lastMetaFreqB = fB;
+          this._lastMetaModeB = mB;
+          this._lastMetaDataB = dB;
+          this._lastMetaSubRx = subOn;
+          this._lastMetaRadioId = rid;
+          this.updateMediaMetadata(snap);
         }
       }
 
@@ -526,6 +810,7 @@
             if (p && typeof p.catch === 'function') p.catch(() => {});
           } catch (_) {}
         }
+        this._setupMediaSession();
         return Promise.resolve({ started: true, sinkType: this._sinkType });
       }
       if (this._startingPromise) return this._startingPromise;
@@ -537,6 +822,9 @@
     }
 
     async _startInternal() {
+      if (this._destroyed) {
+        return { started: false, sinkType: 'none' };
+      }
       const ctx = this._createAudioContext();
       if (!ctx) {
         this._sinkType = 'none';
@@ -576,6 +864,13 @@
             ctx.audioWorklet.addModule(dataUrl),
             new Promise((_, reject) => setTimeout(() => reject(new Error('AudioWorklet timeout')), 1500)),
           ]);
+          if (this._destroyed || this._ctx !== ctx) {
+            try {
+              const p = ctx.close();
+              if (p && typeof p.catch === 'function') p.catch(() => {});
+            } catch (_) {}
+            return { started: false, sinkType: 'none' };
+          }
           const node = new globalThis.AudioWorkletNode(ctx, 'k4-audio-processor', {
             numberOfInputs: 0,
             numberOfOutputs: 1,
@@ -604,6 +899,10 @@
         }
       }
 
+      if (this._destroyed || this._ctx !== ctx) {
+        return { started: false, sinkType: 'none' };
+      }
+
       if (!workletReady) {
         if (typeof ctx.createScriptProcessor === 'function') {
           const sp = ctx.createScriptProcessor(1024, 0, 2);
@@ -624,6 +923,7 @@
       }
 
       this._started = true;
+      this._setupMediaSession();
       const diag = this.getDiagnostics();
       this.emit('started', diag);
       this.emit('diagnostics', diag);
@@ -671,12 +971,276 @@
       });
     }
 
+    _createSilentKeepAliveWavUrl() {
+      if (
+        typeof globalThis.Blob !== 'function' ||
+        typeof globalThis.URL === 'undefined' ||
+        typeof globalThis.URL.createObjectURL !== 'function'
+      ) {
+        return null;
+      }
+      try {
+        const wavBytes = encodeWavPcm16([], 8000, 8000, 1);
+        const blob = new globalThis.Blob([wavBytes], { type: 'audio/wav' });
+        return globalThis.URL.createObjectURL(blob);
+      } catch (_) {
+        return null;
+      }
+    }
+
+    _ensureKeepAliveAudio() {
+      if (this._keepAliveAudio) return this._keepAliveAudio;
+      if (typeof document === 'undefined' || !document || typeof document.createElement !== 'function') {
+        return null;
+      }
+      const url = this._createSilentKeepAliveWavUrl();
+      if (!url) return null;
+      try {
+        const audioEl = document.createElement('audio');
+        if (!audioEl) {
+          try { globalThis.URL.revokeObjectURL(url); } catch (_) {}
+          return null;
+        }
+        audioEl.loop = true;
+        audioEl.volume = 1.0;
+        audioEl.muted = false;
+        audioEl.preload = 'auto';
+        audioEl.hidden = true;
+        if (audioEl.style) audioEl.style.display = 'none';
+        if (typeof audioEl.setAttribute === 'function') {
+          audioEl.setAttribute('aria-hidden', 'true');
+          audioEl.setAttribute('data-k4-media-keepalive', 'true');
+        }
+        audioEl.src = url;
+        if (document.body && typeof document.body.appendChild === 'function') {
+          document.body.appendChild(audioEl);
+        }
+        this._keepAliveBlobUrl = url;
+        this._keepAliveAudio = audioEl;
+        return audioEl;
+      } catch (_) {
+        try { globalThis.URL.revokeObjectURL(url); } catch (_) {}
+        return null;
+      }
+    }
+
+    _setupMediaSession() {
+      this._ensureKeepAliveAudio();
+      const ms = getMediaSession();
+      if (ms && !this._mediaHandlersRegistered && typeof ms.setActionHandler === 'function') {
+        const setHandler = (action, fn) => {
+          try {
+            ms.setActionHandler(action, fn);
+          } catch (_) {}
+        };
+        setHandler('play', () => this._handleMediaSessionAction('play'));
+        setHandler('pause', () => this._handleMediaSessionAction('pause'));
+        setHandler('stop', () => this._handleMediaSessionAction('stop'));
+        this._mediaHandlersRegistered = true;
+      }
+      if (this.state) {
+        this.updateMediaMetadata(this._readSnapshot(this.state));
+      }
+      this._syncMediaSessionPlayback();
+    }
+
+    _teardownMediaSession() {
+      if (this._keepAliveAudio) {
+        const el = this._keepAliveAudio;
+        this._keepAliveAudio = null;
+        try {
+          if (typeof el.pause === 'function') {
+            el.pause();
+          }
+          if (typeof el.removeAttribute === 'function') {
+            el.removeAttribute('src');
+          }
+          if (el.parentNode && typeof el.parentNode.removeChild === 'function') {
+            el.parentNode.removeChild(el);
+          }
+        } catch (_) {}
+      }
+      if (this._keepAliveBlobUrl) {
+        const url = this._keepAliveBlobUrl;
+        this._keepAliveBlobUrl = null;
+        try {
+          if (typeof globalThis.URL !== 'undefined' && typeof globalThis.URL.revokeObjectURL === 'function') {
+            globalThis.URL.revokeObjectURL(url);
+          }
+        } catch (_) {}
+      }
+      const ms = getMediaSession();
+      if (ms) {
+        if (this._mediaHandlersRegistered && typeof ms.setActionHandler === 'function') {
+          const actions = ['play', 'pause', 'stop'];
+          for (let i = 0; i < actions.length; i++) {
+            try {
+              ms.setActionHandler(actions[i], null);
+            } catch (_) {}
+          }
+        }
+        try {
+          ms.playbackState = 'none';
+          ms.metadata = null;
+        } catch (_) {}
+      }
+      this._mediaHandlersRegistered = false;
+      this._mediaMetaKey = '';
+      this._lastMetaFreqA = null;
+      this._lastMetaModeA = null;
+      this._lastMetaDataA = null;
+      this._lastMetaFreqB = null;
+      this._lastMetaModeB = null;
+      this._lastMetaDataB = null;
+      this._lastMetaSubRx = null;
+      this._lastMetaRadioId = null;
+    }
+
+    _syncMediaSessionPlayback() {
+      const ms = getMediaSession();
+      if (!this._started) {
+        if (this._keepAliveAudio && typeof this._keepAliveAudio.pause === 'function') {
+          try { this._keepAliveAudio.pause(); } catch (_) {}
+        }
+        if (ms) {
+          try { ms.playbackState = 'none'; } catch (_) {}
+        }
+        return;
+      }
+      if (this._muted) {
+        if (this._keepAliveAudio && typeof this._keepAliveAudio.pause === 'function') {
+          try { this._keepAliveAudio.pause(); } catch (_) {}
+        }
+        if (ms) {
+          try { ms.playbackState = 'paused'; } catch (_) {}
+        }
+      } else {
+        if (this._keepAliveAudio && typeof this._keepAliveAudio.play === 'function') {
+          try {
+            const p = this._keepAliveAudio.play();
+            if (p && typeof p.catch === 'function') p.catch(() => {});
+          } catch (_) {}
+        }
+        if (ms) {
+          try { ms.playbackState = 'playing'; } catch (_) {}
+        }
+      }
+    }
+
+    _emitMediaAction(action, muted) {
+      const payload = {
+        action,
+        muted: Boolean(muted),
+        diagnostics: this.getDiagnostics(),
+      };
+      if (this._onMediaAction) {
+        try { this._onMediaAction(payload); } catch (_) {}
+      }
+      this.emit('mediaAction', payload);
+    }
+
+    _handleMediaSessionAction(action) {
+      if (this._destroyed) return;
+      if (action === 'pause') {
+        this.setMuted(true);
+        this._emitMediaAction('pause', this._muted);
+      } else if (action === 'play') {
+        if (!this._started) {
+          this.start().then((res) => {
+            if (res && res.started) {
+              this.setMuted(false);
+              this._emitMediaAction('play', this._muted);
+            }
+          }).catch(() => {});
+          return;
+        }
+        if (this._ctx && this._ctx.state === 'suspended' && typeof this._ctx.resume === 'function') {
+          try {
+            const p = this._ctx.resume();
+            if (p && typeof p.catch === 'function') p.catch(() => {});
+          } catch (_) {}
+        }
+        if (this._muted) {
+          this.setMuted(false);
+        } else {
+          this._syncMediaSessionPlayback();
+        }
+        this._emitMediaAction('play', this._muted);
+      } else if (action === 'stop') {
+        this.setMuted(true);
+        this.stop();
+        this._emitMediaAction('stop', true);
+      }
+    }
+
+    /**
+     * Update OS MediaSession metadata from a RadioState snapshot or { vfoA, vfoB, modeA, modeB, subRx }.
+     * Dirty-checked: assigns MediaMetadata only when the formatted metadata key changes.
+     * @param {Object} [info]
+     * @returns {boolean} True when metadata changed and was updated.
+     */
+    updateMediaMetadata(info) {
+      const ms = getMediaSession();
+      if (!ms || typeof globalThis.MediaMetadata !== 'function') return false;
+
+      const src = info || (this.state ? this._readSnapshot(this.state) : null);
+      if (!src || typeof src !== 'object') return false;
+
+      const rxA = src.rxA && typeof src.rxA === 'object' ? src.rxA : null;
+      const rxB = src.rxB && typeof src.rxB === 'object' ? src.rxB : null;
+      const subRx = src.subRx !== undefined ? Boolean(src.subRx) : Boolean(src.subRxEnabled);
+
+      const freqA = resolveFreqDisplay(src.vfoA !== undefined ? src.vfoA : (rxA ? rxA.freqHz : null));
+      const modeA = resolveModeDisplay(src.modeA, rxA);
+      const freqB = subRx ? resolveFreqDisplay(src.vfoB !== undefined ? src.vfoB : (rxB ? rxB.freqHz : null)) : '';
+      const modeB = subRx ? resolveModeDisplay(src.modeB, rxB) : '';
+
+      const partA = [freqA, modeA].filter(Boolean).join(' ');
+      const partB = subRx ? [freqB, modeB].filter(Boolean).join(' ') : '';
+      const title = partB
+        ? (partA ? `A ${partA} · B ${partB}` : `B ${partB}`)
+        : (partA || 'Elecraft K4 Receiver');
+
+      const artist = 'Elecraft K4';
+      const bandLabel = resolveBandDisplay(src.vfoA, rxA);
+      const radioId = (src.connection && src.connection.radioId) || src.radioId || '';
+      const albumParts = [];
+      if (radioId) albumParts.push(String(radioId));
+      albumParts.push(subRx ? 'Main + Sub RX' : 'Main RX');
+      if (bandLabel) albumParts.push(bandLabel);
+      const album = albumParts.join(' · ');
+
+      const key = `${title}|${artist}|${album}`;
+      if (key === this._mediaMetaKey) {
+        this._perf.mediaMetaSkips += 1;
+        return false;
+      }
+      this._mediaMetaKey = key;
+      this._perf.mediaMetaUpdates += 1;
+
+      try {
+        ms.metadata = new globalThis.MediaMetadata({ title, artist, album });
+      } catch (_) {}
+      return true;
+    }
+
     setMuted(muted) {
       const next = Boolean(muted);
       if (this._muted === next) return;
       this._muted = next;
+      if (!next && this._started && this._ctx && this._ctx.state === 'suspended' && typeof this._ctx.resume === 'function') {
+        try {
+          const p = this._ctx.resume();
+          if (p && typeof p.catch === 'function') p.catch(() => {});
+        } catch (_) {}
+      }
       this._syncWorkletConfig();
+      this._syncMediaSessionPlayback();
       const diag = this.getDiagnostics();
+      if (this._onMuteChange) {
+        try { this._onMuteChange(next, diag); } catch (_) {}
+      }
+      this.emit('mute', next, diag);
       this.emit('change', diag);
       this.emit('diagnostics', diag);
     }
@@ -931,10 +1495,17 @@
         if (outCount > 0) {
           const main = this._resampScratchL.slice(0, outCount);
           const sub = this._resampScratchR.slice(0, outCount);
-          this._workletNode.port.postMessage(
-            { type: 'audio', main, sub },
-            [main.buffer, sub.buffer]
-          );
+          const msg = this._workletMsgScratch;
+          msg.main = main;
+          msg.sub = sub;
+          const xfer = this._workletTransferScratch;
+          xfer[0] = main.buffer;
+          xfer[1] = sub.buffer;
+          this._workletNode.port.postMessage(msg, xfer);
+          msg.main = null;
+          msg.sub = null;
+          xfer[0] = null;
+          xfer[1] = null;
           this._workletSamplesPushedSinceStats += outCount;
         }
         return;
@@ -1045,9 +1616,76 @@
       }
     }
 
+    /**
+     * Store latest measured WebSocket RTT (ms) for end-to-end latency breakdown calculations.
+     * @param {number|null} rttMs
+     * @returns {number|null}
+     */
+    updateNetworkRtt(rttMs) {
+      if (rttMs === null || rttMs === undefined || rttMs === '') {
+        this._lastRttMs = null;
+      } else {
+        const n = Number(rttMs);
+        this._lastRttMs = Number.isFinite(n) && n >= 0 ? n : null;
+      }
+      return this._lastRttMs;
+    }
+
+    /**
+     * Compute end-to-end RX and TX latency breakdown from network RTT, jitter buffer, and WebAudio latencies.
+     * @param {number|null} [rttMs=this._lastRttMs]
+     * @returns {Object}
+     */
+    getLatencyBreakdown(rttMs = this._lastRttMs) {
+      const hasRtt =
+        rttMs !== null &&
+        rttMs !== undefined &&
+        rttMs !== '' &&
+        Number.isFinite(Number(rttMs)) &&
+        Number(rttMs) >= 0;
+      const validRtt = hasRtt ? Number(rttMs) : null;
+      const bufferMs = this.getBufferMs();
+      const ctx = this._ctx;
+      const baseLatencySec = ctx && Number.isFinite(ctx.baseLatency) ? Math.max(0, ctx.baseLatency) : 0;
+      const outputLatencySec = ctx && Number.isFinite(ctx.outputLatency) ? Math.max(0, ctx.outputLatency) : 0;
+      const txCtx = this._txCtx || ctx;
+      const txBaseLatencySec = txCtx && Number.isFinite(txCtx.baseLatency) ? Math.max(0, txCtx.baseLatency) : 0;
+
+      const rxNetHalfRttMs = validRtt !== null ? Math.round(validRtt / 2) : null;
+      const rxFrameMs = TX_CHUNK_MS; // 20 ms server audio packetization frame
+      const rxJitterMs = Math.round(bufferMs);
+      const rxAudioOutMs = Math.round((baseLatencySec + outputLatencySec) * 1000);
+      const localPipelineMs = Math.round(rxFrameMs + bufferMs + rxAudioOutMs);
+      const isRxRunning = Boolean(this._started && !this._muted);
+      const e2eRxMs = isRxRunning && validRtt !== null
+        ? Math.round(validRtt / 2 + rxFrameMs + bufferMs + rxAudioOutMs)
+        : null;
+      const e2eTxMs = validRtt !== null
+        ? Math.round(validRtt / 2 + TX_CHUNK_MS + txBaseLatencySec * 1000)
+        : null;
+
+      return {
+        rttMs: validRtt,
+        rxNetHalfRttMs,
+        rxFrameMs,
+        rxJitterMs,
+        rxAudioOutMs,
+        localPipelineMs,
+        e2eRxMs,
+        e2eTxMs,
+        txChunkMs: TX_CHUNK_MS,
+        baseLatency: baseLatencySec,
+        outputLatency: outputLatencySec,
+        baseLatencyMs: Math.round(baseLatencySec * 1000),
+        outputLatencyMs: Math.round(outputLatencySec * 1000),
+      };
+    }
+
     getDiagnostics() {
+      const latency = this.getLatencyBreakdown();
       return {
         started: this._started,
+        running: this._started,
         muted: this._muted,
         sinkType: this._sinkType,
         encodeMode: this._encodeMode,
@@ -1064,6 +1702,19 @@
         micState: this._micState,
         micDeviceLabel: this._micDeviceLabel,
         micError: this._micError,
+        rttMs: latency.rttMs,
+        txChunkMs: latency.txChunkMs,
+        baseLatency: latency.baseLatency,
+        outputLatency: latency.outputLatency,
+        baseLatencyMs: latency.baseLatencyMs,
+        outputLatencyMs: latency.outputLatencyMs,
+        rxNetHalfRttMs: latency.rxNetHalfRttMs,
+        rxFrameMs: latency.rxFrameMs,
+        rxJitterMs: latency.rxJitterMs,
+        rxAudioOutMs: latency.rxAudioOutMs,
+        localPipelineMs: latency.localPipelineMs,
+        e2eRxMs: latency.e2eRxMs,
+        e2eTxMs: latency.e2eTxMs,
       };
     }
 
@@ -1807,39 +2458,42 @@
       if (len <= 0) return;
       const stride = Math.max(1, Math.round((srcRate || AF_TAP_SAMPLE_RATE) / AF_TAP_SAMPLE_RATE));
 
-      const opts = this._tapMixOpts;
-      opts.gainA = this._gainA;
-      opts.gainB = this._gainB;
-      opts.subRxEnabled = this._subRxEnabled;
-      opts.muted = false; // Scope & recorder capture post-mix AF regardless of local mute
-      opts.balance = this._balance;
-      opts.mixMode = this._mixMode;
+      const weights = this._tapMixWeights;
+      computeLinearMixWeights(
+        this._gainA,
+        this._gainB,
+        this._subRxEnabled,
+        this._balance,
+        this._mixMode,
+        weights
+      );
+      const wLA = weights[0];
+      const wLB = weights[1];
+      const wRA = weights[2];
+      const wRB = weights[3];
 
-      const mixFn = K4.mixStereoSample;
-      const sc = this._tapMixScratch;
+      const fftRing = this._fftRing;
+      let writeIdx = this._fftWriteIdx;
+      let filled = this._fftFilled;
+      const recActive = this._recActive;
 
       for (let i = 0; i < len; i += stride) {
-        const m = leftSrc[i];
-        const s = rightSrc[i];
-        let outL;
-        let outR;
-        if (mixFn) {
-          mixFn(m, s, opts, sc);
-          outL = sc.left;
-          outR = sc.right;
-        } else {
-          outL = m * this._gainA;
-          outR = this._subRxEnabled ? s * this._gainB : outL;
+        const rawM = leftSrc[i];
+        const rawS = rightSrc[i];
+        const m = Number.isFinite(rawM) ? rawM : 0;
+        const s = Number.isFinite(rawS) ? rawS : 0;
+        const lRaw = wLA * m + wLB * s;
+        const rRaw = wRA * m + wRB * s;
+        const outL = lRaw < -1 ? -1 : (lRaw > 1 ? 1 : lRaw);
+        const outR = rRaw < -1 ? -1 : (rRaw > 1 ? 1 : rRaw);
+
+        fftRing[writeIdx] = 0.5 * (outL + outR);
+        writeIdx = (writeIdx + 1) & AF_FFT_MASK;
+        if (filled < AF_FFT_SIZE) {
+          filled += 1;
         }
 
-        const mono = 0.5 * (outL + outR);
-        this._fftRing[this._fftWriteIdx] = mono;
-        this._fftWriteIdx = (this._fftWriteIdx + 1) % AF_FFT_SIZE;
-        if (this._fftFilled < AF_FFT_SIZE) {
-          this._fftFilled += 1;
-        }
-
-        if (this._recActive) {
+        if (recActive && this._recActive) {
           if (this._recTotalFrames >= AF_TAP_SAMPLE_RATE * MAX_RECORD_SECONDS) {
             this.stopRecording();
           } else {
@@ -1850,14 +2504,16 @@
               this._recCurChunk = new Int16Array(AF_TAP_SAMPLE_RATE * 2);
               this._recCurIdx = 0;
             }
-            const lClamped = clamp(outL, -1, 1);
-            const rClamped = clamp(outR, -1, 1);
-            this._recCurChunk[this._recCurIdx++] = Math.round(lClamped * 32767);
-            this._recCurChunk[this._recCurIdx++] = Math.round(rClamped * 32767);
+            this._recCurChunk[this._recCurIdx++] = Math.round(outL * 32767);
+            this._recCurChunk[this._recCurIdx++] = Math.round(outR * 32767);
             this._recTotalFrames += 1;
           }
         }
       }
+
+      this._fftWriteIdx = writeIdx;
+      this._fftFilled = filled;
+      this._afWriteGen += 1;
     }
 
     /**
@@ -1867,76 +2523,101 @@
      * @returns {{ binsDb: Float32Array, binHz: number, sampleRate: number, maxHz: number, hasSignal: boolean }}
      */
     getAfSpectrum(maxHz = 3200) {
+      const resolvedMaxHz = maxHz || 3200;
+      if (
+        this._lastAfResult &&
+        this._lastAfGen === this._afWriteGen &&
+        this._lastAfMaxHz === resolvedMaxHz
+      ) {
+        this._perf.afFftSkips += 1;
+        return this._lastAfResult;
+      }
+
       const binHz = AF_TAP_SAMPLE_RATE / AF_FFT_SIZE;
-      const numBins = Math.max(4, Math.min(AF_FFT_SIZE >> 1, Math.ceil((maxHz || 3200) / binHz) + 1));
+      const numBins = Math.max(4, Math.min(AF_FFT_SIZE >> 1, Math.ceil(resolvedMaxHz / binHz) + 1));
 
       if (this._fftFilled < 64) {
-        return {
+        const emptyResult = {
           binsDb: this._afBinsDb.subarray(0, numBins),
           binHz,
           sampleRate: AF_TAP_SAMPLE_RATE,
-          maxHz: maxHz || 3200,
+          maxHz: resolvedMaxHz,
           hasSignal: false,
         };
+        this._lastAfGen = this._afWriteGen;
+        this._lastAfMaxHz = resolvedMaxHz;
+        this._lastAfResult = emptyResult;
+        return emptyResult;
       }
 
       const re = this._fftRe;
       const im = this._fftIm;
       const win = AF_HANN.win;
       const ring = this._fftRing;
-      const start = (this._fftWriteIdx - AF_FFT_SIZE + AF_FFT_SIZE) % AF_FFT_SIZE;
+      const start = (this._fftWriteIdx - AF_FFT_SIZE) & AF_FFT_MASK;
 
       for (let i = 0; i < AF_FFT_SIZE; i++) {
         const idx = AF_BIT_REV[i];
-        const sample = ring[(start + i) % AF_FFT_SIZE];
+        const sample = ring[(start + i) & AF_FFT_MASK];
         re[idx] = sample * win[i];
         im[idx] = 0;
       }
 
-      for (let size = 2; size <= AF_FFT_SIZE; size <<= 1) {
-        const half = size >> 1;
-        const angle = (-2 * Math.PI) / size;
-        const wStepRe = Math.cos(angle);
-        const wStepIm = Math.sin(angle);
+      for (let s = 0; s < AF_TWIDDLE_STAGES.length; s++) {
+        const stage = AF_TWIDDLE_STAGES[s];
+        const size = stage.size;
+        const half = stage.half;
+        const twRe = stage.wRe;
+        const twIm = stage.wIm;
         for (let i = 0; i < AF_FFT_SIZE; i += size) {
-          let wRe = 1;
-          let wIm = 0;
           for (let j = 0; j < half; j++) {
+            const wRe = twRe[j];
+            const wIm = twIm[j];
             const k0 = i + j;
             const k1 = k0 + half;
-            const tRe = wRe * re[k1] - wIm * im[k1];
-            const tIm = wRe * im[k1] + wIm * re[k1];
-            re[k1] = re[k0] - tRe;
-            im[k1] = im[k0] - tIm;
-            re[k0] += tRe;
-            im[k0] += tIm;
-            const nextWRe = wRe * wStepRe - wIm * wStepIm;
-            wIm = wRe * wStepIm + wIm * wStepRe;
-            wRe = nextWRe;
+            const re1 = re[k1];
+            const im1 = im[k1];
+            const tRe = wRe * re1 - wIm * im1;
+            const tIm = wRe * im1 + wIm * re1;
+            const re0 = re[k0];
+            const im0 = im[k0];
+            re[k1] = re0 - tRe;
+            im[k1] = im0 - tIm;
+            re[k0] = re0 + tRe;
+            im[k0] = im0 + tIm;
           }
         }
       }
 
       const norm = 2 / AF_HANN.sum;
+      const binsDb = this._afBinsDb;
+      const hasComputed = this._afHasComputed;
       for (let k = 0; k < numBins; k++) {
-        const mag = Math.hypot(re[k], im[k]) * norm;
+        const r = re[k];
+        const m = im[k];
+        const mag = Math.sqrt(r * r + m * m) * norm;
         const db = clamp(20 * Math.log10(Math.max(1e-6, mag)), -110, 0);
-        if (!this._afHasComputed) {
-          this._afBinsDb[k] = db;
+        if (!hasComputed) {
+          binsDb[k] = db;
         } else {
-          const alpha = db > this._afBinsDb[k] ? 0.65 : 0.25;
-          this._afBinsDb[k] = this._afBinsDb[k] * (1 - alpha) + db * alpha;
+          const alpha = db > binsDb[k] ? 0.65 : 0.25;
+          binsDb[k] = binsDb[k] * (1 - alpha) + db * alpha;
         }
       }
       this._afHasComputed = true;
+      this._perf.afFftRuns += 1;
 
-      return {
-        binsDb: this._afBinsDb.subarray(0, numBins),
+      const result = {
+        binsDb: binsDb.subarray(0, numBins),
         binHz,
         sampleRate: AF_TAP_SAMPLE_RATE,
-        maxHz: maxHz || 3200,
+        maxHz: resolvedMaxHz,
         hasSignal: true,
       };
+      this._lastAfGen = this._afWriteGen;
+      this._lastAfMaxHz = resolvedMaxHz;
+      this._lastAfResult = result;
+      return result;
     }
 
     isRecording() {
@@ -2006,6 +2687,7 @@
     }
 
     stop() {
+      this._teardownMediaSession();
       if (this._txActive && !this._txOwnsCtx && this._txCtx === this._ctx) {
         this.stopTxCapture({ silent: true });
       }
