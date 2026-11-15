@@ -93,6 +93,10 @@ type RxState struct {
 	NbLevel           int
 	NrOn              bool
 	NrLevel           int
+	NrLastUsed        bool
+	NrsOn             bool
+	NrsLevel          int
+	NrsLastUsed       bool
 	NotchOn           bool
 	NotchHz           int
 	Agc               int
@@ -261,7 +265,12 @@ func NewRadio() *Radio {
 		RfGainDb:    0,
 		Squelch:     0,
 		NbLevel:     0,
-		NrLevel:     4,
+		NrOn:        false,
+		NrLevel:     0,
+		NrLastUsed:  false,
+		NrsOn:       false,
+		NrsLevel:    5,
+		NrsLastUsed: true,
 		NotchHz:     750,
 		Agc:         1,
 		PanSpanHz:           48000,
@@ -1075,8 +1084,10 @@ func (r *Radio) fullSnapshotLocked(tSec float64) string {
 	sb.WriteString(fmt.Sprintf("SQ$%03d;", r.RxB.Squelch))
 	sb.WriteString(fmt.Sprintf("NB%03d%d;", r.RxA.NbLevel, bool01(r.RxA.NbOn)))
 	sb.WriteString(fmt.Sprintf("NB$%03d%d;", r.RxB.NbLevel, bool01(r.RxB.NbOn)))
-	sb.WriteString(fmt.Sprintf("NR%02d%d;", r.RxA.NrLevel, bool01(r.RxA.NrOn)))
-	sb.WriteString(fmt.Sprintf("NR$%02d%d;", r.RxB.NrLevel, bool01(r.RxB.NrOn)))
+	sb.WriteString(fmt.Sprintf("NR%02d%d;", r.RxA.NrLevel, nrModeDigit(r.RxA.NrOn, r.RxA.NrLastUsed)))
+	sb.WriteString(fmt.Sprintf("NR$%02d%d;", r.RxB.NrLevel, nrModeDigit(r.RxB.NrOn, r.RxB.NrLastUsed)))
+	sb.WriteString(fmt.Sprintf("NRS%02d%d;", r.RxA.NrsLevel, nrModeDigit(r.RxA.NrsOn, r.RxA.NrsLastUsed)))
+	sb.WriteString(fmt.Sprintf("NRS$%02d%d;", r.RxB.NrsLevel, nrModeDigit(r.RxB.NrsOn, r.RxB.NrsLastUsed)))
 	sb.WriteString(fmt.Sprintf("NM%04d%d;", r.RxA.NotchHz, bool01(r.RxA.NotchOn)))
 	sb.WriteString(fmt.Sprintf("NM$%04d%d;", r.RxB.NotchHz, bool01(r.RxB.NotchOn)))
 	sb.WriteString(fmt.Sprintf("GT%d;", r.RxA.Agc))
@@ -1089,7 +1100,11 @@ func (r *Radio) fullSnapshotLocked(tSec float64) string {
 	sb.WriteString(fmt.Sprintf("RO$%+05d;", r.RxB.RitOffsetHz))
 	sb.WriteString(fmt.Sprintf("DV%d;", bool01(r.DiversityEnabled)))
 	sb.WriteString(fmt.Sprintf("SMH%+04d;", MeasurePassbandDbm(r.RxA, r.CwPitchHz, tSec)))
-	sb.WriteString(fmt.Sprintf("SMH$%+04d;", MeasurePassbandDbm(r.RxB, r.CwPitchHz, tSec)))
+	if r.SubRxEnabled {
+		sb.WriteString(fmt.Sprintf("SMH$%+04d;", MeasurePassbandDbm(r.RxB, r.CwPitchHz, tSec)))
+	} else {
+		sb.WriteString("SMH$-127;")
+	}
 	sb.WriteString(fmt.Sprintf("#SPN%d;", r.RxA.PanSpanHz))
 	sb.WriteString(fmt.Sprintf("#SPN$%d;", r.RxB.PanSpanHz))
 	sb.WriteString(fmt.Sprintf("#REF%d;", r.RxA.PanRefDbm))
@@ -1816,6 +1831,10 @@ func (r *Radio) execSingleLocked(orig, upper string, tSec float64) string {
 			r.RxB.NbLevel = r.RxA.NbLevel
 			r.RxB.NrOn = r.RxA.NrOn
 			r.RxB.NrLevel = r.RxA.NrLevel
+			r.RxB.NrLastUsed = r.RxA.NrLastUsed
+			r.RxB.NrsOn = r.RxA.NrsOn
+			r.RxB.NrsLevel = r.RxA.NrsLevel
+			r.RxB.NrsLastUsed = r.RxA.NrsLastUsed
 			r.RxB.NotchOn = r.RxA.NotchOn
 			r.RxB.NotchHz = r.RxA.NotchHz
 			r.RxB.ApfOn = r.RxA.ApfOn
@@ -2273,23 +2292,22 @@ func (r *Radio) execSingleLocked(orig, upper string, tSec float64) string {
 			}
 		}
 		resp = fmt.Sprintf("%s%03d%d;", prefix, target.NbLevel, bool01(target.NbOn))
+	case strings.HasPrefix(upper, "NRS"):
+		rx, prefix, arg := splitSubRx(upper, "NRS")
+		target := r.rxPtr(rx)
+		if arg != "" {
+			isSet = true
+			applyNrCommand(arg, 25, &target.NrsOn, &target.NrsLevel, &target.NrsLastUsed, &target.NrOn, &target.NrLastUsed)
+		}
+		resp = fmt.Sprintf("%s%02d%d;", prefix, target.NrsLevel, nrModeDigit(target.NrsOn, target.NrsLastUsed))
 	case strings.HasPrefix(upper, "NR"):
 		rx, prefix, arg := splitSubRx(upper, "NR")
 		target := r.rxPtr(rx)
 		if arg != "" {
 			isSet = true
-			if len(arg) == 3 {
-				lvl, err1 := strconv.Atoi(arg[:2])
-				on, err2 := strconv.Atoi(arg[2:3])
-				if err1 == nil && err2 == nil {
-					target.NrLevel = clampInt(lvl, 0, 10)
-					target.NrOn = on == 1
-				}
-			} else if len(arg) == 1 {
-				target.NrOn = arg == "1"
-			}
+			applyNrCommand(arg, 10, &target.NrOn, &target.NrLevel, &target.NrLastUsed, &target.NrsOn, &target.NrsLastUsed)
 		}
-		resp = fmt.Sprintf("%s%02d%d;", prefix, target.NrLevel, bool01(target.NrOn))
+		resp = fmt.Sprintf("%s%02d%d;", prefix, target.NrLevel, nrModeDigit(target.NrOn, target.NrLastUsed))
 	case strings.HasPrefix(upper, "NM"):
 		rx, prefix, arg := splitSubRx(upper, "NM")
 		target := r.rxPtr(rx)
@@ -2334,10 +2352,16 @@ func (r *Radio) execSingleLocked(orig, upper string, tSec float64) string {
 		resp = fmt.Sprintf("%s%d%d;", prefix, bool01(target.ApfOn), target.ApfBwIdx)
 	case strings.HasPrefix(upper, "SMH"):
 		rx, prefix, _ := splitSubRx(upper, "SMH")
+		if rx == 'B' && !r.SubRxEnabled {
+			return "SMH$-127;"
+		}
 		target := r.rxPtr(rx)
 		return fmt.Sprintf("%s%+04d;", prefix, MeasurePassbandDbm(*target, r.CwPitchHz, tSec))
 	case strings.HasPrefix(upper, "SM"):
 		rx, prefix, _ := splitSubRx(upper, "SM")
+		if rx == 'B' && !r.SubRxEnabled {
+			return "SM$00;"
+		}
 		target := r.rxPtr(rx)
 		dbm := MeasurePassbandDbm(*target, r.CwPitchHz, tSec)
 		bars := clampInt((dbm+127)*42/114, 0, 42)
@@ -2641,6 +2665,110 @@ func formatRA(prefix string, s RxState) string {
 		return fmt.Sprintf("%s%02d1;", prefix, s.AttenDb)
 	}
 	return fmt.Sprintf("%s000;", prefix)
+}
+
+// nrModeDigit encodes K4 R40.B1 NR/NRS mode status: 1=on, 2=off (last-used), 0=off.
+func nrModeDigit(on, lastUsed bool) int {
+	if on {
+		return 1
+	}
+	if lastUsed {
+		return 2
+	}
+	return 0
+}
+
+func isAsciiDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// applyNrCommand updates LMS (NR) or SSNR (NRS) state with K4 R40.B1 zero-level rejection
+// and mutual exclusivity between the two NR algorithms.
+func applyNrCommand(arg string, maxLevel int, on *bool, level *int, lastUsed *bool, otherOn *bool, otherLastUsed *bool) {
+	activate := func() {
+		// K4 rejects enabling NR/NRS when level is 00.
+		if *level <= 0 {
+			*on = false
+			*lastUsed = false
+			return
+		}
+		*on = true
+		*lastUsed = true
+		*otherOn = false
+		*otherLastUsed = false
+	}
+
+	switch {
+	case arg == "/":
+		if *on {
+			*on = false
+			*lastUsed = *level > 0
+		} else {
+			activate()
+		}
+	case arg == "+":
+		*level = clampInt(*level+1, 0, maxLevel)
+		if *level == 0 {
+			*on = false
+			*lastUsed = false
+		}
+	case arg == "-":
+		*level = clampInt(*level-1, 0, maxLevel)
+		if *level == 0 {
+			*on = false
+			*lastUsed = false
+		}
+	case len(arg) == 3 && isAsciiDigits(arg):
+		lvl, err1 := strconv.Atoi(arg[:2])
+		m, err2 := strconv.Atoi(arg[2:3])
+		if err1 != nil || err2 != nil || m < 0 || m > 2 {
+			return
+		}
+		*level = clampInt(lvl, 0, maxLevel)
+		if *level == 0 {
+			*on = false
+			*lastUsed = false
+			return
+		}
+		switch m {
+		case 1:
+			activate()
+		case 0:
+			*on = false
+		case 2:
+			*on = false
+			*lastUsed = true
+			*otherOn = false
+			*otherLastUsed = false
+		}
+	case len(arg) == 1 && isAsciiDigits(arg):
+		switch arg {
+		case "1":
+			activate()
+		case "0":
+			*on = false
+			if *level == 0 {
+				*lastUsed = false
+			}
+		case "2":
+			*on = false
+			if *level == 0 {
+				*lastUsed = false
+			} else {
+				*lastUsed = true
+				*otherOn = false
+				*otherLastUsed = false
+			}
+		}
+	}
 }
 
 func validMode(m int) bool {

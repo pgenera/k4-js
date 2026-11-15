@@ -1370,3 +1370,119 @@ func TestHandleCATDoesNotDropAtuOrKeyerCompletion(t *testing.T) {
 		t.Fatalf("expected TxActive=false after keyer drain")
 	}
 }
+
+func TestNrNrsSemanticsAndSubRxSMeter(t *testing.T) {
+	t.Run("InitialSnapshotAndQueries", func(t *testing.T) {
+		r := NewRadio()
+		snap, _ := r.HandleCAT("RDY;", 0.0)
+		for _, tok := range []string{"NR000;", "NR$000;", "NRS052;", "NRS$052;", "SMH$-127;"} {
+			if !strings.Contains(snap, tok) {
+				t.Fatalf("RDY snapshot missing %q", tok)
+			}
+		}
+		if rep, _ := r.HandleCAT("NR;NR$;NRS;NRS$;", 0.0); rep != "NR000;NR$000;NRS052;NRS$052;" {
+			t.Fatalf("initial NR/NRS queries = %q", rep)
+		}
+	})
+
+	t.Run("ZeroLevelRejection", func(t *testing.T) {
+		r := NewRadio()
+		// Turning LMS or SSNR ON with nn==00 stays OFF and echoes 000 without stealing last-used from active/other NR.
+		if rep, _ := r.HandleCAT("NR001;NR1;NR/;NRS;", 0.0); rep != "NR000;NR000;NR000;NRS052;" {
+			t.Fatalf("zero-level NR rejection = %q", rep)
+		}
+		// While SSNR is ON, rejected NR001; must NOT disable SSNR.
+		if rep, _ := r.HandleCAT("NRS1;NR001;NRS;", 0.0); rep != "NRS051;NR000;NRS051;" {
+			t.Fatalf("NR001 while SSNR ON = %q", rep)
+		}
+		// Turning SSNR ON with nn==00 also stays OFF and echoes NRS000;.
+		if rep, _ := r.HandleCAT("NRS001;NRS1;NRS/;", 0.0); rep != "NRS000;NRS000;NRS000;" {
+			t.Fatalf("zero-level NRS rejection = %q", rep)
+		}
+	})
+
+	t.Run("MutualExclusivityToggleAndSteps", func(t *testing.T) {
+		r := NewRadio()
+
+		// NR041; enables LMS and clears SSNR last-used.
+		if rep, _ := r.HandleCAT("NR041;NRS;", 0.0); rep != "NR041;NRS050;" {
+			t.Fatalf("NR041 enable = %q", rep)
+		}
+		// NR/; toggles LMS off with m=2 last-used, then back ON.
+		if rep, _ := r.HandleCAT("NR/;NRS;NR/;", 0.0); rep != "NR042;NRS050;NR041;" {
+			t.Fatalf("NR/; toggle = %q", rep)
+		}
+
+		// NRS051; enables SSNR and clears LMS.
+		if rep, _ := r.HandleCAT("NRS051;NR;", 0.0); rep != "NRS051;NR040;" {
+			t.Fatalf("NRS051 enable = %q", rep)
+		}
+		// NRS/; toggles SSNR off with m=2 last-used; 1-digit NRS1;/NRS0; toggles cleanly.
+		if rep, _ := r.HandleCAT("NRS/;NR;NRS1;NRS0;", 0.0); rep != "NRS052;NR040;NRS051;NRS052;" {
+			t.Fatalf("NRS/; and 1-digit toggle = %q", rep)
+		}
+
+		// Independent VFO B NR$/NRS$ + step +/- and clamping (NR 0..10, NRS 0..25).
+		if rep, _ := r.HandleCAT("NRS$121;NRS$+;NRS$-;NR$091;NR$+;NR$+;NR$;NRS$;", 0.0); rep != "NRS$121;NRS$131;NRS$121;NR$091;NR$101;NR$101;NR$101;NRS$120;" {
+			t.Fatalf("VFO B NR$/NRS$ steps = %q", rep)
+		}
+		// Stepping down to 00 turns off and clears m=2.
+		if rep, _ := r.HandleCAT("NR$011;NR$-;NRS$251;NRS$+;NRS$011;NRS$-;", 0.0); rep != "NR$011;NR$000;NRS$251;NRS$251;NRS$011;NRS$000;" {
+			t.Fatalf("step boundary / zero turn-off = %q", rep)
+		}
+		// VFO A must remain untouched by VFO B operations.
+		if rep, _ := r.HandleCAT("NR;NRS;", 0.0); rep != "NR040;NRS052;" {
+			t.Fatalf("VFO A disturbed by VFO B = %q", rep)
+		}
+	})
+
+	t.Run("AB3CopyAllNrNrsFields", func(t *testing.T) {
+		r := NewRadio()
+		// Active LMS on A -> AB3 copies active LMS + cleared SSNR to B.
+		r.HandleCAT("NRS080;NR071;AB3;", 0.0)
+		if rep, _ := r.HandleCAT("NR$;NRS$;", 0.0); rep != "NR$071;NRS$080;" {
+			t.Fatalf("AB3 copy with LMS active = %q", rep)
+		}
+		// Active SSNR toggled off (m=2) on A -> AB3 copies all 6 fields including last-used state.
+		r.HandleCAT("NRS141;NRS/;AB3;", 0.0)
+		if rep, _ := r.HandleCAT("NR$;NRS$;", 0.0); rep != "NR$070;NRS$142;" {
+			t.Fatalf("AB3 copy with SSNR last-used = %q", rep)
+		}
+	})
+
+	t.Run("SubRxSMeterGatingSB0AndSB1", func(t *testing.T) {
+		r := NewRadio()
+		// SB0 (default): SM$ returns SM$00; and SMH$ returns SMH$-127;, while main RX SM/SMH remain live.
+		rep0, _ := r.HandleCAT("SM$;SMH$;SM;SMH;", 0.0)
+		if !strings.HasPrefix(rep0, "SM$00;SMH$-127;SM") {
+			t.Fatalf("SB0 SM$/SMH$ = %q, want prefix SM$00;SMH$-127;SM", rep0)
+		}
+		if strings.HasSuffix(rep0, "SM00;SMH-127;") {
+			t.Fatalf("main RX SM/SMH should remain active during SB0: %q", rep0)
+		}
+
+		// SB1: SM$ and SMH$ report active Sub RX passband signal on 14.025 MHz beacon.
+		if rep, _ := r.HandleCAT("SB1;", 0.0); rep != "SB1;" {
+			t.Fatalf("SB1 reply = %q", rep)
+		}
+		sm1, _ := r.HandleCAT("SM$;", 0.0)
+		smh1, _ := r.HandleCAT("SMH$;", 0.0)
+		if sm1 == "SM$00;" || !strings.HasPrefix(sm1, "SM$") {
+			t.Fatalf("SB1 SM$ = %q, want non-zero bars", sm1)
+		}
+		dbmStr := strings.TrimSuffix(strings.TrimPrefix(smh1, "SMH$"), ";")
+		dbm, err := strconv.Atoi(dbmStr)
+		if err != nil || dbm <= -127 {
+			t.Fatalf("SB1 SMH$ = %q (dbm=%d, err=%v), want > -127", smh1, dbm, err)
+		}
+		snap1, _ := r.HandleCAT("RDY;AI5;", 0.0)
+		if strings.Contains(snap1, "SMH$-127;") {
+			t.Fatalf("SB1 RDY snapshot should emit live SMH$ instead of SMH$-127;")
+		}
+
+		// Returning to SB0 restores SM$00; and SMH$-127;.
+		if rep, _ := r.HandleCAT("SB0;SM$;SMH$;", 0.0); rep != "SB0;SM$00;SMH$-127;" {
+			t.Fatalf("return to SB0 SM$/SMH$ = %q", rep)
+		}
+	})
+}
