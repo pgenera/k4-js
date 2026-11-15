@@ -1301,8 +1301,10 @@
       let s = inspState.getSnapshot();
       inspector.update(s);
       assertEqual(inspector._refs.dispBadge.textContent, 'PAN A', 'Single-Pan Main shows PAN A badge even when targetRx=B');
-      assertEqual(inspector._refs.dpmBtns[1].disabled, true, '1x Sub (B) disabled when OM lacks S');
-      assertEqual(inspector._refs.dpmBtns[2].disabled, true, '2x Dual disabled when OM lacks S');
+      assertEqual(inspector._refs.dpmBtns[1].disabled, false, '1x Sub (B) remains enabled on base K4 when OM lacks S');
+      assertEqual(inspector._refs.dpmBtns[2].disabled, false, '2x Dual remains enabled on base K4 when OM lacks S');
+      assertEqual(inspector._refs.divSwitch.row.hidden, true, 'Diversity RX hidden when OM lacks S');
+      assertEqual(inspector._refs.divSwitch.btn.disabled, true, 'Diversity RX disabled when OM lacks S');
       assert(inspector._refs.refSlider.row.textContent.includes('-112 dBm'), 'Spectrum Geometry shows PAN A #REF (-112), not B (-95)');
       inspector._refs.spanBtns[0].btn.click();
       assertEqual(inspCalls[0].rx, 'A', 'Span preset button routes to dispRx A');
@@ -1313,6 +1315,7 @@
       s = inspState.getSnapshot();
       inspector.update(s);
       assertEqual(inspector._refs.dpmBtns[1].disabled, false, '1x Sub (B) enabled when OM includes S');
+      assertEqual(inspector._refs.divSwitch.row.hidden, false, 'Diversity RX visible when OM includes S');
       assertEqual(inspector._refs.dispBadge.textContent, 'PAN B', 'Single-Pan Sub (#DPM1) shows PAN B badge');
       inspector._refs.spanBtns[0].btn.click();
       assertEqual(inspCalls[1].rx, 'B', 'Span preset button routes to dispRx B in #DPM1');
@@ -2354,6 +2357,203 @@
     assertEqual(splitXitCw.isSplitOrXit, true, 'isSplitOrXit=true');
     assertEqual(splitXitCw.active, true, 'atuTuning activates overlay');
     assertEqual(splitXitCw.txTestMode, true, 'txTestMode propagated');
+  });
+
+  // 29. Base K4 OM capabilities, FI builder, PB0/TS0 safe gate, & RadioState sensor history
+  test('CatCodec K4 vs K4D OM, ifCenter, PB5, RxOnlyGate PB0/TS0 & RadioState sensor history', async () => {
+    const K4 = globalThis.K4;
+
+    const omK4 = K4.CatCodec.parseCommand('OM AP------4---;');
+    assert(omK4 !== null, 'parse OM K4');
+    assertEqual(omK4.hasKrx4, false, 'K4 OM hasKrx4=false');
+    assertEqual(omK4.hasDiversity, false, 'K4 OM hasDiversity=false');
+    assertEqual(omK4.hasSubRx, false, 'K4 OM hasSubRx=false');
+    assertEqual(omK4.radioModel, 'K4', 'K4 radioModel=K4');
+    assertEqual(omK4.hasAtu, true, 'K4 OM hasAtu=true');
+    assertEqual(omK4.hasKpa4, true, 'K4 OM hasKpa4=true');
+
+    const omK4D = K4.CatCodec.parseCommand('OM AP-----S4---;');
+    assert(omK4D !== null, 'parse OM K4D');
+    assertEqual(omK4D.hasKrx4, true, 'K4D OM hasKrx4=true');
+    assertEqual(omK4D.hasDiversity, true, 'K4D OM hasDiversity=true');
+    assertEqual(omK4D.radioModel, 'K4D', 'K4D radioModel=K4D');
+
+    const pb5 = K4.CatCodec.parseCommand('PB5;');
+    assert(pb5 !== null && pb5.kind === 'dvrPlayback', 'PB5 parsed as dvrPlayback');
+    assertEqual(pb5.slot, 5, 'PB5 slot=5');
+    assertEqual(pb5.playing, true, 'PB5 playing=true');
+    const pb0 = K4.CatCodec.parseCommand('PB0;');
+    assertEqual(pb0 && pb0.slot, 0, 'PB0 slot=0');
+    assertEqual(pb0 && pb0.playing, false, 'PB0 playing=false');
+
+    assertEqual(K4.CatCodec.builders.ifCenter('A', 14250000), 'FI00014250000;', 'ifCenter A builder');
+    assertEqual(K4.CatCodec.builders.ifCenter('B', 7100000), 'FI$00007100000;', 'ifCenter B builder');
+
+    const gate = new K4.RxOnlyGate({ policy: 'rx-only' });
+    const safeRes = gate.inspectCat('PB0;TS0;');
+    assertEqual(safeRes.sanitized, 'PB0;TS0;', 'PB0;TS0; sanitized intact in rx-only');
+    assertEqual(safeRes.allowed.length, 2, 'PB0;TS0; both allowed in rx-only');
+    assertEqual(safeRes.blocked.length, 0, 'PB0;TS0; has zero blocked frames');
+    const txRes = gate.inspectCat('PB1;TU1;TS1;');
+    assertEqual(txRes.blocked.length, 3, 'PB1;TU1;TS1; all blocked in rx-only');
+
+    const state = new K4.RadioState();
+    state.applyParsedCat(K4.CatCodec.parseCommand('OM AP------4---;'));
+    assertEqual(state.getSnapshot().radioModel, 'K4', 'RadioState tracks K4 radioModel');
+    assertEqual(state.getSnapshot().hasDiversity, false, 'RadioState tracks hasDiversity=false on K4');
+
+    state.applyParsedCat(K4.CatCodec.parseCommand('SIRF PT:41.2,LT:36.0,PA:4.5;'));
+    state.recordSensorTick();
+    await new Promise((r) => setTimeout(r, 230));
+    state.applyParsedCat(K4.CatCodec.parseCommand('SIRF PT:44.5,LT:37.2,PA:8.0;'));
+    state.recordSensorTick();
+    const hist = state.getSensorHistory('pt', 180);
+    assert(hist.points.length >= 2, `Sensor history recorded >= 2 samples (got ${hist.points.length})`);
+    assertApprox(hist.min, 41.2, 0.05, 'Sensor history min PT=41.2');
+    assertApprox(hist.max, 44.5, 0.05, 'Sensor history max PT=44.5');
+    assertApprox(hist.current, 44.5, 0.05, 'Sensor history current PT=44.5');
+  });
+
+  // 30. PanadapterInteraction: horizontal drag pans viewport & emits FI at max span without tuning VFO
+  test('PanadapterInteraction drag pans viewport & emits FI without tuning VFO', () => {
+    const K4 = globalThis.K4;
+    const host = document.createElement('div');
+    host.style.width = '1120px';
+    host.style.height = '400px';
+    document.body.appendChild(host);
+
+    const state = new K4.RadioState();
+    for (const f of K4.CatCodec.splitFrames('FA00014200000;MD2;#SPN48000;')) {
+      const p = K4.CatCodec.parseCommand(f);
+      if (p) state.applyParsedCat(p);
+    }
+    const tunes = [];
+    const displays = [];
+    const cats = [];
+    const client = {
+      tune: (rx, hz) => tunes.push({ rx, hz }),
+      setDisplay: (rx, patch) => displays.push({ rx, patch }),
+      sendCat: (cmd) => cats.push(cmd),
+    };
+    const panView = new K4.PanadapterView({ container: host, state, client, renderer: '2d' });
+
+    const listeners = {};
+    const surface = {
+      style: {},
+      clientWidth: 1120,
+      clientHeight: 400,
+      getBoundingClientRect: () => ({ left: 0, top: 0, width: 1120, height: 400 }),
+      addEventListener: (t, fn) => { listeners[t] = fn; },
+      removeEventListener: (t, fn) => { if (listeners[t] === fn) delete listeners[t]; },
+      setPointerCapture: () => {},
+      releasePointerCapture: () => {},
+    };
+    const rendererStub = {
+      getLayouts: () => [{ rx: 'A', paneRect: { x: 0, y: 0, w: 1120, h: 400 }, specRect: { x: 0, y: 0, w: 1120, h: 200 }, axisRect: { x: 0, y: 200, w: 1120, h: 24 } }],
+    };
+    const interaction = new K4.PanadapterInteraction({ surface, renderer: rendererStub, view: panView, state, client });
+    try {
+      panView.pushPanPacket({
+        type: 2,
+        rx: 'A',
+        centerFreqHz: 14200000,
+        spanHz: 48000,
+        refDbm: -110,
+        scaleDb: 80,
+        bins: new Uint8Array(512),
+      });
+
+      // Drag left 280px at 48 kHz span (away from passband edges around x=560)
+      listeners.pointerdown({ type: 'pointerdown', pointerId: 1, pointerType: 'mouse', button: 0, clientX: 700, clientY: 80, shiftKey: false, altKey: false });
+      listeners.pointermove({ type: 'pointermove', pointerId: 1, pointerType: 'mouse', button: 0, clientX: 420, clientY: 80, shiftKey: false, altKey: false });
+      listeners.pointerup({ type: 'pointerup', pointerId: 1, pointerType: 'mouse', button: 0, clientX: 420, clientY: 80, shiftKey: false, altKey: false });
+
+      assertEqual(tunes.length, 0, 'Drag on panadapter must NOT tune VFO');
+      const postCenterHz = panView.getFrameState().panes.A.panCenterHz;
+      assert(postCenterHz > 14205000, `Drag left should pan center higher than 14200000 (got ${postCenterHz})`);
+      assertEqual(panView.isViewportOffset('A'), true, 'Dragged viewport is marked offset from VFO');
+      assert(displays.length >= 1, 'Sub-span drag emits setDisplay span expansion');
+
+      // At full 368 kHz span (maxOffsetHz = 0), dragging emits FI CAT recenter without tuning VFO
+      state.applyParsedCat(K4.CatCodec.parseCommand('#SPN368000;'));
+      panView.resetViewport('A', { syncRadioSpan: false });
+      panView.pushPanPacket({
+        type: 2,
+        rx: 'A',
+        centerFreqHz: 14200000,
+        spanHz: 368000,
+        refDbm: -110,
+        scaleDb: 80,
+        bins: new Uint8Array(512),
+      });
+      cats.length = 0;
+      listeners.pointerdown({ type: 'pointerdown', pointerId: 2, pointerType: 'mouse', button: 0, clientX: 700, clientY: 80, shiftKey: false, altKey: false });
+      listeners.pointermove({ type: 'pointermove', pointerId: 2, pointerType: 'mouse', button: 0, clientX: 420, clientY: 80, shiftKey: false, altKey: false });
+      listeners.pointerup({ type: 'pointerup', pointerId: 2, pointerType: 'mouse', button: 0, clientX: 420, clientY: 80, shiftKey: false, altKey: false });
+      assertEqual(tunes.length, 0, 'Full-span drag must NOT tune VFO');
+      assert(cats.some((c) => c.startsWith('FI000')), `Full-span drag emits FI CAT (got ${JSON.stringify(cats)})`);
+
+      // Zero-drag click still tunes VFO A
+      listeners.pointerdown({ type: 'pointerdown', pointerId: 3, pointerType: 'mouse', button: 0, clientX: 800, clientY: 80, shiftKey: false, altKey: false });
+      listeners.pointerup({ type: 'pointerup', pointerId: 3, pointerType: 'mouse', button: 0, clientX: 800, clientY: 80, shiftKey: false, altKey: false });
+      assertEqual(tunes.length, 1, 'Zero-drag click still tunes VFO');
+      assertEqual(tunes[0].rx, 'A', 'Zero-drag click tunes VFO A');
+    } finally {
+      interaction.destroy();
+      panView.destroy();
+      host.remove();
+    }
+  });
+
+  // 31. AudioEngine: standby mic lifecycle on file:// (insecure) and SecureContext (http://localhost)
+  test('AudioEngine standby mic lifecycle across file:// and SecureContext', async () => {
+    const K4 = globalThis.K4;
+    const engine = new K4.AudioEngine({ latencyMs: 75 });
+    const packets = [];
+    engine.setTxPacketHandler((pkt, meta) => {
+      packets.push({ pkt: new Uint8Array(pkt), meta });
+    });
+    const sleepMs = (ms) => new Promise((r) => setTimeout(r, ms));
+    try {
+      if (!globalThis.isSecureContext) {
+        const st = await engine.ensureMicReady({ voiceProcessing: false });
+        assertEqual(st.state, 'insecure', 'file:// reports insecure mic state');
+        return;
+      }
+      if (
+        !globalThis.navigator ||
+        !globalThis.navigator.mediaDevices ||
+        typeof globalThis.navigator.mediaDevices.getUserMedia !== 'function'
+      ) {
+        const st = await engine.ensureMicReady({ voiceProcessing: false });
+        assertEqual(st.state, 'unavailable', 'No mediaDevices reports unavailable');
+        return;
+      }
+
+      const ready = await engine.ensureMicReady({ voiceProcessing: false });
+      assertEqual(ready.state, 'ready', `Expected standby mic ready on SecureContext (got ${JSON.stringify(ready)})`);
+      const stream = engine._standbyMicStream;
+      assert(stream !== null, 'Standby MediaStream stored on engine');
+      const tracks = stream.getAudioTracks();
+      assert(tracks.length >= 1 && tracks[0].readyState === 'live', 'Standby mic track is live');
+
+      const cap = await engine.startTxCapture({ source: 'mic', voiceProcessing: false });
+      assertEqual(cap.active, true, 'Mic TX capture started');
+      assertEqual(cap.source, 'mic', 'TX source=mic');
+      assertEqual(engine.getMicStatus().state, 'capturing', 'Mic state=capturing during PTT');
+      await sleepMs(140);
+
+      engine.stopTxCapture();
+      assertEqual(engine.getDiagnostics().txActive, false, 'stopTxCapture stops txActive');
+      assertEqual(engine.getMicStatus().state, 'ready', 'Standby mic stays ready across PTT release');
+      assertEqual(tracks[0].readyState, 'live', 'Standby track stays live across PTT release');
+
+      engine.releaseMicStandby();
+      assertEqual(engine.getMicStatus().state, 'idle', 'releaseMicStandby sets mic state=idle');
+      assertEqual(tracks[0].readyState, 'ended', 'releaseMicStandby ends audio track');
+    } finally {
+      engine.destroy();
+    }
   });
 
   async function runAll() {

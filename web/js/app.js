@@ -41,8 +41,15 @@
       this._pttPointerId = null;
       this._pttKeyHeld = false;
       this._pttHeldUi = false;
+      this._lastSensorTickMs = 0;
+      const hasSecureMic = Boolean(
+        globalThis.isSecureContext &&
+          globalThis.navigator &&
+          globalThis.navigator.mediaDevices &&
+          typeof globalThis.navigator.mediaDevices.getUserMedia === 'function'
+      );
       this._txAudioConfig = {
-        source: 'two-tone',
+        source: hasSecureMic ? 'mic' : 'two-tone',
         deviceId: '',
         voiceProcessing: false,
         wavName: '',
@@ -67,6 +74,8 @@
         txModeRxBtn: document.getElementById('tx-mode-rx'),
         txModeTestBtn: document.getElementById('tx-mode-test'),
         txModeArmedBtn: document.getElementById('tx-mode-armed'),
+        txMicBtn: document.getElementById('tx-mic-btn'),
+        txMicLabel: document.getElementById('tx-mic-label'),
         pttBtn: document.getElementById('ptt-btn'),
         txArmConfirm: document.getElementById('tx-arm-confirm'),
         txArmVfo: document.getElementById('tx-arm-vfo'),
@@ -74,6 +83,7 @@
         txArmMode: document.getElementById('tx-arm-mode'),
         txArmPower: document.getElementById('tx-arm-power'),
         txArmAnt: document.getElementById('tx-arm-ant'),
+        txArmMic: document.getElementById('tx-arm-mic'),
         txArmCancelBtn: document.getElementById('tx-arm-cancel-btn'),
         txArmConfirmBtn: document.getElementById('tx-arm-confirm-btn'),
         rxOnlyBadge: document.getElementById('rx-only-badge'),
@@ -233,7 +243,6 @@
       this._hudDualBtn.title = 'Toggle Dual Panadapter (#DPM)';
       this._hudDualBtn.addEventListener('click', () => {
         const snap = this._getSnapshot();
-        if (snap.hasSubRx === false) return;
         const next = snap.dualPanMode === 2 ? 0 : 2;
         this.client.setDisplay(this._dispRx(snap), { dualPanMode: next });
       });
@@ -499,6 +508,15 @@
         });
       }
 
+      if (this.audio && typeof this.audio.on === 'function') {
+        this.audio.on('micStatus', (st) => {
+          if (st && st.state === 'ready' && this.inspector && typeof this.inspector._refreshMicDevices === 'function') {
+            this.inspector._refreshMicDevices();
+          }
+          this._render();
+        });
+      }
+
       this.state.on('change', (_snap, changedKey) => {
         if (
           changedKey === 'rxA.sMeterDbm' ||
@@ -533,6 +551,25 @@
       }
       if (this._dom.txModeArmedBtn) {
         this._dom.txModeArmedBtn.addEventListener('click', () => this.setTxPosture('tx-armed'));
+      }
+      if (this._dom.txMicBtn) {
+        this._dom.txMicBtn.addEventListener('click', () => {
+          const st = this.audio && typeof this.audio.getMicStatus === 'function'
+            ? this.audio.getMicStatus()
+            : { state: 'idle' };
+          if (
+            this._txAudioConfig.source === 'mic' &&
+            (st.state === 'idle' || st.state === 'denied' || st.state === 'error' || st.state === 'unavailable') &&
+            this.audio &&
+            typeof this.audio.ensureMicReady === 'function'
+          ) {
+            this._syncTxMicStandby();
+          }
+          if (this.inspector && typeof this.inspector.openTab === 'function') {
+            this.inspector.openTab('tx');
+          }
+          this._render();
+        });
       }
       if (this._dom.txArmCancelBtn) {
         this._dom.txArmCancelBtn.addEventListener('click', () => this.closeArmConfirm());
@@ -595,21 +632,23 @@
 
         if (e.key === 'Escape') {
           const snap = this._getSnapshot();
+          const modalOpen =
+            this.omnibar.isOpen() ||
+            this.connectionDialog.isOpen() ||
+            this.inspector.isMobileSheetOpen() ||
+            this._armConfirmOpen;
           const txBusy = Boolean(
             snap.txActive || snap.pttHeld || this._pttHeldUi || snap.atuTuning || Number(snap.txBufferCount) > 0
           );
-          if (txBusy) {
+          const posture = snap.txPosture || (typeof this.client.getTxPosture === 'function' ? this.client.getTxPosture() : 'rx-only');
+          const txArmedOrTest = posture !== 'rx-only' || Boolean(snap.txTestMode);
+          if (txBusy || (txArmedOrTest && !modalOpen)) {
             e.preventDefault();
             this.panicAbortTx('escape');
             this.closeOverlays();
             return;
           }
-          if (
-            this.omnibar.isOpen() ||
-            this.connectionDialog.isOpen() ||
-            this.inspector.isMobileSheetOpen() ||
-            this._armConfirmOpen
-          ) {
+          if (modalOpen) {
             e.preventDefault();
             this.closeOverlays();
           }
@@ -690,9 +729,20 @@
         this._scheduleRender();
       });
 
-      // Keep diagnostics & live TX VU/TOT crisp while open or transmitting
+      // Keep diagnostics, sensor history & live TX VU/TOT crisp while connected
       setInterval(() => {
         const snap = this._getSnapshot();
+        const now = Date.now();
+        if (
+          snap.connection &&
+          snap.connection.status === 'connected' &&
+          now - this._lastSensorTickMs >= 950
+        ) {
+          this._lastSensorTickMs = now;
+          if (this.state && typeof this.state.recordSensorTick === 'function') {
+            this.state.recordSensorTick();
+          }
+        }
         if (this._drawerOpen || this.inspector.isMobileSheetOpen() || snap.txActive) {
           this.inspector.update(snap);
         }
@@ -767,6 +817,9 @@
       if (this.audio && typeof this.audio.stopTxCapture === 'function') {
         this.audio.stopTxCapture();
       }
+      if (this.audio && typeof this.audio.releaseMicStandby === 'function') {
+        this.audio.releaseMicStandby();
+      }
       if (this.client && typeof this.client.setTxPosture === 'function') {
         this.client.setTxPosture('rx-only');
       } else if (this.gate && typeof this.gate.setPolicy === 'function') {
@@ -800,9 +853,44 @@
       });
     }
 
+    _syncTxMicStandby(postureOverride) {
+      if (!this.audio) return;
+      const snap = this._getSnapshot();
+      const posture =
+        postureOverride ||
+        snap.txPosture ||
+        (this.client && typeof this.client.getTxPosture === 'function'
+          ? this.client.getTxPosture()
+          : 'rx-only');
+      const txEnabled =
+        posture === 'tx-armed' || posture === 'tx-test' || Boolean(snap.txTestMode);
+      if (!txEnabled || this._txAudioConfig.source !== 'mic') {
+        if (typeof this.audio.releaseMicStandby === 'function') {
+          this.audio.releaseMicStandby();
+        }
+        return;
+      }
+      if (typeof this.audio.ensureMicReady === 'function') {
+        this.audio.ensureMicReady({
+          deviceId: this._txAudioConfig.deviceId || '',
+          voiceProcessing: Boolean(this._txAudioConfig.voiceProcessing),
+        }).then((st) => {
+          if (st && st.state === 'ready' && this.inspector && typeof this.inspector._refreshMicDevices === 'function') {
+            this.inspector._refreshMicDevices();
+          } else if (st && st.state === 'denied') {
+            this.toast('Microphone permission denied — click the MIC badge or TX tab to retry or pick a test tone', 'warn');
+          } else if (st && (st.state === 'unavailable' || st.state === 'error')) {
+            this.toast(`Microphone unavailable: ${st.error || 'No input device'}`, 'warn');
+          }
+          this._render();
+        });
+      }
+    }
+
     setTxAudioConfig(patch) {
       if (!patch || typeof patch !== 'object') return;
       Object.assign(this._txAudioConfig, patch);
+      this._syncTxMicStandby();
       this._render();
     }
 
@@ -833,6 +921,7 @@
         if (this.client && typeof this.client.setTxPosture === 'function') {
           this.client.setTxPosture('rx-only');
         }
+        this._syncTxMicStandby('rx-only');
         this.toast('Receive-only firewall active', 'info');
         this._render();
         return;
@@ -842,6 +931,7 @@
         if (this.client && typeof this.client.setTxPosture === 'function') {
           this.client.setTxPosture('tx-test');
         }
+        this._syncTxMicStandby('tx-test');
         this.toast('TX Test ON (TS1) — RF output inhibited', 'info');
         this._render();
         return;
@@ -866,6 +956,7 @@
         if (this.client && typeof this.client.setTxTest === 'function') {
           this.client.setTxTest(true);
         }
+        this._syncTxMicStandby('tx-test');
         this.toast('TX Test ON (TS1) — RF output inhibited', 'info');
         this._render();
         return;
@@ -876,6 +967,7 @@
         if (this.client && typeof this.client.setTxTest === 'function') {
           this.client.setTxTest(false);
         }
+        this._syncTxMicStandby('rx-only');
         this.toast('TX Test OFF (TS0) — Receive-only active', 'info');
         this._render();
         return;
@@ -885,6 +977,7 @@
       if (this.client && typeof this.client.setTxTest === 'function') {
         this.client.setTxTest(next);
       }
+      this._syncTxMicStandby(posture);
       this.toast(
         next ? 'TX Test ON (TS1) — RF output inhibited' : 'TX Test OFF (TS0) — Live RF armed',
         'info'
@@ -921,6 +1014,27 @@
         this._dom.txArmPower.textContent = `${pRange === 'H' ? Math.round(watts) : watts.toFixed(1)} W (${pRange})`;
       }
       if (this._dom.txArmAnt) this._dom.txArmAnt.textContent = antLabel;
+      if (this._dom.txArmMic) {
+        const cfg = this._txAudioConfig || {};
+        const micSt = this.audio && typeof this.audio.getMicStatus === 'function'
+          ? this.audio.getMicStatus()
+          : { state: 'idle', secureContext: Boolean(window.isSecureContext) };
+        if (cfg.source === 'mic') {
+          if (micSt.state === 'ready' || micSt.state === 'capturing') {
+            this._dom.txArmMic.textContent = `Mic: ${micSt.deviceLabel || 'Ready'}`;
+          } else if (!micSt.secureContext) {
+            this._dom.txArmMic.textContent = 'Two-Tone Test (Mic requires localhost/HTTPS)';
+          } else {
+            this._dom.txArmMic.textContent = 'Microphone (prompts permission on ARM)';
+          }
+        } else if (cfg.source === 'tone-1k') {
+          this._dom.txArmMic.textContent = '1 kHz Test Tone';
+        } else if (cfg.source === 'wav') {
+          this._dom.txArmMic.textContent = cfg.wavName ? `WAV: ${cfg.wavName}` : 'WAV Voice Loop';
+        } else {
+          this._dom.txArmMic.textContent = 'Two-Tone Test (700/1900 Hz)';
+        }
+      }
 
       this._armConfirmOpen = true;
       this._dom.txArmConfirm.hidden = false;
@@ -951,6 +1065,7 @@
       if (this.client && typeof this.client.setTxPosture === 'function') {
         this.client.setTxPosture('tx-armed', { confirmed: true });
       }
+      this._syncTxMicStandby('tx-armed');
       this.toast('LIVE RF TX ARMED — Hold PTT or Spacebar to transmit', 'info');
       this._render();
     }
@@ -984,6 +1099,7 @@
       this._pttPointerId = null;
       this._pttKeyHeld = false;
       this._pttHeldUi = false;
+      this.closeArmConfirm();
       if (this.audio && typeof this.audio.stopTxCapture === 'function') {
         this.audio.stopTxCapture();
       }
@@ -992,7 +1108,17 @@
       } else if (this.client && typeof this.client.stopPtt === 'function') {
         this.client.stopPtt();
       }
-      this.toast('TX / ATU / Keyer aborted (RX)', 'info');
+      if (
+        this.client &&
+        typeof this.client.setTxPosture === 'function' &&
+        (typeof this.client.getTxPosture !== 'function' || this.client.getTxPosture() !== 'rx-only')
+      ) {
+        this.client.setTxPosture('rx-only');
+      }
+      if (this.audio && typeof this.audio.releaseMicStandby === 'function') {
+        this.audio.releaseMicStandby();
+      }
+      this.toast('Stopped TX / returned to RX ONLY', 'info');
       this._render();
     }
 
@@ -1346,6 +1472,39 @@
       syncPostureBtn(this._dom.txModeTestBtn, isTest);
       syncPostureBtn(this._dom.txModeArmedBtn, posture === 'tx-armed');
 
+      if (this._dom.txMicBtn && this._dom.txMicLabel) {
+        const txEnabled = posture === 'tx-armed' || posture === 'tx-test' || isTest;
+        this._dom.txMicBtn.hidden = !txEnabled;
+        if (txEnabled) {
+          const cfg = this._txAudioConfig || {};
+          if (cfg.source !== 'mic') {
+            this._dom.txMicBtn.dataset.micState = 'synth';
+            this._dom.txMicLabel.textContent =
+              cfg.source === 'tone-1k' ? '1kHz' : cfg.source === 'wav' ? 'WAV' : 'TONE';
+            this._dom.txMicBtn.title = 'Synthesized TX audio source — click to open TX Audio settings';
+          } else {
+            const st = this.audio && typeof this.audio.getMicStatus === 'function'
+              ? this.audio.getMicStatus()
+              : { state: 'idle' };
+            const state = st.state || 'idle';
+            this._dom.txMicBtn.dataset.micState = state;
+            const labels = {
+              capturing: 'MIC LIVE',
+              ready: 'MIC RDY',
+              requesting: 'MIC...',
+              denied: 'MIC DENY',
+              insecure: 'NO SSL',
+              unavailable: 'NO MIC',
+              error: 'MIC ERR',
+              idle: 'MIC',
+            };
+            this._dom.txMicLabel.textContent = labels[state] || 'MIC';
+            const devInfo = st.deviceLabel ? `: ${st.deviceLabel}` : (st.error ? `: ${st.error}` : '');
+            this._dom.txMicBtn.title = `Microphone ${state}${devInfo} (click to retry or open TX Audio settings)`;
+          }
+        }
+      }
+
       if (this._dom.pttBtn) {
         const pttEnabled = posture !== 'rx-only' && !snap.txInhibit;
         this._dom.pttBtn.disabled = !pttEnabled;
@@ -1392,11 +1551,8 @@
       const dpm = snap.dualPanMode === 1 ? 1 : snap.dualPanMode === 2 ? 2 : 0;
       this._hudDualBtn.textContent = dpm === 2 ? '2x' : dpm === 1 ? '1xB' : '1x';
       this._hudDualBtn.classList.toggle('is-active', dpm === 2);
-      this._hudDualBtn.disabled = snap.hasSubRx === false;
-      this._hudDualBtn.title =
-        snap.hasSubRx === false
-          ? 'Requires Sub-RX option (OM lacks S)'
-          : 'Toggle Dual Panadapter (#DPM)';
+      this._hudDualBtn.disabled = false;
+      this._hudDualBtn.title = 'Toggle Dual Panadapter (#DPM)';
       this._hudLoupeBtn.textContent = `Loupe ${loupeRx}`;
       this._hudLoupeBtn.classList.toggle('is-active', Boolean(loupeS.miniPan));
       this._hudFreezeBtn.textContent = snap.panFrozen ? 'Frozen' : 'Freeze';

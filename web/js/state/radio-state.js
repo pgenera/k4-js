@@ -5,6 +5,7 @@
 
   const BANDS = K4.BANDS || [];
   const MAX_DECODED_TEXT = 200;
+  const MAX_SENSOR_HISTORY = 240;
 
   /**
    * Look up the matching amateur band definition for `freqHz`, or null for general coverage.
@@ -176,6 +177,8 @@
       keyerWeight: 110,
       keyerBufferFull: false,
       txBufferCount: 0,
+      dvrSlot: 0,
+      dvrPlaying: false,
       txTimeoutSec: 180,
       txStartedAt: null,
       panAvg: 4,
@@ -186,6 +189,9 @@
       waterfallHeightPct: 60,
       fixedTune: false,
       hasSubRx: true,
+      hasKrx4: true,
+      hasDiversity: true,
+      radioModel: 'K4D',
       optionModules: '',
       audioMix: 'A.B',
       encodeMode: 1,
@@ -205,6 +211,7 @@
       this._state = createDefaultState();
       this._nextTextId = 0;
       this._lastNonZeroTuneSwr = null;
+      this._sensorHistory = [];
       if (initial && typeof initial === 'object') {
         if (initial.rxA) Object.assign(this._state.rxA, initial.rxA);
         if (initial.rxB) Object.assign(this._state.rxB, initial.rxB);
@@ -300,6 +307,8 @@
         keyerWeight: this._state.keyerWeight,
         keyerBufferFull: this._state.keyerBufferFull,
         txBufferCount: this._state.txBufferCount,
+        dvrSlot: this._state.dvrSlot,
+        dvrPlaying: this._state.dvrPlaying,
         txTimeoutSec: this._state.txTimeoutSec,
         txStartedAt: this._state.txStartedAt,
         panAvg: this._state.panAvg,
@@ -310,6 +319,9 @@
         waterfallHeightPct: this._state.waterfallHeightPct,
         fixedTune: this._state.fixedTune,
         hasSubRx: this._state.hasSubRx,
+        hasKrx4: this._state.hasKrx4,
+        hasDiversity: this._state.hasDiversity,
+        radioModel: this._state.radioModel,
         optionModules: this._state.optionModules,
         audioMix: this._state.audioMix,
         encodeMode: this._state.encodeMode,
@@ -380,6 +392,91 @@
       m.active = false;
       m.updatedAt = Date.now();
       this._state.telemetry.txVoltDrop = this._state.telemetry.rxBaselineVolts !== null ? 0 : null;
+    }
+
+    _sampleSensorsNow(ts = Date.now()) {
+      const t = this._state.telemetry || {};
+      const m = this._state.txMeters || {};
+      const txOrTune = Boolean(this._state.txActive || this._state.atuTuning);
+      return {
+        ts,
+        vs: Number.isFinite(t.supplyVolts) ? t.supplyVolts : null,
+        is: Number.isFinite(t.supplyAmps) ? t.supplyAmps : null,
+        pt: Number.isFinite(t.paTempC) ? t.paTempC : null,
+        lt: Number.isFinite(t.lpaTempC) ? t.lpaTempC : null,
+        tf: Number.isFinite(t.fpTempC) ? t.fpTempC : null,
+        sys: Number.isFinite(t.cpuTempC) ? t.cpuTempC : null,
+        fwd: txOrTune && Number.isFinite(m.fwdWatts) ? m.fwdWatts : 0,
+        swr: txOrTune && Number.isFinite(m.swr) && m.swr > 0 ? m.swr : 0,
+      };
+    }
+
+    _recordSensorSample(minIntervalMs = 200) {
+      const now = Date.now();
+      const sample = this._sampleSensorsNow(now);
+      const hasAny =
+        sample.vs !== null ||
+        sample.is !== null ||
+        sample.pt !== null ||
+        sample.lt !== null ||
+        sample.tf !== null ||
+        sample.sys !== null ||
+        sample.fwd > 0 ||
+        sample.swr > 0;
+      if (!hasAny) return false;
+      const hist = this._sensorHistory;
+      const last = hist.length > 0 ? hist[hist.length - 1] : null;
+      if (last && now - last.ts < minIntervalMs) {
+        Object.assign(last, sample);
+        return true;
+      }
+      hist.push(sample);
+      if (hist.length > MAX_SENSOR_HISTORY) {
+        hist.splice(0, hist.length - MAX_SENSOR_HISTORY);
+      }
+      return true;
+    }
+
+    /**
+     * Sample current telemetry and TX meters into the rolling history buffer.
+     * @returns {boolean}
+     */
+    recordSensorTick() {
+      return this._recordSensorSample(450);
+    }
+
+    /**
+     * Return time-series points for a given sensor metric over the trailing window.
+     * @param {'vs'|'is'|'pt'|'lt'|'tf'|'sys'|'fwd'|'swr'} metricKey
+     * @param {number} [windowSec=180]
+     * @returns {{ metric: string, windowSec: number, points: Array<{ts: number, value: number}>, min: number|null, max: number|null, current: number|null }}
+     */
+    getSensorHistory(metricKey, windowSec = 180) {
+      const now = Date.now();
+      const winSec = Math.max(10, Number(windowSec) || 180);
+      const cutoff = now - winSec * 1000;
+      const points = [];
+      let min = null;
+      let max = null;
+      for (let i = 0; i < this._sensorHistory.length; i++) {
+        const entry = this._sensorHistory[i];
+        if (!entry || entry.ts < cutoff) continue;
+        const val = entry[metricKey];
+        if (!Number.isFinite(val)) continue;
+        points.push({ ts: entry.ts, value: val });
+        if (min === null || val < min) min = val;
+        if (max === null || val > max) max = val;
+      }
+      const curSample = this._sampleSensorsNow(now);
+      const current = Number.isFinite(curSample[metricKey]) ? curSample[metricKey] : null;
+      return {
+        metric: String(metricKey || ''),
+        windowSec: winSec,
+        points,
+        min,
+        max,
+        current,
+      };
     }
 
     /**
@@ -628,10 +725,19 @@
         case 'optionModule':
           this._state.optionModules = parsed.optionModules || '';
           this._state.hasSubRx = Boolean(parsed.hasSubRx);
+          this._state.hasKrx4 =
+            typeof parsed.hasKrx4 === 'boolean' ? parsed.hasKrx4 : Boolean(parsed.hasSubRx);
+          this._state.hasDiversity =
+            typeof parsed.hasDiversity === 'boolean' ? parsed.hasDiversity : this._state.hasKrx4;
+          this._state.radioModel =
+            parsed.radioModel || (parsed.hasHdr ? 'K4HD' : (this._state.hasKrx4 ? 'K4D' : 'K4'));
           this._state.hasAtu = Boolean(parsed.hasAtu);
           this._state.hasKpa4 = Boolean(parsed.hasKpa4);
           this._state.hasHdr = Boolean(parsed.hasHdr);
           this._state.hasLinearAmp = Boolean(parsed.hasLinearAmp);
+          if (!this._state.hasDiversity && this._state.diversityEnabled) {
+            this._state.diversityEnabled = false;
+          }
           this._emitChange('optionModules');
           return true;
 
@@ -783,6 +889,7 @@
           }
           if (changed) {
             t.updatedAt = Date.now();
+            this._recordSensorSample(200);
             this._emitChange('telemetry');
           }
           return changed;
@@ -865,6 +972,7 @@
           ) {
             this._lastNonZeroTuneSwr = swr;
           }
+          this._recordSensorSample(200);
           this._emitChange('txMeters');
           return true;
         }
@@ -881,6 +989,7 @@
           if ((this._state.txActive || this._state.atuTuning || watts > 0) && watts > (m.peakFwdWatts || 0)) {
             m.peakFwdWatts = watts;
           }
+          this._recordSensorSample(200);
           this._emitChange('txMeters');
           return true;
         }
@@ -1009,6 +1118,12 @@
         case 'keyerStatus':
           this._state.keyerBufferFull = Boolean(parsed.bufferFull);
           this._emitChange('keyerBufferFull');
+          return true;
+
+        case 'dvrPlayback':
+          this._state.dvrSlot = Number.isFinite(parsed.slot) ? parsed.slot : 0;
+          this._state.dvrPlaying = Boolean(parsed.playing);
+          this._emitChange('dvrPlayback');
           return true;
 
         case 'radioId':

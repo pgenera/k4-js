@@ -440,15 +440,20 @@
       const t = arg.trim();
       if (!t) return null;
       const u = t.toUpperCase();
+      const hasKrx4 = u.includes('S');
+      const hasHdr = u.includes('H');
       return {
         kind: 'optionModule',
         rx: null,
         om: t,
         optionModules: t,
-        hasSubRx: u.includes('S'),
+        hasSubRx: hasKrx4,
+        hasKrx4,
+        hasDiversity: hasKrx4,
+        radioModel: hasHdr ? 'K4HD' : (hasKrx4 ? 'K4D' : 'K4'),
         hasAtu: u.includes('A'),
         hasKpa4: u.includes('P'),
-        hasHdr: u.includes('H'),
+        hasHdr,
         hasLinearAmp: u.includes('L') || u.includes('1'),
       };
     }),
@@ -1048,6 +1053,10 @@
         }
       }
       return 'FC' + rxDollar(rx) + ';';
+    },
+    ifCenter(rx, freqHz) {
+      const f = clamp(Math.round(Number(freqHz) || 14074000), 100000, 54000000);
+      return 'FI' + rxDollar(rx) + String(f).padStart(11, '0') + ';';
     },
     rit(rx, on) {
       return 'RT' + rxDollar(rx) + (on ? '1' : '0') + ';';

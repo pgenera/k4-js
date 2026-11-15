@@ -144,12 +144,14 @@ type DebugStats struct {
 	PowerRange          string  `json:"powerRange"`
 	TxAntenna           int     `json:"txAntenna"`
 	AtuMode             int     `json:"atuMode"`
+	OptionModules       string  `json:"optionModules"`
 }
 
 type Radio struct {
 	mu sync.Mutex
 
-	AllowTx bool
+	AllowTx       bool
+	OptionModules string
 
 	RxA                RxState
 	RxB                RxState
@@ -285,6 +287,7 @@ func NewRadio() *Radio {
 
 	return &Radio{
 		AllowTx:            true,
+		OptionModules:      omOptionModuleStr,
 		RxA:                baseA,
 		RxB:                baseB,
 		CwPitchHz:          500,
@@ -342,6 +345,26 @@ func NewRxOnlyRadio() *Radio {
 	r := NewRadio()
 	r.AllowTx = false
 	return r
+}
+
+// SetModel configures option modules for "k4" (no KRX4), "k4d" (KRX4), or "k4hd" (KRX4+KHDR4).
+func (r *Radio) SetModel(model string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	switch strings.ToLower(strings.TrimSpace(model)) {
+	case "k4":
+		r.OptionModules = "OM AP------4---;"
+		r.DiversityEnabled = false
+	case "k4hd":
+		r.OptionModules = "OM AP-SH---4---;"
+	default:
+		r.OptionModules = omOptionModuleStr
+	}
+}
+
+func (r *Radio) hasKrx4Locked() bool {
+	body := strings.TrimSpace(strings.TrimPrefix(r.OptionModules, "OM"))
+	return strings.Contains(strings.ToUpper(body), "S")
 }
 
 func (r *Radio) RecordConnectionAttempt() {
@@ -752,12 +775,7 @@ func (r *Radio) HandleInboundAudio(payload []byte, tSec float64) {
 	r.TxAudioLastAt = tSec
 }
 
-// StepTx advances ATU convergence, CW keyer drain, electrical/thermal physics, and emits 10 Hz TM/PO CAT.
-func (r *Radio) StepTx(tSec float64) string {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	r.updatePhysicsLocked(tSec)
+func (r *Radio) advanceAsyncCompletionLocked(tSec float64) string {
 	kyDone := r.drainKeyerLocked(tSec)
 	atuDone, finalSwr := r.advanceAtuLocked(tSec)
 
@@ -770,15 +788,27 @@ func (r *Radio) StepTx(tSec float64) string {
 			sb.WriteString(r.formatTmCmdLocked(4, 0, 18.0, finalSwr))
 			sb.WriteString("PO0180;TU0;TQ0;TQX0;TM000000000000;PO0000;")
 		}
-		return sb.String()
 	}
 	if kyDone {
 		r.LastFwdTenthsW = 0
 		r.LastSwrTenths = 0
 		r.LastAlcBars = 0
 		sb.WriteString("TB000;KY0;TQ0;TQX0;TM000000000000;PO0000;")
-		return sb.String()
 	}
+	return sb.String()
+}
+
+// StepTx advances ATU convergence, CW keyer drain, electrical/thermal physics, and emits 10 Hz TM/PO CAT.
+func (r *Radio) StepTx(tSec float64) string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.updatePhysicsLocked(tSec)
+	if doneCat := r.advanceAsyncCompletionLocked(tSec); doneCat != "" {
+		return doneCat
+	}
+
+	var sb strings.Builder
 	if !(r.TxActive || r.AtuTuning) {
 		return ""
 	}
@@ -876,6 +906,7 @@ func (r *Radio) Stats() DebugStats {
 		PowerRange:          r.PowerRange,
 		TxAntenna:           r.TxAntenna,
 		AtuMode:             r.AtuMode,
+		OptionModules:       r.OptionModules,
 	}
 }
 
@@ -970,10 +1001,11 @@ func (r *Radio) HandleCAT(raw string, tSec float64) (reply string, closeConn boo
 	defer r.mu.Unlock()
 
 	r.updatePhysicsLocked(tSec)
-	r.drainKeyerLocked(tSec)
-	r.advanceAtuLocked(tSec)
 
 	var sb strings.Builder
+	if doneCat := r.advanceAsyncCompletionLocked(tSec); doneCat != "" {
+		sb.WriteString(doneCat)
+	}
 	for _, cmd := range cmds {
 		trimmed := strings.TrimSpace(cmd)
 		if trimmed == "" {
@@ -1002,7 +1034,11 @@ func (r *Radio) HandleCAT(raw string, tSec float64) (reply string, closeConn boo
 func (r *Radio) fullSnapshotLocked(tSec float64) string {
 	var sb strings.Builder
 	sb.WriteString("IDK4-SIM;")
-	sb.WriteString(omOptionModuleStr)
+	if r.OptionModules != "" {
+		sb.WriteString(r.OptionModules)
+	} else {
+		sb.WriteString(omOptionModuleStr)
+	}
 	sb.WriteString(rvModulesStr)
 	sb.WriteString("SN00421;")
 	sb.WriteString(fmt.Sprintf("SL%d;", r.StreamingLatency))
@@ -1166,6 +1202,9 @@ func (r *Radio) execSingleLocked(orig, upper string, tSec float64) string {
 	case upper == "ID":
 		return "IDK4-SIM;"
 	case upper == "OM":
+		if r.OptionModules != "" {
+			return r.OptionModules
+		}
 		return omOptionModuleStr
 	case upper == "SN":
 		return "SN00421;"
@@ -1631,6 +1670,11 @@ func (r *Radio) execSingleLocked(orig, upper string, tSec float64) string {
 		if arg != "" {
 			isSet = true
 		}
+		if !r.hasKrx4Locked() {
+			r.DiversityEnabled = false
+			resp = "DV0;"
+			break
+		}
 		copyAtoB := func() {
 			r.SubRxEnabled = true
 			r.RxB.FreqHz = r.RxA.FreqHz
@@ -1660,7 +1704,7 @@ func (r *Radio) execSingleLocked(orig, upper string, tSec float64) string {
 		} else {
 			isSet = true
 			if off, err := strconv.ParseInt(arg, 10, 64); err == nil {
-				target.PanCenterOffsetHz = clampInt64(off, -200000, 200000)
+				target.PanCenterOffsetHz = clampInt64(off, -5000000, 5000000)
 			}
 		}
 		fiPrefix := "FI"
@@ -1669,9 +1713,16 @@ func (r *Radio) execSingleLocked(orig, upper string, tSec float64) string {
 		}
 		resp = fmt.Sprintf("%s%011d;", fiPrefix, clampInt64(target.FreqHz+target.PanCenterOffsetHz, 100000, 54000000))
 	case strings.HasPrefix(upper, "FI"):
-		rx, prefix, _ := splitSubRx(upper, "FI")
+		rx, prefix, arg := splitSubRx(upper, "FI")
 		target := r.rxPtr(rx)
-		return fmt.Sprintf("%s%011d;", prefix, clampInt64(target.FreqHz+target.PanCenterOffsetHz, 100000, 54000000))
+		if arg != "" {
+			isSet = true
+			if centerHz, err := strconv.ParseInt(arg, 10, 64); err == nil {
+				clampedCenter := clampInt64(centerHz, 100000, 54000000)
+				target.PanCenterOffsetHz = clampInt64(clampedCenter-target.FreqHz, -5000000, 5000000)
+			}
+		}
+		resp = fmt.Sprintf("%s%011d;", prefix, clampInt64(target.FreqHz+target.PanCenterOffsetHz, 100000, 54000000))
 	case strings.HasPrefix(upper, "RT"):
 		rx, prefix, arg := splitSubRx(upper, "RT")
 		target := r.rxPtr(rx)

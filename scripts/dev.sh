@@ -8,6 +8,7 @@ WS_LISTEN="127.0.0.1:${WS_PORT}"
 CONTROL_HTTP="127.0.0.1:19206"
 FPS="20"
 PASSWORD=""
+MODEL="k4"
 SERVE_WEB=0
 RX_ONLY=0
 
@@ -20,6 +21,10 @@ while [[ $# -gt 0 ]]; do
     --rx-only)
       RX_ONLY=1
       shift
+      ;;
+    --model)
+      MODEL="$2"
+      shift 2
       ;;
     --fps)
       FPS="$2"
@@ -43,6 +48,7 @@ while [[ $# -gt 0 ]]; do
 Usage: $(basename "$0") [options]
   --serve            Serve web/ over http://localhost:${WS_PORT}/ via websockify --web (natively trusted isSecureContext for mic capture + ws://localhost:${WS_PORT}/ws without SSL certs)
   --rx-only          Start k4sim in strict RX-only mode (-rx-only, blocking operational TX CAT commands)
+  --model <model>    Simulated radio model: k4 (default), k4d, or k4hd
   --fps <1..30>      Simulator panadapter FPS (default: 20)
   --password <pw>    Optional simulator SHA-384 network password
   --ws-port <port>   Websockify listen port (default: 9280)
@@ -82,6 +88,7 @@ SIM_ARGS=(
   -fps "$FPS"
   -password "$PASSWORD"
   -control-http "$CONTROL_HTTP"
+  -model "$MODEL"
 )
 if [[ "$RX_ONLY" -eq 1 ]]; then
   SIM_ARGS+=(-rx-only)

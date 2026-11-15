@@ -395,22 +395,41 @@ def connect_via_ui(client: MarionetteClient, ws_url: str, password: str):
         raise AssertionError(f"{e} | diag={diag} | console={errs}") from None
 
 
-def run_browser_unit_tests(client: MarionetteClient):
-    print("[1/3] Running browser unit tests on file:///.../web/test.html ...")
+def run_browser_unit_tests(client: MarionetteClient, test_url: str | None = None):
+    target_url = test_url or ("file://" + os.path.join(WEB_DIR, "test.html"))
+    label = "http://localhost/test.html" if target_url.startswith("http") else "file:///.../web/test.html"
+    print(f"[1/3] Running browser unit tests on {label} ...")
     client.reset_console_errors()
-    test_url = "file://" + os.path.join(WEB_DIR, "test.html")
-    client.navigate(test_url)
+    client.navigate(target_url)
     client.install_page_error_trap()
 
-    results = wait_until(
-        lambda: client.execute_script("return window.__K4_TEST_RESULTS__ || null;"),
-        "window.__K4_TEST_RESULTS__",
-    )
-    assert results["total"] >= 28, f"Expected >= 28 unit tests, got {results}"
+    try:
+        results = wait_until(
+            lambda: client.execute_script("return window.__K4_TEST_RESULTS__ || null;"),
+            "window.__K4_TEST_RESULTS__",
+            timeout=15.0,
+        )
+    except AssertionError as exc:
+        diag = client.execute_script(
+            """
+            const rows = Array.from(document.querySelectorAll('#results .test-row'));
+            return {
+              href: location.href,
+              readyState: document.readyState,
+              isSecureContext: window.isSecureContext,
+              summary: document.getElementById('summary')?.textContent || null,
+              completedCount: rows.length,
+              lastRow: rows.length ? rows[rows.length - 1].textContent : null,
+              errors: window.__K4_E2E_ERRORS__ || [],
+            };
+            """
+        )
+        raise AssertionError(f"{exc} | diag={diag} | console={client.collect_console_errors()}") from None
+    assert results["total"] >= 31, f"Expected >= 31 unit tests, got {results}"
     assert results["failed"] == 0, f"Browser unit tests failed: {results}"
     errs = client.collect_console_errors()
-    assert not errs, f"Console errors during test.html: {errs}"
-    print(f"      PASS: {results['passed']}/{results['total']} unit tests passed, 0 console errors")
+    assert not errs, f"Console errors during test.html ({label}): {errs}"
+    print(f"      PASS ({label}): {results['passed']}/{results['total']} unit tests passed, 0 console errors")
 
 
 def run_file_origin_e2e(client: MarionetteClient, ws_url: str, password: str, stats_url: str):
@@ -781,7 +800,7 @@ def run_file_origin_e2e(client: MarionetteClient, ws_url: str, password: str, st
 def run_http_origin_and_screenshots(
     client: MarionetteClient, http_url: str, ws_url_expected: str, password: str, stats_url: str, out_dir: str
 ):
-    print(f"[3/3] Running cert-free localhost HTTP + TX/ATU/Sensor E2E & screenshots on {http_url} ...")
+    print(f"[3/3] Running cert-free localhost HTTP + TX/ATU/Mic/Sensor E2E & screenshots on {http_url} ...")
     client.set_window_rect(1440, 900)
     client.reset_console_errors()
     client.navigate(http_url)
@@ -807,18 +826,103 @@ def run_http_origin_and_screenshots(
     )
     verify_non_uniform_canvas(client)
 
-    # (b) Verify TX resets to rx-only on connect; then TX TEST (TS1) + two-tone PTT hold
+    # Verify Base K4 OM hides Diversity RX while keeping Dual-Pan (#DPM) enabled
+    k4_cap = wait_until(
+        lambda: client.execute_script(
+            """
+            const snap = globalThis.k4App.state.getSnapshot();
+            const divBtn = document.querySelector('[data-testid="diversity-switch"]');
+            const hudDual = globalThis.k4App._hudDualBtn;
+            if (!snap.radioModel || !divBtn || !hudDual) return null;
+            return {
+              radioModel: snap.radioModel,
+              hasDiversity: snap.hasDiversity,
+              hasKrx4: snap.hasKrx4,
+              divRowHidden: Boolean(divBtn.closest('[hidden]')),
+              hudDualDisabled: Boolean(hudDual.disabled),
+            };
+            """
+        ),
+        "Base K4 OM capabilities hydrated",
+    )
+    assert k4_cap["radioModel"] == "K4" and k4_cap["hasDiversity"] is False and k4_cap["hasKrx4"] is False, (
+        f"Expected Base K4 model without KRX4/Diversity: {k4_cap}"
+    )
+    assert k4_cap["divRowHidden"] is True, f"Diversity RX row must be hidden on base K4: {k4_cap}"
+    assert k4_cap["hudDualDisabled"] is False, f"Dual-Pan HUD button must remain enabled on base K4: {k4_cap}"
+
+    # Verify click Dual-Pan toggles 0 <-> 2 cleanly on base K4
+    client.execute_script("globalThis.k4App._hudDualBtn.click();")
+    wait_until(
+        lambda: client.execute_script("return globalThis.k4App.state.getSnapshot().dualPanMode === 2;"),
+        "Dual Pan (#DPM2) works on base K4",
+    )
+    client.execute_script("globalThis.k4App._hudDualBtn.click();")
+    wait_until(
+        lambda: client.execute_script("return globalThis.k4App.state.getSnapshot().dualPanMode === 0;"),
+        "Restore Single Pan (#DPM0)",
+    )
+
+    # Verify click-and-drag on panadapter pans panadapter centerpoint without detuning VFO A
+    fa_pre_drag = http_get_json(stats_url)["faHz"]
+    drag_pts = client.execute_script(
+        """
+        const surf = document.querySelector('.k4-pan-surface');
+        const rect = surf.getBoundingClientRect();
+        const lay = globalThis.k4App.panadapter._renderer.getLayouts()[0];
+        const y = Math.round(rect.top + lay.specRect.y + lay.specRect.h * 0.35);
+        const x0 = Math.round(rect.left + lay.specRect.x + lay.specRect.w * 0.78);
+        const x1 = Math.round(rect.left + lay.specRect.x + lay.specRect.w * 0.56);
+        return { x0, x1, y };
+        """
+    )
+    client.perform_actions(
+        [
+            {
+                "type": "pointer",
+                "id": "mouse",
+                "parameters": {"pointerType": "mouse"},
+                "actions": [
+                    {"type": "pointerMove", "duration": 0, "x": drag_pts["x0"], "y": drag_pts["y"], "origin": "viewport"},
+                    {"type": "pointerDown", "button": 0},
+                    {"type": "pointerMove", "duration": 40, "x": round((drag_pts["x0"] + drag_pts["x1"]) / 2), "y": drag_pts["y"], "origin": "viewport"},
+                    {"type": "pointerMove", "duration": 40, "x": drag_pts["x1"], "y": drag_pts["y"], "origin": "viewport"},
+                    {"type": "pointerUp", "button": 0},
+                ],
+            }
+        ]
+    )
+    client.release_actions()
+    wait_until(
+        lambda: client.execute_script(
+            """
+            const b = document.querySelector('[data-testid="hud-center-btn"]');
+            return globalThis.k4App.panadapter.isViewportOffset('A') === true && b && b.hidden === false;
+            """
+        ),
+        "Panadapter drag moves viewport center and shows Center button",
+    )
+    assert http_get_json(stats_url)["faHz"] == fa_pre_drag, "Panadapter drag must NOT tune VFO A"
+    client.click_element(client.find_element('[data-testid="hud-center-btn"]'))
+    wait_until(
+        lambda: client.execute_script("return !globalThis.k4App.panadapter.isViewportOffset('A');"),
+        "Center button clears viewport pan offset",
+    )
+
+    # (b) Verify TX resets to rx-only on connect; then TX TEST (TS1) + warm standby Mic + fake-mic PTT hold
     rx_boot = client.execute_script(
         """
         const snap = globalThis.k4App.state.getSnapshot();
         const bar = document.querySelector('[data-testid="tx-posture-bar"]');
         const ptt = document.querySelector('[data-testid="ptt-btn"]');
+        const micBtn = document.querySelector('[data-testid="tx-mic-btn"]');
         return {
           posture: snap.txPosture,
           policy: snap.operatingPolicy,
           txActive: snap.txActive,
           barPosture: bar ? bar.dataset.posture : null,
           pttDisabled: ptt ? ptt.disabled : null,
+          micHidden: micBtn ? micBtn.hidden : null,
         };
         """
     )
@@ -826,9 +930,10 @@ def run_http_origin_and_screenshots(
     assert rx_boot["txActive"] is False and rx_boot["barPosture"] == "rx-only" and rx_boot["pttDisabled"] is True, (
         f"Unexpected TX boot UI state: {rx_boot}"
     )
+    assert rx_boot["micHidden"] is True, f"Mic indicator should stay hidden in rx-only: {rx_boot}"
 
-    # Ensure USB mode for voice/AF two-tone TX capture and open TX / ATU drawer tab
-    client.execute_script(
+    # Ensure USB mode for voice TX capture, open TX / ATU drawer tab, and verify default source === 'mic' on localhost
+    default_src = client.execute_script(
         """
         globalThis.k4App.client.setMode('A', 'USB');
         const btns = Array.from(document.querySelectorAll('.k4-panel-tabs .k4-tab-btn'));
@@ -837,16 +942,16 @@ def run_http_origin_and_screenshots(
         txTab.click();
         const srcSel = document.querySelector('[data-testid="tx-audio-source"]');
         if (!srcSel) throw new Error('tx-audio-source select missing');
-        srcSel.value = 'two-tone';
-        srcSel.dispatchEvent(new Event('change', { bubbles: true }));
+        return srcSel.value;
         """
     )
+    assert default_src == "mic", f"Expected default TX audio source 'mic' on http://localhost, got {default_src!r}"
     wait_until(
         lambda: client.execute_script("return globalThis.k4App.state.getSnapshot().rxA.mode === 2;"),
         "VFO A switched to USB mode for TX audio test",
     )
 
-    # Switch to TX TEST (TS1)
+    # Switch to TX TEST (TS1): warm standby mic opens automatically + steady (non-blinking) TX Test indicators
     client.click_element(client.find_element('[data-testid="tx-mode-test"]'))
     wait_until(
         lambda: client.execute_script(
@@ -854,13 +959,22 @@ def run_http_origin_and_screenshots(
             const snap = globalThis.k4App.state.getSnapshot();
             const ptt = document.querySelector('[data-testid="ptt-btn"]');
             const ind = document.querySelector('[data-testid="k4-tx-vfo-indicator"]');
+            const badge = document.querySelector('[data-testid="vfo-a-tx-badge"]');
+            const micBtn = document.querySelector('[data-testid="tx-mic-btn"]');
+            const indAnim = ind ? getComputedStyle(ind).animationName : '';
+            const badgeAnim = badge ? getComputedStyle(badge).animationName : '';
             return snap.txPosture === 'tx-test' && snap.txTestMode === true &&
                    ptt && ptt.disabled === false &&
-                   ind && ind.textContent === '◀ TX Test' && ind.dataset.state === 'test';
+                   micBtn && !micBtn.hidden && micBtn.dataset.micState === 'ready' &&
+                   ind && ind.textContent === '◀ TX Test' && ind.dataset.state === 'test' &&
+                   badge && !badge.classList.contains('is-flashing') &&
+                   indAnim === 'none' && badgeAnim === 'none' &&
+                   globalThis.k4App.audio._standbyMicStream &&
+                   globalThis.k4App.audio._standbyMicStream.getAudioTracks()[0]?.readyState === 'live';
             """
         )
         and http_get_json(stats_url)["txTestMode"] is True,
-        "TX TEST (TS1) posture active with flashing ◀ TX Test indicator",
+        "TX TEST (TS1) opens live standby mic stream (MIC RDY) with steady TX Test graphics",
     )
 
     audio_before = http_get_json(stats_url)["txAudioPacketsIn"]
@@ -871,7 +985,7 @@ def run_http_origin_and_screenshots(
         return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
         """
     )
-    # Hold PTT via WebDriver pointerDown
+    # Hold PTT via WebDriver pointerDown using default 'mic' source (Firefox fake mic)
     client.perform_actions(
         [
             {
@@ -898,12 +1012,14 @@ def run_http_origin_and_screenshots(
                     const snap = globalThis.k4App.state.getSnapshot();
                     const cl = document.querySelector('[data-testid="tx-meter-cluster"]');
                     const pwr = document.querySelector('[data-testid="tx-meter-pwr"]');
+                    const micBtn = document.querySelector('[data-testid="tx-mic-btn"]');
                     return snap.txActive === true && snap.txMeters.alcBars > 0 && snap.txMeters.fwdWatts === 0 &&
+                           micBtn && micBtn.dataset.micState === 'capturing' &&
                            cl && !cl.hidden && pwr && pwr.textContent.includes('0.0W');
                     """
                 )
             ),
-            "TX TEST hold-PTT transmits two-tone audio with ALC > 0 & FWD == 0.0W",
+            "TX TEST hold-PTT captures live microphone audio with MIC LIVE, ALC > 0 & FWD == 0.0W",
             timeout=6.0,
         )
     finally:
@@ -922,22 +1038,83 @@ def run_http_origin_and_screenshots(
     wait_until(
         lambda: http_get_json(stats_url)["txActive"] is False
         and client.execute_script(
-            "const s = globalThis.k4App.state.getSnapshot(); return s.txActive === false && s.txMeters.fwdWatts === 0;"
+            """
+            const s = globalThis.k4App.state.getSnapshot();
+            const micBtn = document.querySelector('[data-testid="tx-mic-btn"]');
+            return s.txActive === false && s.txMeters.fwdWatts === 0 &&
+                   micBtn && micBtn.dataset.micState === 'ready' &&
+                   globalThis.k4App.audio._standbyMicStream &&
+                   globalThis.k4App.audio._standbyMicStream.getAudioTracks()[0]?.readyState === 'live';
+            """
         ),
-        "PTT release drops TX TEST to RX immediately",
+        "PTT release drops TX TEST to RX while keeping standby mic stream live (MIC RDY)",
     )
 
-    # (c) 2-step Arm live TX popover + KAT4 ATU Tune + Full Search Escape panic abort
+    # K4 Message Memories (M1-M4 + BANK 1/2 + STOP PB0)
+    client.click_element(client.find_element('[data-testid="msg-bank-btn"]'))
+    wait_until(
+        lambda: client.execute_script(
+            "const b = document.querySelector('[data-testid=\"msg-bank-btn\"]'); return b && b.textContent.includes('BANK 2');"
+        ),
+        "Message Bank toggles to BANK 2",
+    )
+    client.click_element(client.find_element('[data-testid="msg-m1"]'))
+    wait_until(
+        lambda: client.execute_script(
+            "const s = globalThis.k4App.state.getSnapshot(); return s.dvrPlaying === true && s.dvrSlot === 5;"
+        ),
+        "Message M1 in Bank 2 triggers PB5",
+    )
+    client.click_element(client.find_element('[data-testid="msg-stop-btn"]'))
+    wait_until(
+        lambda: client.execute_script(
+            "const s = globalThis.k4App.state.getSnapshot(); return s.dvrPlaying === false && s.dvrSlot === 0;"
+        ),
+        "Message STOP triggers PB0",
+    )
+    client.click_element(client.find_element('[data-testid="msg-bank-btn"]'))
+
+    # Clickable 8-sensor grid + top sensor strip graph
+    client.execute_script("document.querySelector('[data-testid=\"sensor-tile-pt\"]').click();")
+    wait_until(
+        lambda: client.execute_script(
+            """
+            const panel = document.querySelector('[data-testid="sensor-graph-panel"]');
+            const canvas = document.querySelector('[data-testid="sensor-graph-canvas"]');
+            const tilesOk = ['vs','is','pt','lt','tf','sys','fwd','swr'].every(
+              (k) => Boolean(document.querySelector('[data-testid="sensor-tile-' + k + '"]'))
+            );
+            return tilesOk && panel && panel.hidden === false &&
+                   panel.textContent.includes('PA Heatsink') &&
+                   canvas && canvas.width > 0 && canvas.height > 0;
+            """
+        ),
+        "Clicking sensor tile pt opens PA Heatsink sensor history graph",
+    )
+    client.execute_script("document.querySelector('[data-testid=\"strip-sensor-vs\"]').click();")
+    wait_until(
+        lambda: client.execute_script(
+            """
+            const panel = document.querySelector('[data-testid="sensor-graph-panel"]');
+            return panel && panel.hidden === false && panel.textContent.includes('Supply Voltage');
+            """
+        ),
+        "Clicking top strip VS pill switches graph to Supply Voltage",
+    )
+
+    # (c) 2-step Arm live TX popover + KAT4 ATU Tune + Full Search Escape panic abort to RX ONLY
     client.click_element(client.find_element('[data-testid="tx-mode-armed"]'))
     wait_until(
         lambda: client.execute_script(
             """
             const pop = document.querySelector('[data-testid="tx-arm-confirm"]');
+            const micRow = document.getElementById('tx-arm-mic');
             const s = globalThis.k4App.state.getSnapshot();
-            return pop && pop.hidden === false && s.txPosture !== 'tx-armed';
+            return pop && pop.hidden === false && s.txPosture !== 'tx-armed' &&
+                   micRow && micRow.textContent.toLowerCase().includes('mic');
             """
         ),
-        "2-step TX arm confirmation popover opens before arming",
+        "2-step TX arm confirmation popover opens with Microphone summary before arming",
     )
     client.click_element(client.find_element('[data-testid="tx-arm-confirm-btn"]'))
     wait_until(
@@ -1012,47 +1189,22 @@ def run_http_origin_and_screenshots(
         "KAT4 ATU Tune (TU3) starts live SWR tuning",
         timeout=5.0,
     )
-    try:
-        wait_until(
-            lambda: (
-                (st := http_get_json(stats_url))["atuMatched"] is True
-                and st["atuTuning"] is False
-                and client.execute_script(
-                    """
-                    const s = globalThis.k4App.state.getSnapshot();
-                    const badge = document.querySelector('[data-testid="atu-status"]');
-                    return s.atuTuning === false && Number.isFinite(s.atuMatchedSwr) && s.atuMatchedSwr > 0 && s.atuMatchedSwr <= 1.3 &&
-                           badge && (badge.dataset.state === 'matched' || badge.dataset.state === 'warn');
-                    """
-                )
-            ),
-            "KAT4 ATU Tune converges to matched SWR <= 1.3",
-            timeout=6.0,
-        )
-    except AssertionError as exc:
-        diag = {
-            "stats": http_get_json(stats_url),
-            "js": client.execute_script(
+    wait_until(
+        lambda: (
+            (st := http_get_json(stats_url))["atuMatched"] is True
+            and st["atuTuning"] is False
+            and client.execute_script(
                 """
                 const s = globalThis.k4App.state.getSnapshot();
                 const badge = document.querySelector('[data-testid="atu-status"]');
-                return {
-                  atuTuning: s.atuTuning,
-                  atuTuneKind: s.atuTuneKind,
-                  atuMatchedSwr: s.atuMatchedSwr,
-                  atuSearchWindowUntil: s.atuSearchWindowUntil,
-                  txActive: s.txActive,
-                  txTestMode: s.txTestMode,
-                  splitEnabled: s.splitEnabled,
-                  txMeters: s.txMeters,
-                  badgeState: badge ? badge.dataset.state : null,
-                  badgeText: badge ? badge.textContent : null,
-                  errors: window.__K4_E2E_ERRORS__ || []
-                };
+                return s.atuTuning === false && Number.isFinite(s.atuMatchedSwr) && s.atuMatchedSwr > 0 && s.atuMatchedSwr <= 1.3 &&
+                       badge && (badge.dataset.state === 'matched' || badge.dataset.state === 'warn');
                 """
-            ),
-        }
-        raise AssertionError(f"{exc}\nDIAG={json.dumps(diag)}") from exc
+            )
+        ),
+        "KAT4 ATU Tune converges to matched SWR <= 1.3",
+        timeout=6.0,
+    )
 
     # Trigger Full Search and abort mid-tune with Escape panic (TU0;RX;)
     client.click_element(client.find_element('[data-testid="atu-full-btn"]'))
@@ -1075,11 +1227,29 @@ def run_http_origin_and_screenshots(
         lambda: (
             (st := http_get_json(stats_url))["atuTuning"] is False
             and st["txActive"] is False
+            and st["txTestMode"] is False
             and client.execute_script(
-                "const s = globalThis.k4App.state.getSnapshot(); return s.atuTuning === false && s.txActive === false;"
+                """
+                const s = globalThis.k4App.state.getSnapshot();
+                const micBtn = document.querySelector('[data-testid="tx-mic-btn"]');
+                return s.atuTuning === false && s.txActive === false && s.txPosture === 'rx-only' &&
+                       micBtn && micBtn.hidden === true && globalThis.k4App.audio.getMicStatus().state === 'idle';
+                """
             )
         ),
-        "Escape panic aborts ATU Full Search cleanly to RX (TU0;RX;)",
+        "Escape (STOP TX · RX) aborts ATU Full Search and resets posture to RX ONLY + releases mic",
+    )
+
+    # Re-arm TX before Spacebar PTT hold test
+    client.click_element(client.find_element('[data-testid="tx-mode-armed"]'))
+    wait_until(
+        lambda: client.execute_script("const pop = document.querySelector('[data-testid=\"tx-arm-confirm\"]'); return pop && pop.hidden === false;"),
+        "TX arm confirmation opens for re-arm before Spacebar PTT",
+    )
+    client.click_element(client.find_element('[data-testid="tx-arm-confirm-btn"]'))
+    wait_until(
+        lambda: client.execute_script("return globalThis.k4App.state.getSnapshot().txPosture === 'tx-armed';"),
+        "TX re-armed cleanly for Spacebar PTT hold",
     )
 
     # (d) Spacebar PTT hold in tx-armed -> 4-bar TX meter, FWD > 0, SIFP current & PA temp rise -> Spacebar release -> RX
@@ -1156,18 +1326,25 @@ def run_http_origin_and_screenshots(
         "Simulator processed KY CW keyer command",
     )
     wait_until(
-        lambda: http_get_json(stats_url)["txActive"] is False,
+        lambda: http_get_json(stats_url)["txActive"] is False
+        and client.execute_script("return globalThis.k4App.state.getSnapshot().txActive === false;"),
         "CW keyer queue drains back to RX cleanly",
         timeout=5.0,
     )
 
-    # Return cleanly to rx-only posture via UI button before screenshots
-    client.click_element(client.find_element('[data-testid="tx-mode-rx"]'))
+    # Return cleanly to rx-only posture via STOP TX · RX (Esc) button before screenshots
+    client.click_element(client.find_element('[data-testid="stop-tx-btn"]'))
     wait_until(
         lambda: client.execute_script(
-            "const s = globalThis.k4App.state.getSnapshot(); return s.txPosture === 'rx-only' && document.querySelector('[data-testid=\"ptt-btn\"]').disabled === true;"
+            """
+            const s = globalThis.k4App.state.getSnapshot();
+            const stopBtn = document.querySelector('[data-testid="stop-tx-btn"]');
+            const ptt = document.querySelector('[data-testid="ptt-btn"]');
+            return stopBtn && stopBtn.textContent.includes('STOP TX · RX') &&
+                   s.txPosture === 'rx-only' && ptt && ptt.disabled === true;
+            """
         ),
-        "Returned to rx-only safety posture",
+        "STOP TX · RX button resets posture back to rx-only",
     )
 
     err_toasts = client.execute_script(
@@ -1252,6 +1429,7 @@ def main() -> int:
         sim_proc = subprocess.Popen(
             [
                 sim_bin,
+                "-model", "k4",
                 "-listen", f"127.0.0.1:{sim_tcp_port}",
                 "-control-http", f"127.0.0.1:{sim_http_port}",
                 "-password", password,
@@ -1282,6 +1460,8 @@ def main() -> int:
             f.write(f'user_pref("marionette.port", {marionette_port});\n')
             f.write('user_pref("browser.shell.checkDefaultBrowser", false);\n')
             f.write('user_pref("devtools.console.stdout.content", true);\n')
+            f.write('user_pref("media.navigator.streams.fake", true);\n')
+            f.write('user_pref("media.navigator.permission.disabled", true);\n')
 
         ff_env = dict(os.environ)
         ff_env["MOZ_HEADLESS"] = "1"

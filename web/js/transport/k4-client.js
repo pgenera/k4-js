@@ -1404,7 +1404,7 @@
         reason,
       });
       this.emit('txPanic', { reason, timestamp: Date.now() });
-      return this.sendCat('TU0;KY @;RX;');
+      return this.sendCat('PB0;TU0;KY @;RX;TS0;');
     }
 
     /**

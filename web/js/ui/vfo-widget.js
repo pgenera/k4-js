@@ -367,7 +367,7 @@
           badgeClass = 'k4-tx-target-tag is-tx-test';
         } else if (isTxTarget && isTest) {
           badgeText = 'TX Test';
-          badgeClass = 'k4-tx-target-tag is-tx-test is-flashing';
+          badgeClass = 'k4-tx-target-tag is-tx-test';
         } else if (isTxTarget && txActive) {
           badgeText = 'TX';
           badgeClass = 'k4-tx-target-tag is-tx-live';

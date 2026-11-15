@@ -10,7 +10,7 @@ Every session starts **receive-only by default** — zero transmit capability is
   - `K4.RxOnlyGate` policy is `'rx-only'`, blocking all TX/ATU/power/keyer SET commands and all outbound `0x01` audio frames.
 - **`'tx-test'` (Elecraft K4 TX Test Mode — K4 `TS1;`)**:
   - `RxOnlyGate` policy becomes `'tx-enabled'`, `txAudioAllowed` enables while held, and client sends `TS1;TM1;PO1;` (`txTestMode: true`) without altering `PC` RF output power.
-  - PTT hold (`PTT` button or held `Spacebar`) keys the transmitter in **TX Test Mode**: the K4 (`TS1;`) inhibits RF output (`0.0 W` forward) while still driving live **ALC / CMP**, keyer sidetone, and downstream PTT gear. Matches the K4 front-panel `[TEST]` switch (`TS1;` <-> `TS0;`): orange flashing **`◀ TX Test`** / **`TX Test ▶`** indicator at the upper middle of the meter/status strip, and independent **`TEST`** toggle while armed (`TS1;`/`TS0;` without losing armed status) or from RX Only (`tx-test` <-> `rx-only`).
+  - PTT hold (`PTT` button or held `Spacebar`) keys the transmitter in **TX Test Mode**: the K4 (`TS1;`) inhibits RF output (`0.0 W` forward) while still driving live **ALC / CMP**, keyer sidetone, and downstream PTT gear. Matches the K4 front-panel `[TEST]` switch (`TS1;` <-> `TS0;`): steady orange **`◀ TX Test`** / **`TX Test ▶`** indicator at the upper middle of the meter/status strip, and independent **`TEST`** toggle while armed (`TS1;`/`TS0;` without losing armed status) or from RX Only (`tx-test` <-> `rx-only`).
 - **`'tx-armed'` (Live RF Transmit — K4 `TS0;`)**:
   - Triggered explicitly by clicking the **Arm TX** control (2-step confirmation popover showing active **TX VFO frequency**, **Mode**, **Power (`PC`)**, and **Selected TX Antenna (`AN` + `ACN` label)**).
   - Sets `RxOnlyGate` policy `'tx-enabled'` and sends `TS0;TM1;PO1;`.
@@ -20,9 +20,9 @@ Every session starts **receive-only by default** — zero transmit capability is
   - **Pointer Hold**: `pointerdown` on `[data-testid="ptt-btn"]` calls `setPointerCapture`, starts PTT (`TX;` + TX audio stream); `pointerup`, `pointercancel`, or `lostpointercapture` immediately stops PTT (`RX;`).
   - **Spacebar Hold**: Pressing `Space` (`e.code === 'Space'`, ignoring `e.repeat === true`) while `txPosture !== 'rx-only'` starts PTT; releasing `Space` (`keyup`) immediately stops PTT.
   - **Spacebar Guardrails**: `Space` NEVER triggers PTT if `txPosture === 'rx-only'`, if a modal is open (`omnibar-modal` or `connection-dialog` open), or if focus is inside an editable element (`INPUT`, `TEXTAREA`, `SELECT`, or `isContentEditable`).
-- **Time-Out Timer (TOT) & Panic Fail-Safes**:
-  - Client-side deadman TOT: configurable `txTimeoutSec` (default `180 s`); automatically calls `panicAbortTx('timeout')` (`TU0;KY @;RX;`) and emits a warning toast if PTT stays held continuously past TOT.
-  - **Unconditional Panic Key (`Escape`)**: When `txActive || pttHeld || atuTuning || txBufferCount > 0`, `Escape` immediately sends `TU0;KY @;RX;` and stops TX audio capture.
+- **Time-Out Timer (TOT) & Emergency `STOP TX · RX (Esc)` Fail-Safes**:
+  - Client-side deadman TOT: configurable `txTimeoutSec` (default `180 s`); automatically calls `panicAbortTx('timeout')` (`PB0;TU0;KY @;RX;TS0;`), resets posture to `'rx-only'`, releases standby mic, and emits a warning toast if PTT stays held continuously past TOT.
+  - **Unconditional Stop Key (`Escape`) & `[data-testid="stop-tx-btn"]` (`STOP TX · RX (Esc)`)**: When active in TX/ATU/Keyer or in a TX-enabled posture outside modals, `Escape` (or clicking `STOP TX · RX`) immediately sends `PB0;TU0;KY @;RX;TS0;`, stops TX audio capture, releases standby microphone capture, and resets posture to `'rx-only'`.
   - **Window / Socket Loss**: `window` `'blur'`, `document` `'visibilitychange'` (`hidden`), `'pagehide'`, and WebSocket `'close'` immediately drop local TX audio capture and send `RX;` (or `TU0;RX;` if tuning) before closing if socket is open.
   - **Hardware Inhibit (`IN1`)**: When `state.txInhibit === true`, UI disables keying with a clear `TX INHIBIT` indicator.
 
@@ -37,7 +37,7 @@ Every session starts **receive-only by default** — zero transmit capability is
 - **Permanent Destructive / Factory / Admin Blocklist (blocked in EVERY policy, including `'tx-enabled'`)**:
   - Prefixes: `EE` (EE Init), `LB` (LPA Bias Cal), `WM` (Wattmeter Cal), `#CAL`, `PS` (Power Off/Restart), `RRP`, `RRC`, `RRT`, `RS`, `EC` (RS232 echo), `SW`, `SWT`, `SWH` (arbitrary front-panel switch emulation), `DARM`, `DARS`, `DAPM`, `DAMP`, `DARC` (raw DVR recording/erase aliases; use `PBn;` only).
 - **In `'rx-only'` Policy (100% Backward Compatible with Spec 01)**:
-  - Exact allowed additions beyond Spec 01 (`TQ`, `TQX`, `IN`, `TS`, `AT`, `AN`, `ACT`, `ACN1..5`, `PC`, `PCX`, `FT`, `FT0`, `XT`, `TU0`, `RX`, `TM1`, `PO1`, `MG`, `MI`, `MS`, `CP`, `ML0..2`, `KS`, `KP`, `VXC`, `VXV`, `VXD` GET-only queries + `TU0;` emergency abort + `SIDU1;`/`SIRC1;`).
+  - Exact allowed additions beyond Spec 01 (`TQ`, `TQX`, `IN`, `TS`, `TS0`, `AT`, `AN`, `ACT`, `ACN1..5`, `PC`, `PCX`, `FT`, `FT0`, `XT`, `PB0`, `TU0`, `RX`, `TM1`, `PO1`, `MG`, `MI`, `MS`, `CP`, `ML0..2`, `KS`, `KP`, `VXC`, `VXV`, `VXD` GET-only queries + `TU0;` / `PB0;` / `TS0;` safe abort/reset + `SIDU1;`/`SIRC1;`).
   - All SET forms (`TX;`, `TU1..4;`, `PC050;`, `PC050H;`, `PC050L;`, `KY ...;`, `AN1..3;`, `AN/;`, `AT0..2;`, `FT1;`, `FT/;`, `XT0..1;`, `TS0..1;`, `PB1..8;`, `SW01;`, `SP1..3;`, `MG020;`, `CP010;`, `KS025;`, etc.) remain **strictly blocked**.
 - **In `'tx-enabled'` Policy**:
   - Allows Spec 01 RX/pan/audio/session commands PLUS operational TX/ATU/keyer commands (exact or matched via boundary):
@@ -110,7 +110,7 @@ Add `K4.BinaryPackets.encodeAudio(opts)`:
 - **`KP<i:A|B><o:N|R><nnn>;`**: `{ kind: 'keyerPaddle', rx: null, iambic: i, paddleOrder: o, weight: nnn }`
 - **`KY0/1;`**: `{ kind: 'keyerStatus', rx: null, bufferFull: v === 1 }`
 - **`PB0..8;`**: `{ kind: 'dvrPlayback', rx: null, slot: n, playing: n > 0 }`
-- **`OM ...`**: extend existing `optionModule` parser with `hasAtu: t.includes('A')`, `hasKpa4: t.includes('P')`, `hasHdr: t.includes('H')`, `hasLinearAmp: t.includes('L') || t.includes('1')`.
+- **`OM ...`**: parses `hasSubRx` (`S`, legacy test field), `hasKrx4` (`S`), `hasDiversity` (`S` — base `K4` hides Diversity RX `DV` while keeping Dual Panadapter `#DPM` enabled), `radioModel` (`K4` / `K4D` / `K4HD`), `hasAtu` (`A`), `hasKpa4` (`P`), `hasHdr` (`H`), `hasLinearAmp` (`L` or `1`).
 - **`SI*`**: ensure `SIRF` parses `PT` (`paTempC`), `LT` (`lpaTempC`), `PA` (`paAmps`), `V27`/`VH` if present, `SIDU` parses `T` (`ducTempC`), and `SIFP` tracks `VS` (`supplyVolts`), `IS` (`supplyAmps`), `TF` (`fpTempC`).
 
 ### 3.2 New Builders (`K4.CatCodec.builders`)
@@ -172,7 +172,7 @@ Add `K4.BinaryPackets.encodeAudio(opts)`:
   - `startPtt({ maxSeconds } = {})`: refuses if `txPosture === 'rx-only'` or `state.txInhibit` or `!isWsOpen`. Resets peak meters for the new TX keydown, sets `gate.setTxAudioAllowed(true)`, updates `state` (`pttHeld: true, txStartedAt: Date.now()`), starts TOT timer, sends `TX;TM1;PO1;`, notifies attached `AudioEngine` to start streaming TX audio frames if in voice/AF-data mode.
   - `stopPtt()`: clears TOT timer, stops `AudioEngine` TX capture, sets `gate.setTxAudioAllowed(false)`, updates `state` (`pttHeld: false, txStartedAt: null`), sends `RX;`.
   - `sendTxAudioPacket(payloadUint8)`: delegates through `this.sendBinary(0x01, payloadUint8)` so `RxOnlyGate.inspectBinary(0x01)` enforces `tx-enabled && txAudioAllowed`.
-  - `panicAbortTx(reason)`: immediately stops `AudioEngine` TX capture, clears TOT timer, sets `gate.setTxAudioAllowed(false)`, updates `state` (`pttHeld: false, txStartedAt: null`), sends `TU0;KY @;RX;`.
+  - `panicAbortTx(reason)`: immediately stops `AudioEngine` TX capture, clears TOT timer, sets `gate.setTxAudioAllowed(false)`, updates `state` (`pttHeld: false, txStartedAt: null`), sends `PB0;TU0;KY @;RX;TS0;`, and (`App.panicAbortTx`) resets `setTxPosture('rx-only')` + releases warm mic standby.
   - `setTxAntenna(port)`, `setAtuMode(mode)`, `startAtuTune(kind = 3)` (`TU3;` or `TU4;` or `TU2;` or `TU1;`), `stopAtuTune()` (`TU0;RX;`), `setPowerWatts(watts, range)`, `setSplit(on)`, `setupQuickSplit(offsetHz = 1000)`, `setXit(on, offsetHz)`, `setMicGain(v)`, `setCompression(v)`, `setTxMonitor(channel, v)`, `setMicInput(v)`, `setVox(modeChar, on)`, `playDvr(slot)`, `setCwSpeed(wpm)`, `setKeyerPaddle(opts)`, `sendKeyerText(text, mode = ' ')`, `clearKeyerBuffer()`.
 
 ---
@@ -194,10 +194,12 @@ Add `K4.BinaryPackets.encodeAudio(opts)`:
 - `setTxPacketHandler(fn)`: receives `(encodedPacketUint8, meta)` every `20 ms` (`240` samples @ `12000 Hz`, `EM1` S16LE mono/stereo matching `encodeMode = 1` wire format) while TX capture is active.
 - `isMicSecureContextAvailable()`: checks `Boolean(globalThis.isSecureContext && navigator.mediaDevices && navigator.mediaDevices.getUserMedia)`.
 - `listAudioInputs()`: returns `Promise<Array<{ deviceId, label }>>` cleanly (returns `[]` if unavailable without throwing).
+- `ensureMicReady({ deviceId, voiceProcessing })`: proactively acquires & holds the standby microphone `MediaStream` when entering `'tx-test'` or `'tx-armed'` on a Secure Context (emits `'micStatus'`: `'idle' | 'requesting' | 'ready' | 'capturing' | 'denied' | 'unavailable' | 'insecure' | 'error'`).
+- `releaseMicStandby()` / `getMicStatus()`: releases the warm standby stream when disarming back to `'rx-only'` or switching away from `'mic'` (`_cleanupTxAudioGraph()` preserves standby stream across PTT release).
 - `startTxCapture({ source = 'two-tone', deviceId = '', voiceProcessing = false } = {})`
 - `stopTxCapture()`
 - `setTxWaveBuffer(float32Samples, sampleRate = 12000)`
-- Extend `getDiagnostics()`: include `txActive`, `txSource`, `txInputLevel` (`0..1`), `txPacketsOut`, `isSecureContext`.
+- Extend `getDiagnostics()`: include `txActive`, `txSource`, `txInputLevel` (`0..1`), `txPacketsOut`, `isSecureContext`, `micState`, `micDeviceLabel`, `micError`.
 
 ---
 
@@ -218,29 +220,30 @@ Add `K4.BinaryPackets.encodeAudio(opts)`:
 ### 7.1 Top Bar Posture, Meter & Hold-PTT Strip (`web/index.html`, `web/css/components.css`, `web/js/ui/smeter-widget.js`)
 - Replace passive `#rx-only-badge` with a cohesive **TX Safety Posture Pill Group**:
   - Preserves `[data-testid="rx-only-badge"]` (`dataset.blocked="true|false"` when blocked attempts > 0 so existing RX tests remain green!) as the `RX ONLY` posture button `[data-testid="tx-mode-rx"]` (or badge inside the posture selector). Specifically: keep `#rx-only-badge` carrying `data-testid="rx-only-badge"` AND clickable/status-aware, alongside `[data-testid="tx-mode-armed"]` (`ARM TX`) and the independent K4 `[TEST]` toggle `[data-testid="tx-mode-test"]` (`TEST`) cleanly grouped in `#tx-posture-bar`!
-  - **2-Step Arm Confirmation Popover (`[data-testid="tx-arm-confirm"]`)**: Clicking `ARM TX` from RX-Only/Test opens an inline confirmation summary displaying `TX VFO · Freq · Mode · Power · Antenna` + `Confirm Live TX` (`[data-testid="tx-arm-confirm-btn"]`) and `Cancel` (single click directly back to `RX ONLY` requires zero confirm — instant safe disarm!).
+  - **Top-Bar Mic Status Pill (`[data-testid="tx-mic-btn"]`)**: Revealed alongside `PTT` whenever TX is enabled (`tx-test` / `tx-armed`). Shows live mic readiness (`MIC...`, `MIC RDY`, `MIC LIVE`, `MIC DENY`, `NO MIC`, `NO SSL`) or active test tone (`TONE`/`1kHz`/`WAV`); clicking retries permission or jumps to TX Audio input settings. Default TX source is `'mic'` on Secure Contexts and falls back to `'two-tone'` on `file://`.
+  - **2-Step Arm Confirmation Popover (`[data-testid="tx-arm-confirm"]`)**: Clicking `ARM TX` from RX-Only/Test opens an inline confirmation summary displaying `TX VFO · Freq · Mode · Power · Antenna · Audio Input` + `Confirm Live TX` (`[data-testid="tx-arm-confirm-btn"]`) and `Cancel` (single click directly back to `RX ONLY` requires zero confirm — instant safe disarm!).
   - **Hold-Only PTT Button (`[data-testid="ptt-btn"]`)**: Visible/enabled when `txPosture !== 'rx-only'`; displays `PTT` when idle, glowing coral (`ON AIR`) or K4 orange (`TX Test`) while held, immediately sending `RX;` on release!
 - **Dual-Mode Meter & K4 TX VFO Indicator (`K4.SMeterWidget`)**:
-  - Header carries `[data-testid="k4-tx-vfo-indicator"]` rendering K4's orange directional TX VFO indicator (`◀ TX` on VFO A, `TX ▶` in Split), switching to flashing **`◀ TX Test`** / **`TX Test ▶`** whenever `TS1;` (`txTestMode`) is active.
+  - Header carries `[data-testid="k4-tx-vfo-indicator"]` rendering K4's orange directional TX VFO indicator (`◀ TX` on VFO A, `TX ▶` in Split), switching to steady orange **`◀ TX Test`** / **`TX Test ▶`** (without blinking) whenever `TS1;` (`txTestMode`) is active.
   - Keeps `[data-testid="smeter"]`, `[data-testid="smeter-dbm"]`, `[data-testid="smeter-ovf-badge"]` in RX mode.
   - When `txActive || atuTuning || pinTxMeters`, reveals `[data-testid="tx-meter-cluster"]` with 4 crisp horizontal telemetry bars (`PWR` watts, `SWR` ratio `1.0:1..5.0:1` color-coded green/amber/red, `ALC` `0..7` bars with sweet-spot marker `4–5`, `CMP` `0..30 dB`).
 - **Compact Hardware Sensor Strip (`[data-testid="sensor-strip"]`)**:
-  - Compact tabular pill in the inspector/top area showing `VS` (`13.8V`), `IS` (`1.6A` -> `18.5A` TX + `Peak`), `PT` (`PA 32°C` thermal color-coded), and `SWR` (`1.1:1`). Clicking jumps directly to the `TX / ATU` tab's **Sensors & PA Telemetry** card.
+  - Compact tabular 4-button strip (`[data-testid="strip-sensor-vs"|"is"|"pt"|"swr"]`) showing `VS` (`13.8V`), `IS` (`1.6A` -> `18.5A` TX + `Peak`), `PA TEMP` (`32°C`), and `SWR` (`1.10:1`). Clicking a pill jumps directly to the `TX / ATU` tab and opens that sensor's trend graph.
 
 ### 7.2 Dedicated `TX / ATU` Inspector Tab (`web/js/ui/inspector-panels.js`)
 Add `'tx'` (`TX / ATU`) tab alongside `'band-mode'`, `'dsp'`, `'display'`, `'audio'` on Desktop & Mobile:
-1. **Safety & Status Card**: Posture buttons (`RX ONLY` / `ARM TX`) + independent `TEST` (`TS1`/`TS0`) toggle, active `◀ TX` / `TX ▶` VFO summary, `TX INHIBIT` indicator, `TOT` remaining countdown, quick `Split (FT)`, `A►B Split +1kHz`, and `XIT (XT)` toggle + offset nudge.
+1. **Safety & Status Card**: Posture buttons (`RX ONLY` / `ARM TX`), independent `TEST` (`TS1`/`TS0`) toggle, active `◀ TX` / `TX ▶` VFO summary, `TX INHIBIT` indicator, `TOT` remaining countdown, quick `Split (FT)`, `A►B Split +1kHz`, `STOP TX · RX (Esc)` (`[data-testid="stop-tx-btn"]` resetting to `'rx-only'`), and `XIT (XT)` toggle + offset nudge.
 2. **KAT4 ATU & Antenna Card**:
    - TX Antenna selector (`[data-testid="tx-antenna-select"]` or segmented buttons `ANT1`..`ANT3` filtered by `txAntennaMask` and labeled via `antennaNames`, e.g. `1 · G5RV`, `3 · dummy`).
    - ATU Mode (`BYPASS` / `AUTO`), action buttons: `[data-testid="atu-tune-btn"]` (`ATU TUNE`), `[data-testid="atu-full-btn"]` (`FULL SEARCH`, highlighted for 5s after `TU3`), `TUNE LP`, and red `[data-testid="atu-stop-btn"]` (`STOP`).
    - Live status banner `[data-testid="atu-status"]`: displays idle matched SWR (`AUTO · Last Matched 1.1:1`), or animated live tuning state (`TUNING... 2.6:1 → 1.2:1 @ 18W`).
 3. **RF Power & Audio TX Card**:
-   - Power slider + quick QRP/QRO range pills (`[data-testid="tx-power-slider"]`, `0.1–10.0 W` in `L`, `1–110 W` in `H`), Mic Gain (`MG`), Compression (`CP`), TX Monitor (`ML`), Mic Input (`MI`), VOX (`VXV`/`VXD`), DVR Memory Playback (`PB1..4` / `PB0` Stop).
-   - **TX Audio Input Selector (`[data-testid="tx-audio-source"]`)**: `Browser Mic` (enabled natively on `http://localhost:9280`, auto-explains `!window.isSecureContext` on `file://` without broken UI), `Two-Tone 700/1900 Hz`, `1 kHz Tune Tone`, or `Replay Recorded WAV` + live input level bar!
+   - Power slider + quick QRP/QRO range pills (`[data-testid="tx-power-slider"]`, `0.1–10.0 W` in `L`, `1–110 W` in `H`), Mic Gain (`MG`), Compression (`CP`), TX Monitor (`ML`), Mic Input (`MI`), VOX (`VXV`/`VXD`), and K4 Front-Panel Message Memories (`M1`–`M4` `[data-testid="msg-m1".."msg-m4"]`, Bank 1/2 toggle `[data-testid="msg-bank-btn"]` mapping slots `1–4` / `5–8`, and `STOP (PB0)` `[data-testid="msg-stop-btn"]`).
+   - **TX Audio Input Selector (`[data-testid="tx-audio-source"]`)**: `Microphone (Live)` (default on SecureContext localhost/HTTPS), `Two-Tone 700/1900 Hz`, `1 kHz Tune Tone`, or `Replay Recorded WAV` + live input level bar!
 4. **CW / Direct DATA Keyer Card**:
    - Text input `[data-testid="cw-ky-input"]` + `Send` (`[data-testid="cw-ky-send"]`) + `Abort (@)` (`[data-testid="cw-ky-abort"]`), 6 programmable quick macro buttons (`CQ`, `DE CALL`, `599 TU`, `AGN?`, `BK`, `73`), queued buffer gauge (`TB` `txBufferCount`), WPM slider (`KS`), Weight/Iambic (`KP`), QSK/CW VOX (`VXC`). (Documents Web MIDI paddle -> `KZ` as future v2 extension.)
 5. **PA, Electrical & Thermal Sensors Card (`[data-testid="tx-sensors-card"]`)**:
-   - `Supply Voltage (VS)` + `Under-Load Drop (ΔV)`, `Supply / PA Current (IS)` + `Peak Hold`, `PA Heatsink (PT)`, `LPA Temp (LT)`, `FP Temp (TF)`, `CPU Temp`, `DAP / DUC Temps`, option module pills (`KAT4`, `KPA4`, `KRX4`, `AMP`), thermal alerts (`>= 60°C` warn, `>= 75°C` critical).
+   - 8 clickable sensor tiles (`[data-testid="sensor-tile-vs"|"is"|"pt"|"lt"|"tf"|"sys"|"fwd"|"swr"]`) with an expandable high-DPI Canvas history graph (`[data-testid="sensor-graph-panel"]`, `60s` / `3m` window, min/now/max stats, dashed warn/crit thresholds), option module pills (`KAT4`, `KPA4`, `KRX4`, `LINEAR AMP`), and thermal alerts (`>= 60°C` warn, `>= 75°C` critical).
 
 ---
 

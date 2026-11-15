@@ -404,6 +404,14 @@
       this._txLpY1 = 0;
       this._txLpY2 = 0;
       this._txFilterScratch = null;
+
+      this._standbyMicStream = null;
+      this._standbyMicKey = '';
+      this._micState = 'idle'; // 'idle'|'requesting'|'ready'|'capturing'|'denied'|'unavailable'|'insecure'|'error'
+      this._micDeviceLabel = '';
+      this._micError = null;
+      this._micReqGen = 0;
+      this._micOpenPromise = null;
     }
 
     _readSnapshot(stateObj) {
@@ -1053,6 +1061,9 @@
         txInputLevel: clamp(this._txInputLevel, 0, 1),
         txPacketsOut: this._txPacketsOut,
         isSecureContext: Boolean(globalThis.isSecureContext),
+        micState: this._micState,
+        micDeviceLabel: this._micDeviceLabel,
+        micError: this._micError,
       };
     }
 
@@ -1153,6 +1164,161 @@
       return clamp(this._txInputLevel, 0, 1);
     }
 
+    _isStandbyMicLive() {
+      const s = this._standbyMicStream;
+      if (!s || typeof s.getAudioTracks !== 'function') return false;
+      try {
+        const tracks = s.getAudioTracks();
+        return tracks.some((t) => t && t.readyState === 'live');
+      } catch (_) {
+        return false;
+      }
+    }
+
+    getMicStatus() {
+      return {
+        state: this._micState,
+        deviceLabel: this._micDeviceLabel,
+        error: this._micError,
+        secureContext: this.isMicSecureContextAvailable(),
+        activeStream: this._isStandbyMicLive(),
+      };
+    }
+
+    async ensureMicReady({ deviceId = '', voiceProcessing = false } = {}) {
+      if (this._destroyed) {
+        return this.getMicStatus();
+      }
+      const devId = typeof deviceId === 'string' ? deviceId.trim() : '';
+      const vp = Boolean(voiceProcessing);
+      const key = `${devId || 'default'}:${vp}`;
+
+      if (!Boolean(globalThis.isSecureContext)) {
+        this._micState = 'insecure';
+        this._micError = 'Requires http://localhost or https:// secure context';
+        const st = this.getMicStatus();
+        this.emit('micStatus', st);
+        this.emit('diagnostics', this.getDiagnostics());
+        return st;
+      }
+      const md = globalThis.navigator && globalThis.navigator.mediaDevices;
+      if (!md || typeof md.getUserMedia !== 'function') {
+        this._micState = 'unavailable';
+        this._micError = 'Browser navigator.mediaDevices.getUserMedia unavailable';
+        const st = this.getMicStatus();
+        this.emit('micStatus', st);
+        this.emit('diagnostics', this.getDiagnostics());
+        return st;
+      }
+
+      if (this._isStandbyMicLive() && this._standbyMicKey === key) {
+        this._micState = this._txActive && this._txSource === 'mic' ? 'capturing' : 'ready';
+        this._micError = null;
+        return this.getMicStatus();
+      }
+
+      if (this._micOpenPromise && this._standbyMicKey === key) {
+        return this._micOpenPromise;
+      }
+
+      if (this._standbyMicStream) {
+        this._stopMediaStreamTracks(this._standbyMicStream);
+        this._standbyMicStream = null;
+      }
+      this._standbyMicKey = key;
+      this._micError = null;
+      this._micState = 'requesting';
+      const reqGen = ++this._micReqGen;
+      this.emit('micStatus', this.getMicStatus());
+
+      const audioConstraints = {
+        echoCancellation: vp,
+        noiseSuppression: vp,
+        autoGainControl: vp,
+      };
+      if (devId) {
+        audioConstraints.deviceId = devId;
+      }
+
+      const promise = (async () => {
+        try {
+          const stream = await md.getUserMedia({ audio: audioConstraints, video: false });
+          if (reqGen !== this._micReqGen || this._destroyed) {
+            this._stopMediaStreamTracks(stream);
+            return this.getMicStatus();
+          }
+          this._standbyMicStream = stream;
+          const tracks = typeof stream.getAudioTracks === 'function' ? stream.getAudioTracks() : [];
+          const primary = tracks[0] || null;
+          this._micDeviceLabel =
+            primary && typeof primary.label === 'string' && primary.label.trim()
+              ? primary.label.trim()
+              : 'Microphone';
+          if (primary && typeof primary.addEventListener === 'function') {
+            primary.addEventListener('ended', () => {
+              if (this._standbyMicStream !== stream) return;
+              this._standbyMicStream = null;
+              this._standbyMicKey = '';
+              this._micState = 'idle';
+              this._micDeviceLabel = '';
+              this.emit('micStatus', this.getMicStatus());
+              this.emit('diagnostics', this.getDiagnostics());
+            });
+          }
+          this._micState = this._txActive && this._txSource === 'mic' ? 'capturing' : 'ready';
+          this._micError = null;
+          const st = this.getMicStatus();
+          this.emit('micStatus', st);
+          this.emit('diagnostics', this.getDiagnostics());
+          return st;
+        } catch (err) {
+          if (reqGen !== this._micReqGen || this._destroyed) {
+            return this.getMicStatus();
+          }
+          const errName = err && err.name ? String(err.name) : '';
+          if (errName === 'NotAllowedError' || errName === 'PermissionDeniedError') {
+            this._micState = 'denied';
+          } else if (errName === 'NotFoundError' || errName === 'DevicesNotFoundError') {
+            this._micState = 'unavailable';
+          } else {
+            this._micState = 'error';
+          }
+          this._micError = err && err.message ? err.message : String(err);
+          const st = this.getMicStatus();
+          this.emit('micStatus', st);
+          this.emit('diagnostics', this.getDiagnostics());
+          return st;
+        } finally {
+          if (this._micOpenPromise === promise) {
+            this._micOpenPromise = null;
+          }
+        }
+      })();
+
+      this._micOpenPromise = promise;
+      return promise;
+    }
+
+    releaseMicStandby() {
+      this._micReqGen += 1;
+      this._micOpenPromise = null;
+      if (this._standbyMicStream) {
+        const s = this._standbyMicStream;
+        this._standbyMicStream = null;
+        if (this._txMediaStream !== s) {
+          this._stopMediaStreamTracks(s);
+        }
+      }
+      this._standbyMicKey = '';
+      this._micState = 'idle';
+      this._micDeviceLabel = '';
+      this._micError = null;
+      const st = this.getMicStatus();
+      this.emit('micStatus', st);
+      this.emit('diagnostics', this.getDiagnostics());
+      return st;
+    }
+
     /**
      * Start outbound 12 kHz EM1 TX audio capture from 'two-tone', 'tone-1k', 'wav', or 'mic'.
      * @param {Object} [opts]
@@ -1200,32 +1366,26 @@
 
     async _startMicTxCapture(gen, deviceId, voiceProcessing) {
       if (!this.isMicSecureContextAvailable()) {
+        this._micState = Boolean(globalThis.isSecureContext) ? 'unavailable' : 'insecure';
+        this.emit('micStatus', this.getMicStatus());
         this.emit('diagnostics', this.getDiagnostics());
         throw new Error(
           'Microphone capture requires a Secure Context (http://localhost or https://) and navigator.mediaDevices.getUserMedia.'
         );
       }
 
-      const audioConstraints = {
-        echoCancellation: voiceProcessing,
-        noiseSuppression: voiceProcessing,
-        autoGainControl: voiceProcessing,
-      };
-      const devId = typeof deviceId === 'string' ? deviceId.trim() : '';
-      if (devId) {
-        audioConstraints.deviceId = devId;
+      const status = await this.ensureMicReady({ deviceId, voiceProcessing });
+      const stream = this._standbyMicStream;
+      if (!stream) {
+        throw new Error(status.error || 'Microphone access unavailable or denied.');
       }
-
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints });
       if (gen !== this._txSessionGen || this._destroyed) {
-        this._stopMediaStreamTracks(stream);
         return { active: false, source: 'mic', sampleRate: TX_SAMPLE_RATE, frameSamplesPerCh: TX_FRAME_SAMPLES };
       }
 
       const reuseRxCtx = Boolean(this._ctx && this._ctx.state !== 'closed');
       const ctx = reuseRxCtx ? this._ctx : this._createAudioContext();
       if (!ctx) {
-        this._stopMediaStreamTracks(stream);
         throw new Error('Web Audio API AudioContext unavailable for microphone capture.');
       }
 
@@ -1334,6 +1494,8 @@
         }
       }
 
+      this._micState = 'capturing';
+      this.emit('micStatus', this.getMicStatus());
       this.emit('diagnostics', this.getDiagnostics());
       return {
         active: true,
@@ -1361,8 +1523,14 @@
       this._txInputLevel = 0;
       this._txFrameIdx = 0;
       this._txSessionPackets = 0;
+      this._micState = this._isStandbyMicLive()
+        ? 'ready'
+        : this._micState === 'capturing'
+        ? 'idle'
+        : this._micState;
 
       if (!opts || !opts.silent) {
+        this.emit('micStatus', this.getMicStatus());
         this.emit('diagnostics', this.getDiagnostics());
       }
     }
@@ -1408,7 +1576,9 @@
         this._txMuteGainNode = null;
       }
       if (this._txMediaStream) {
-        this._stopMediaStreamTracks(this._txMediaStream);
+        if (this._txMediaStream !== this._standbyMicStream) {
+          this._stopMediaStreamTracks(this._txMediaStream);
+        }
         this._txMediaStream = null;
       }
       if (this._txOwnsCtx && this._txCtx) {
@@ -1875,6 +2045,7 @@
     destroy() {
       this._destroyed = true;
       this.stopTxCapture({ silent: true });
+      this.releaseMicStandby();
       this.stop();
       this._txPacketHandler = null;
       this._txWaveBuffer = null;

@@ -185,6 +185,8 @@
         lastCenterHz: null,
         panCenterHz: null,
         streamCenterHz: null,
+        pendingStreamCenterHz: null,
+        pendingStreamCenterUntil: 0,
         customCenterHz: null,
         customSpanHz: null,
         recentRadioSpans: [],
@@ -259,7 +261,12 @@
         );
         panCenterHz = Math.round(streamCenterHz + offsetHz);
       }
-      const isOffset = Math.abs(panCenterHz - streamCenterHz) >= 50;
+      const vfoFreqHz =
+        (rxSnap && Number.isFinite(rxSnap.freqHz) && rxSnap.freqHz) ||
+        streamCenterHz;
+      const isOffset =
+        Math.abs(panCenterHz - streamCenterHz) >= 50 ||
+        Math.abs(panCenterHz - vfoFreqHz) >= 50;
       return { streamCenterHz, panCenterHz, userSpanHz, isOffset };
     }
 
@@ -348,23 +355,39 @@
       const rawCenterHz =
         cur.panCenterHz + (Number.isFinite(deltaHz) ? deltaHz : 0);
       const maxOffsetHz = Math.max(0, (368000 - cur.userSpanHz) * 0.5);
-      const clampedOffsetHz = clamp(
-        rawCenterHz - cur.streamCenterHz,
-        -maxOffsetHz,
-        maxOffsetHz
-      );
-      const nextCenterHz = Math.round(cur.streamCenterHz + clampedOffsetHz);
+      const rawOffsetHz = rawCenterHz - cur.streamCenterHz;
+      let recenterStreamHz = null;
+      let nextStreamCenterHz = cur.streamCenterHz;
+      let effectiveCenterHz;
 
-      pane.customCenterHz = Math.abs(clampedOffsetHz) < 25 ? null : nextCenterHz;
+      if (Math.abs(rawOffsetHz) > maxOffsetHz) {
+        const clampedAbs = clamp(Math.round(rawCenterHz), 100000, 54000000);
+        nextStreamCenterHz = clampedAbs;
+        pane.streamCenterHz = clampedAbs;
+        pane.customCenterHz = null;
+        pane.pendingStreamCenterHz = clampedAbs;
+        pane.pendingStreamCenterUntil =
+          (typeof performance !== 'undefined' ? performance.now() : Date.now()) + 500;
+        effectiveCenterHz = clampedAbs;
+        recenterStreamHz = clampedAbs;
+      } else {
+        const clampedOffsetHz = clamp(rawOffsetHz, -maxOffsetHz, maxOffsetHz);
+        const nextCenterHz = Math.round(cur.streamCenterHz + clampedOffsetHz);
+        pane.customCenterHz = Math.abs(clampedOffsetHz) < 25 ? null : nextCenterHz;
+        effectiveCenterHz =
+          pane.customCenterHz === null ? cur.streamCenterHz : nextCenterHz;
+      }
+
       pane.customSpanHz = cur.userSpanHz;
-      const effectiveCenterHz =
-        pane.customCenterHz === null ? cur.streamCenterHz : nextCenterHz;
       const radioSpanHz = this._recordRadioSpan(
         pane,
         Math.ceil(
-          cur.userSpanHz + 2 * Math.abs(effectiveCenterHz - cur.streamCenterHz)
+          cur.userSpanHz + 2 * Math.abs(effectiveCenterHz - nextStreamCenterHz)
         )
       );
+      const vfoFreqHz =
+        (rxSnap && Number.isFinite(rxSnap.freqHz) && rxSnap.freqHz) ||
+        nextStreamCenterHz;
 
       this._scheduleRender();
       if (this._onViewportChange) {
@@ -374,9 +397,12 @@
         rx: key,
         panCenterHz: effectiveCenterHz,
         userSpanHz: cur.userSpanHz,
-        streamCenterHz: cur.streamCenterHz,
+        streamCenterHz: nextStreamCenterHz,
         radioSpanHz,
-        isOffset: Math.abs(effectiveCenterHz - cur.streamCenterHz) >= 50,
+        recenterStreamHz,
+        isOffset:
+          Math.abs(effectiveCenterHz - nextStreamCenterHz) >= 50 ||
+          Math.abs(effectiveCenterHz - vfoFreqHz) >= 50,
       };
     }
 
@@ -386,6 +412,9 @@
       const prevSpanHz = this.getVisibleSpanHz(key);
       pane.customCenterHz = null;
       pane.customSpanHz = null;
+      pane.streamCenterHz = null;
+      pane.pendingStreamCenterHz = null;
+      pane.pendingStreamCenterUntil = 0;
       pane.recentRadioSpans.length = 0;
 
       if (syncRadioSpan && this._client) {
@@ -542,12 +571,24 @@
         this._renderer.clearWaterfall(rx);
       }
 
+      const nowMs =
+        typeof performance !== 'undefined' ? performance.now() : Date.now();
+      const awaitingStreamShift =
+        pane.pendingStreamCenterUntil > nowMs &&
+        Number.isFinite(pane.pendingStreamCenterHz) &&
+        Math.abs(centerHz - pane.pendingStreamCenterHz) > 2500;
+
       pane.lastTierKHz = tierKHz;
       pane.lastCenterHz = centerHz;
-      pane.streamCenterHz = centerHz;
-      pane.panCenterHz = centerHz;
+      if (!awaitingStreamShift) {
+        pane.pendingStreamCenterUntil = 0;
+        pane.pendingStreamCenterHz = null;
+        pane.streamCenterHz = centerHz;
+        pane.panCenterHz = centerHz;
+      }
       pane.tierKHz = tierKHz;
       if (
+        !awaitingStreamShift &&
         pane.customCenterHz !== null &&
         Math.abs(pane.customCenterHz - centerHz) > 184000
       ) {

@@ -25,6 +25,7 @@ type ServerConfig struct {
 	FPS         int
 	ControlHTTP string
 	RxOnly      bool
+	Model       string
 }
 
 type SimServer struct {
@@ -48,6 +49,9 @@ func NewSimServer(cfg ServerConfig) (*SimServer, error) {
 		return nil, err
 	}
 	radio := NewRadio()
+	if cfg.Model != "" {
+		radio.SetModel(cfg.Model)
+	}
 	if cfg.RxOnly {
 		radio.AllowTx = false
 	}
@@ -442,6 +446,7 @@ func main() {
 	fps := flag.Int("fps", 20, "Panadapter frame rate (1..30)")
 	controlHTTP := flag.String("control-http", "127.0.0.1:19206", "Optional HTTP debug stats address (empty disables)")
 	rxOnly := flag.Bool("rx-only", false, "Disable operational TX commands (strict RX-only mode)")
+	model := flag.String("model", "k4d", "Simulated K4 hardware model (k4, k4d, k4hd)")
 	flag.Parse()
 
 	srv, err := NewSimServer(ServerConfig{
@@ -450,11 +455,12 @@ func main() {
 		FPS:         *fps,
 		ControlHTTP: *controlHTTP,
 		RxOnly:      *rxOnly,
+		Model:       *model,
 	})
 	if err != nil {
 		log.Fatalf("failed to start k4sim: %v", err)
 	}
-	log.Printf("k4sim listening on tcp://%s (fps=%d, control-http=%q, rx-only=%v)", srv.Addr(), *fps, *controlHTTP, *rxOnly)
+	log.Printf("k4sim listening on tcp://%s (fps=%d, control-http=%q, rx-only=%v, model=%s)", srv.Addr(), *fps, *controlHTTP, *rxOnly, *model)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()

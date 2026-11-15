@@ -266,9 +266,9 @@ func synthBins(centerHz int64, totalSpanHz float64, byteOffset float64, tSec flo
 	return bins
 }
 
-// SynthPAN builds a 1024-bin 0x02 PAN spectrum centered on rx.FreqHz (VFO RF in all modes).
+// SynthPAN builds a 1024-bin 0x02 PAN spectrum centered on rx.FreqHz + rx.PanCenterOffsetHz.
 func SynthPAN(rx RxState, cwPitchHz int, tSec float64, rng *rand.Rand) (centerHz int64, tierKHz int32, noiseFloorRaw int32, bins []byte) {
-	centerHz = rx.FreqHz
+	centerHz = clampInt64(rx.FreqHz+rx.PanCenterOffsetHz, 100000, 54000000)
 	tier := SpectrumTierKHzWithHysteresis(rx.PanSpanHz, rx.PanTierKHz)
 	tierKHz = int32(tier)
 	noiseFloorRaw = -1200 // -120.0 dBm * 10

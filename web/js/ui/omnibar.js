@@ -593,8 +593,17 @@
         };
       }
 
-      // Diversity RX
+      // Diversity RX (requires KRX4 / 2nd ADC: K4D or K4HD)
       if (lower === 'div on' || lower === 'div off' || lower === 'diversity on' || lower === 'diversity off') {
+        const snap = this.state && this.state.getSnapshot ? this.state.getSnapshot() : this.state;
+        if (snap && snap.hasDiversity === false) {
+          return {
+            title: 'Diversity RX Unavailable (Base K4)',
+            sub: 'Requires KRX4 / 2nd ADC option (K4D or K4HD; OM lacks S)',
+            tag: 'N/A',
+            run: () => {},
+          };
+        }
         const on = lower.endsWith('on');
         return {
           title: on ? 'Enable Diversity RX (DV1)' : 'Disable Diversity RX (DV0)',

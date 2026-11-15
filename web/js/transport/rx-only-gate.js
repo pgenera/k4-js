@@ -295,6 +295,8 @@
       cmdUpper === 'PCX' ||
       cmdUpper === 'XT' ||
       cmdUpper === 'TU0' ||
+      cmdUpper === 'TS0' ||
+      cmdUpper === 'PB0' ||
       cmdUpper === 'TM1' ||
       cmdUpper === 'PO1' ||
       cmdUpper === 'MG' ||

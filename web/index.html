@@ -87,7 +87,12 @@
             <button type="button" id="tx-mode-armed" class="k4-posture-btn" data-testid="tx-mode-armed" data-posture-target="tx-armed" aria-pressed="false" title="Arm live RF transmitter (requires 2-step confirmation)">ARM TX</button>
           </div>
 
-          <button type="button" id="tx-mode-test" class="k4-posture-btn k4-test-switch" data-testid="tx-mode-test" aria-pressed="false" title="K4 [TEST] switch (TS1/TS0): toggle TX Test mode (flashing &#x27;TX Test&#x27; indicator, zero RF output)">TEST</button>
+          <button type="button" id="tx-mode-test" class="k4-posture-btn k4-test-switch" data-testid="tx-mode-test" aria-pressed="false" title="K4 [TEST] switch (TS1/TS0): toggle TX Test mode (zero RF output)">TEST</button>
+
+          <button type="button" id="tx-mic-btn" class="k4-mic-pill" data-testid="tx-mic-btn" data-mic-state="idle" hidden title="TX microphone / audio input status (click to configure or retry)">
+            <span class="k4-mic-dot" aria-hidden="true"></span>
+            <span id="tx-mic-label">MIC</span>
+          </button>
 
           <button type="button" id="ptt-btn" class="k4-ptt-btn" data-testid="ptt-btn" disabled aria-pressed="false" title="Hold to transmit (Spacebar when un-focused; releases immediately on keyup or blur)">PTT</button>
         </div>
@@ -124,6 +129,7 @@
       <div class="k4-tx-arm-row"><dt>Mode</dt><dd id="tx-arm-mode">DATA-A</dd></div>
       <div class="k4-tx-arm-row"><dt>RF Power</dt><dd id="tx-arm-power">10.0 W (L)</dd></div>
       <div class="k4-tx-arm-row"><dt>TX Antenna</dt><dd id="tx-arm-ant">ANT1</dd></div>
+      <div class="k4-tx-arm-row"><dt>Audio Input</dt><dd id="tx-arm-mic">Microphone (will request browser permission)</dd></div>
     </dl>
     <div class="k4-tx-arm-actions">
       <button type="button" id="tx-arm-cancel-btn" class="k4-btn" data-testid="tx-arm-cancel-btn">Cancel</button>

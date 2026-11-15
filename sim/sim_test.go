@@ -1274,3 +1274,62 @@ func TestExtendedDebugStatsJSON(t *testing.T) {
 		t.Fatalf("unexpected extended /debug/stats values: %+v", payload)
 	}
 }
+
+func TestModelK4DiversityAndIfCenterOffset(t *testing.T) {
+	r := NewRadio()
+	r.SetModel("k4")
+
+	if rep, _ := r.HandleCAT("OM;", 0.0); rep != "OM AP------4---;" {
+		t.Fatalf("K4 OM reply = %q, want 'OM AP------4---;'", rep)
+	}
+	if rep, _ := r.HandleCAT("DV1;", 0.0); rep != "DV0;" {
+		t.Fatalf("K4 without KRX4 should force DV0;, got %q", rep)
+	}
+
+	// FI SET moves panadapter stream center independently of VFO A frequency
+	if rep, _ := r.HandleCAT("FI00014124000;", 0.0); rep != "FI00014124000;" {
+		t.Fatalf("FI SET reply = %q, want FI00014124000;", rep)
+	}
+	rxA, _, _, cwPitch, _, _, _ := r.Snapshot()
+	if rxA.FreqHz != 14074000 {
+		t.Fatalf("FI SET modified VFO A freqHz = %d, want 14074000", rxA.FreqHz)
+	}
+	rng := rand.New(rand.NewSource(42))
+	centerHz, _, _, _ := SynthPAN(rxA, cwPitch, 0.0, rng)
+	if centerHz != 14124000 {
+		t.Fatalf("SynthPAN centerHz = %d, want 14124000", centerHz)
+	}
+	if rep, _ := r.HandleCAT("FC;", 0.0); rep != "FI00014074000;" {
+		t.Fatalf("FC; recenter reply = %q, want FI00014074000;", rep)
+	}
+}
+
+func TestHandleCATDoesNotDropAtuOrKeyerCompletion(t *testing.T) {
+	r := NewRadio()
+	r.HandleCAT("FA00014074000;AN1;", 0.2)
+
+	// Start TU3 ATU tune at t=1.0 (converges after 1.05s -> t >= 2.05)
+	if rep, _ := r.HandleCAT("TU3;", 1.0); !strings.Contains(rep, "TU3;") {
+		t.Fatalf("TU3 start reply = %q", rep)
+	}
+	r.StepTx(1.5)
+
+	// Client keep-alive PING; arrives at convergence before StepTx(2.10)
+	rep, _ := r.HandleCAT("PING;", 2.10)
+	if !strings.Contains(rep, "TU0;TQ0;TQX0;TM000000000000;PO0000;") || !strings.Contains(rep, "PONG;") {
+		t.Fatalf("HandleCAT(PING) at ATU completion lost completion frames: %q", rep)
+	}
+	if st := r.Stats(); st.AtuTuning || st.TxActive || !st.AtuMatched {
+		t.Fatalf("unexpected state after ATU convergence via HandleCAT: %+v", st)
+	}
+
+	// Verify CW keyer completion isn't dropped when PING; arrives right after drain
+	r.HandleCAT("KS020;KY HI;", 3.0) // 2 chars at 20 WPM -> 60ms/char -> drains by t=3.12
+	kyRep, _ := r.HandleCAT("PING;", 3.25)
+	if !strings.Contains(kyRep, "TB000;KY0;TQ0;TQX0;TM000000000000;PO0000;") || !strings.Contains(kyRep, "PONG;") {
+		t.Fatalf("HandleCAT(PING) at keyer drain lost completion frames: %q", kyRep)
+	}
+	if r.Stats().TxActive {
+		t.Fatalf("expected TxActive=false after keyer drain")
+	}
+}

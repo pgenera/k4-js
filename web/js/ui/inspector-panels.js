@@ -44,6 +44,22 @@
   ];
   const LATENCY_MS = [35, 60, 75, 95, 115, 140, 180, 240];
 
+  const SENSOR_META = [
+    { key: 'vs', label: 'Supply Voltage (VS)', stripLabel: 'VS', unit: 'V', warnMin: 11.8, critMin: 11.2, color: '#38BDF8', decimals: 2 },
+    { key: 'is', label: 'Current / Peak (IS)', stripLabel: 'IS', unit: 'A', warnMax: 21.0, minFloor: 0, color: '#F59E0B', decimals: 1 },
+    { key: 'pt', label: 'PA Heatsink (PT)', stripLabel: 'PA TEMP', unit: '°C', warnMax: 60, critMax: 75, color: '#F97316', decimals: 1 },
+    { key: 'lt', label: 'LPA / Driver (LT)', unit: '°C', warnMax: 60, critMax: 75, color: '#FB923C', decimals: 1 },
+    { key: 'tf', label: 'Front Panel (TF)', unit: '°C', warnMax: 55, critMax: 70, color: '#A78BFA', decimals: 1 },
+    { key: 'sys', label: 'CPU / DAP / DUC', unit: '°C', warnMax: 70, critMax: 85, color: '#34D399', decimals: 1 },
+    { key: 'fwd', label: 'RF Forward Power', unit: 'W', minFloor: 0, color: '#22D3EE', decimals: 1 },
+    { key: 'swr', label: 'Antenna SWR', stripLabel: 'SWR', unit: ':1', warnMax: 1.5, critMax: 2.5, minFloor: 1.0, color: '#F43F5E', decimals: 2 },
+  ];
+  const SENSOR_META_BY_KEY = Object.fromEntries(SENSOR_META.map((m) => [m.key, m]));
+
+  function clamp(v, min, max) {
+    return v < min ? min : v > max ? max : v;
+  }
+
   function el(tag, className, text) {
     const node = document.createElement(tag);
     if (className) node.className = className;
@@ -248,8 +264,22 @@
       this._refs = {};
       this._keypadBuffer = '';
       this._localAudio = { gainA: 0.85, gainB: 0.85, balance: 0 };
-      this._localTxAudio = { source: 'two-tone', deviceId: '', voiceProcessing: false, wavName: '' };
+      const hasSecureMic = Boolean(
+        globalThis.isSecureContext &&
+          globalThis.navigator &&
+          globalThis.navigator.mediaDevices &&
+          typeof globalThis.navigator.mediaDevices.getUserMedia === 'function'
+      );
+      this._localTxAudio = {
+        source: hasSecureMic ? 'mic' : 'two-tone',
+        deviceId: '',
+        voiceProcessing: false,
+        wavName: '',
+      };
       this._micDevices = [];
+      this._msgBank = 1;
+      this._selectedSensorKey = null;
+      this._sensorWindowSec = 180;
 
       this._buildDrawerShell();
       this._buildMobileShell();
@@ -289,28 +319,32 @@
       this.drawerEl.appendChild(this.drawerTabBar);
 
       // Compact always-visible live sensor strip in inspector drawer
-      this.sensorStrip = document.createElement('button');
-      this.sensorStrip.type = 'button';
-      this.sensorStrip.className = 'k4-sensor-strip';
+      this.sensorStrip = el('div', 'k4-sensor-strip');
+      this.sensorStrip.setAttribute('role', 'group');
+      this.sensorStrip.setAttribute('aria-label', 'Live telemetry sensors');
       this.sensorStrip.dataset.testid = 'sensor-strip';
-      this.sensorStrip.title = 'Jump to PA, Electrical & Thermal Sensors card';
-      const makeStripPill = (lbl) => {
-        const pill = el('span', 'k4-sensor-pill');
+      const makeStripPill = (key, lbl) => {
+        const pill = el('button', 'k4-sensor-pill');
+        pill.type = 'button';
+        pill.dataset.sensorKey = key;
+        pill.dataset.testid = `strip-sensor-${key}`;
+        pill.title = `Open ${lbl} graph in TX / ATU`;
         pill.appendChild(el('span', 'k4-sensor-pill-lbl', lbl));
         const val = el('span', 'k4-sensor-pill-val', '--');
         pill.appendChild(val);
+        pill.addEventListener('click', () => {
+          this._selectedSensorKey = key;
+          this.openTab('tx', this._refs.txSensorsCard);
+        });
         this.sensorStrip.appendChild(pill);
         return { pill, val };
       };
       this._strip = {
-        vs: makeStripPill('VS'),
-        is: makeStripPill('IS'),
-        pt: makeStripPill('PA TEMP'),
-        swr: makeStripPill('SWR'),
+        vs: makeStripPill('vs', 'VS'),
+        is: makeStripPill('is', 'IS'),
+        pt: makeStripPill('pt', 'PA TEMP'),
+        swr: makeStripPill('swr', 'SWR'),
       };
-      this.sensorStrip.addEventListener('click', () => {
-        this.openTab('tx', this._refs.txSensorsCard);
-      });
       this.drawerEl.appendChild(this.sensorStrip);
 
       this.drawerScroll = el('div', 'k4-panel-scroll');
@@ -1802,8 +1836,10 @@
           this._sendCat('FT1;');
         }
       });
-      const panicBtn = el('button', 'k4-btn k4-btn--danger', 'PANIC ABORT (Esc)');
+      const panicBtn = el('button', 'k4-btn k4-btn--danger', 'STOP TX · RX (Esc)');
       panicBtn.type = 'button';
+      panicBtn.dataset.testid = 'stop-tx-btn';
+      panicBtn.title = 'Stop transmission, cancel tune/playback, and return to RX ONLY (Esc)';
       panicBtn.addEventListener('click', () => this.onPanicAbort());
       splitMacroRow.appendChild(quickSplitBtn);
       splitMacroRow.appendChild(panicBtn);
@@ -2085,22 +2121,53 @@
       pwrCard.appendChild(voxSwitch.row);
       this._refs.txVoxSwitch = voxSwitch;
 
-      const dvrLabel = el('span', 'k4-slider-label', 'DVR Message Playback (PB)');
-      pwrCard.appendChild(dvrLabel);
-      const dvrRow = el('div', 'k4-btn-grid k4-btn-grid--5');
-      const dvrBtns = [1, 2, 3, 4, 0];
-      for (let i = 0; i < dvrBtns.length; i++) {
-        const slot = dvrBtns[i];
-        const b = el('button', 'k4-btn', slot === 0 ? 'PB0' : `PB${slot}`);
+      const dvrHead = el('div', 'k4-slider-head');
+      dvrHead.appendChild(el('span', 'k4-slider-label', 'Message Memories (M1–M4)'));
+      const dvrBankBadge = el('span', 'k4-slider-val', 'BANK 1 (#1–4)');
+      dvrHead.appendChild(dvrBankBadge);
+      pwrCard.appendChild(dvrHead);
+      this._refs.msgBankBadge = dvrBankBadge;
+
+      const msgRow = el('div', 'k4-btn-grid k4-btn-grid--4');
+      this._refs.msgSlotBtns = [];
+      for (let i = 1; i <= 4; i++) {
+        const b = el('button', 'k4-btn', `M${i}`);
         b.type = 'button';
-        b.title = slot === 0 ? 'Stop DVR playback' : `Play DVR bank ${slot}`;
+        b.dataset.testid = `msg-m${i}`;
+        b.dataset.msgIndex = String(i);
+        b.title = `Play K4 Message Memory M${i}`;
         b.addEventListener('click', () => {
+          const slot = (this._msgBank === 2 ? 4 : 0) + i;
           if (typeof this.client.playDvr === 'function') this.client.playDvr(slot);
           else this._sendCat(`PB${slot};`);
         });
-        dvrRow.appendChild(b);
+        msgRow.appendChild(b);
+        this._refs.msgSlotBtns.push({ idx: i, btn: b });
       }
-      pwrCard.appendChild(dvrRow);
+      pwrCard.appendChild(msgRow);
+
+      const msgCtrlRow = el('div', 'k4-btn-grid k4-btn-grid--2');
+      const bankBtn = el('button', 'k4-btn k4-btn--amber k4-msg-bank-btn', 'BANK 1 (1–4)');
+      bankBtn.type = 'button';
+      bankBtn.dataset.testid = 'msg-bank-btn';
+      bankBtn.title = 'Switch K4 Message Bank 1 (#1–4) / Bank 2 (#5–8)';
+      bankBtn.addEventListener('click', () => {
+        this._msgBank = this._msgBank === 2 ? 1 : 2;
+        this.update(this._snap());
+      });
+      const stopMsgBtn = el('button', 'k4-btn', 'STOP (PB0)');
+      stopMsgBtn.type = 'button';
+      stopMsgBtn.dataset.testid = 'msg-stop-btn';
+      stopMsgBtn.title = 'Cancel DVR / CW message playback (PB0;)';
+      stopMsgBtn.addEventListener('click', () => {
+        if (typeof this.client.playDvr === 'function') this.client.playDvr(0);
+        else this._sendCat('PB0;');
+      });
+      msgCtrlRow.appendChild(bankBtn);
+      msgCtrlRow.appendChild(stopMsgBtn);
+      pwrCard.appendChild(msgCtrlRow);
+      this._refs.msgBankBtn = bankBtn;
+      this._refs.msgStopBtn = stopMsgBtn;
 
       // TX Audio Source & Live VU Meter
       const srcRow = el('div', 'k4-slider-row');
@@ -2109,10 +2176,10 @@
       srcSelect.className = 'k4-select';
       srcSelect.dataset.testid = 'tx-audio-source';
       const srcOpts = [
+        { val: 'mic', label: 'Microphone (Live)' },
         { val: 'two-tone', label: 'Two-Tone Test (700/1900 Hz)' },
         { val: 'tone-1k', label: '1 kHz Test Tone' },
         { val: 'wav', label: 'WAV / Voice Loop' },
-        { val: 'mic', label: 'Microphone (Live)' },
       ];
       for (let i = 0; i < srcOpts.length; i++) {
         const opt = document.createElement('option');
@@ -2397,23 +2464,94 @@
       this._refs.txThermalAlert = thermalAlert;
 
       const sensorGrid = el('div', 'k4-sensor-grid');
-      const makeSensorTile = (lbl) => {
-        const tile = el('div', 'k4-sensor-tile');
-        tile.appendChild(el('span', 'k4-sensor-tile-lbl', lbl));
+      const makeSensorTile = (key, lbl) => {
+        const tile = document.createElement('button');
+        tile.type = 'button';
+        tile.className = 'k4-sensor-tile';
+        tile.dataset.sensorKey = key;
+        tile.dataset.testid = `sensor-tile-${key}`;
+        tile.setAttribute('aria-pressed', 'false');
+        tile.title = `Click to view ${lbl} trend graph`;
+        const top = el('div', 'k4-sensor-tile-head');
+        top.appendChild(el('span', 'k4-sensor-tile-lbl', lbl));
+        top.appendChild(el('span', 'k4-sensor-tile-hint', 'Graph'));
+        tile.appendChild(top);
         const val = el('span', 'k4-sensor-tile-val', '—');
         tile.appendChild(val);
+        tile.addEventListener('click', () => {
+          this._selectedSensorKey = this._selectedSensorKey === key ? null : key;
+          this.update(this._snap());
+        });
         sensorGrid.appendChild(tile);
         return { tile, val };
       };
       this._refs.sensors = {
-        vs: makeSensorTile('Supply Voltage (VS)'),
-        is: makeSensorTile('Current / Peak (IS)'),
-        pt: makeSensorTile('PA Heatsink (PT)'),
-        lt: makeSensorTile('LPA / Driver (LT)'),
-        tf: makeSensorTile('Front Panel (TF)'),
-        sys: makeSensorTile('CPU / DAP / DUC'),
+        vs: makeSensorTile('vs', 'Supply Voltage (VS)'),
+        is: makeSensorTile('is', 'Current / Peak (IS)'),
+        pt: makeSensorTile('pt', 'PA Heatsink (PT)'),
+        lt: makeSensorTile('lt', 'LPA / Driver (LT)'),
+        tf: makeSensorTile('tf', 'Front Panel (TF)'),
+        sys: makeSensorTile('sys', 'CPU / DAP / DUC'),
+        fwd: makeSensorTile('fwd', 'RF Forward Power'),
+        swr: makeSensorTile('swr', 'Antenna SWR'),
       };
       sensorsCard.appendChild(sensorGrid);
+
+      const graphPanel = el('div', 'k4-sensor-graph-panel');
+      graphPanel.dataset.testid = 'sensor-graph-panel';
+      graphPanel.hidden = true;
+
+      const graphHead = el('div', 'k4-sensor-graph-head');
+      const graphTitle = el('span', 'k4-sensor-graph-title', 'Sensor History');
+      const graphControls = el('div', 'k4-sensor-graph-ctrls');
+      const win60 = el('button', 'k4-sensor-win-btn', '60s');
+      win60.type = 'button';
+      const win180 = el('button', 'k4-sensor-win-btn is-active', '3m');
+      win180.type = 'button';
+      const syncWinBtns = () => {
+        win60.classList.toggle('is-active', this._sensorWindowSec === 60);
+        win180.classList.toggle('is-active', this._sensorWindowSec !== 60);
+      };
+      win60.addEventListener('click', () => {
+        this._sensorWindowSec = 60;
+        syncWinBtns();
+        this.update(this._snap());
+      });
+      win180.addEventListener('click', () => {
+        this._sensorWindowSec = 180;
+        syncWinBtns();
+        this.update(this._snap());
+      });
+      const graphCloseBtn = el('button', 'k4-sensor-win-btn', '×');
+      graphCloseBtn.type = 'button';
+      graphCloseBtn.dataset.testid = 'sensor-graph-close';
+      graphCloseBtn.title = 'Close sensor graph';
+      graphCloseBtn.addEventListener('click', () => {
+        this._selectedSensorKey = null;
+        this.update(this._snap());
+      });
+      graphControls.appendChild(win60);
+      graphControls.appendChild(win180);
+      graphControls.appendChild(graphCloseBtn);
+      graphHead.appendChild(graphTitle);
+      graphHead.appendChild(graphControls);
+      graphPanel.appendChild(graphHead);
+
+      const graphStats = el('div', 'k4-sensor-graph-stats', 'Min — · Now — · Max —');
+      graphPanel.appendChild(graphStats);
+
+      const graphCanvas = document.createElement('canvas');
+      graphCanvas.className = 'k4-sensor-graph-canvas';
+      graphCanvas.dataset.testid = 'sensor-graph-canvas';
+      graphCanvas.width = 280;
+      graphCanvas.height = 104;
+      graphPanel.appendChild(graphCanvas);
+
+      sensorsCard.appendChild(graphPanel);
+      this._refs.sensorGraphPanel = graphPanel;
+      this._refs.sensorGraphTitle = graphTitle;
+      this._refs.sensorGraphStats = graphStats;
+      this._refs.sensorGraphCanvas = graphCanvas;
 
       const omRow = el('div', 'k4-om-badges');
       const makeOmBadge = (name) => {
@@ -2589,8 +2727,10 @@
       if (this._refs.subSwitch) this._refs.subSwitch.sync(snapshot.subRxEnabled);
       if (this._refs.linkSwitch) this._refs.linkSwitch.sync(snapshot.vfoLinked);
       if (this._refs.divSwitch) {
-        this._refs.divSwitch.sync(snapshot.diversityEnabled);
-        this._refs.divSwitch.btn.disabled = snapshot.hasSubRx === false;
+        const hasDiv = snapshot.hasDiversity !== false;
+        this._refs.divSwitch.row.hidden = !hasDiv;
+        this._refs.divSwitch.sync(Boolean(hasDiv && snapshot.diversityEnabled));
+        this._refs.divSwitch.btn.disabled = !hasDiv || !snapshot.subRxEnabled;
       }
 
       // Bands
@@ -2731,15 +2871,13 @@
       if (this._refs.panNbLevelSlider) this._refs.panNbLevelSlider.sync(dispS.panNbLevel ?? 0);
       if (this._refs.dpmBtns) {
         const dpm = snapshot.dualPanMode === 1 ? 1 : snapshot.dualPanMode === 2 ? 2 : 0;
-        const noSub = snapshot.hasSubRx === false;
         this._refs.dpmBtns[0].classList.toggle('is-active', dpm === 0);
         this._refs.dpmBtns[1].classList.toggle('is-active', dpm === 1);
         this._refs.dpmBtns[2].classList.toggle('is-active', dpm === 2);
-        this._refs.dpmBtns[1].disabled = noSub;
-        this._refs.dpmBtns[2].disabled = noSub;
-        const subTip = noSub ? 'Requires Sub-RX option (OM lacks S)' : '';
-        this._refs.dpmBtns[1].title = subTip;
-        this._refs.dpmBtns[2].title = subTip;
+        this._refs.dpmBtns[1].disabled = false;
+        this._refs.dpmBtns[2].disabled = false;
+        this._refs.dpmBtns[1].title = 'Single Pan VFO B (#DPM1;)';
+        this._refs.dpmBtns[2].title = 'Dual Panadapter VFO A + B (#DPM2;)';
       }
       const rxAState = snapshot.rxA || {};
       const rxBState = snapshot.rxB || {};
@@ -2859,6 +2997,8 @@
       const pt = tel.paTempC != null ? Number(tel.paTempC) : null;
       const lt = tel.lpaTempC != null ? Number(tel.lpaTempC) : null;
       const tf = tel.fpTempC != null ? Number(tel.fpTempC) : null;
+      const fwdWatts = Number(tm.fwdWatts) || 0;
+      const peakFwd = Number(tm.peakFwdWatts) || fwdWatts;
       const swr = Number(tm.swr) >= 1.0 ? Number(tm.swr) : (snapshot.atuMatchedSwr || 1.0);
 
       const tempLevel = (t) => (t == null ? 'ok' : (t >= 75 ? 'crit' : (t >= 60 ? 'warn' : 'ok')));
@@ -2869,17 +3009,21 @@
       if (this._strip) {
         this._strip.vs.val.textContent = vs != null ? `${vs.toFixed(1)}V` : '—';
         this._strip.vs.pill.dataset.level = voltLevel(vs);
+        this._strip.vs.pill.classList.toggle('is-selected', this._selectedSensorKey === 'vs');
 
         this._strip.is.val.textContent = isAmps != null
           ? (peakIs != null && peakIs > isAmps + 0.3 ? `${isAmps.toFixed(1)}/${peakIs.toFixed(0)}A` : `${isAmps.toFixed(1)}A`)
           : '—';
         this._strip.is.pill.dataset.level = isAmps != null && isAmps > 21 ? 'warn' : 'ok';
+        this._strip.is.pill.classList.toggle('is-selected', this._selectedSensorKey === 'is');
 
         this._strip.pt.val.textContent = pt != null ? `${pt.toFixed(0)}°C` : '—';
         this._strip.pt.pill.dataset.level = tempLevel(pt);
+        this._strip.pt.pill.classList.toggle('is-selected', this._selectedSensorKey === 'pt');
 
         this._strip.swr.val.textContent = `${swr.toFixed(2)}:1`;
         this._strip.swr.pill.dataset.level = swrLevel(swr);
+        this._strip.swr.pill.classList.toggle('is-selected', this._selectedSensorKey === 'swr');
       }
 
       // (a) TX Status, Posture, TOT, Split, XIT
@@ -3041,6 +3185,29 @@
         this._refs.txVoxSwitch.sync(Boolean(voxOn));
       }
 
+      // K4 Message Memories (M1-M4 + BANK + STOP)
+      if (this._refs.msgBankBadge && this._refs.msgSlotBtns && this._refs.msgBankBtn) {
+        const bankOffset = this._msgBank === 2 ? 4 : 0;
+        const activeSlot = snapshot.dvrPlaying ? Number(snapshot.dvrSlot) || 0 : 0;
+        this._refs.msgBankBadge.textContent =
+          activeSlot > 0
+            ? `PLAY #${activeSlot} · BANK ${this._msgBank}`
+            : `BANK ${this._msgBank} (#${bankOffset + 1}–${bankOffset + 4})`;
+        this._refs.msgBankBtn.textContent =
+          this._msgBank === 2 ? 'BANK 2 (5–8)' : 'BANK 1 (1–4)';
+        this._refs.msgBankBtn.classList.toggle('is-active', this._msgBank === 2);
+        for (let i = 0; i < this._refs.msgSlotBtns.length; i++) {
+          const item = this._refs.msgSlotBtns[i];
+          const slot = bankOffset + item.idx;
+          const isPlaying = activeSlot === slot;
+          item.btn.classList.toggle('is-active', isPlaying);
+          item.btn.title = `Play K4 Message M${item.idx} (PB${slot};)`;
+        }
+        if (this._refs.msgStopBtn) {
+          this._refs.msgStopBtn.classList.toggle('is-active', activeSlot > 0);
+        }
+      }
+
       // Web TX Audio Source & VU meter
       const cfg = this.getTxAudioConfig();
       const secureOk = this._isMicSecureContext();
@@ -3110,6 +3277,25 @@
         if (tel.dapTempC != null) sysParts.push(`D:${Number(tel.dapTempC).toFixed(0)}°`);
         if (tel.ducTempC != null) sysParts.push(`U:${Number(tel.ducTempC).toFixed(0)}°`);
         s.sys.val.textContent = sysParts.length ? sysParts.join(' ') : '—';
+        s.sys.tile.dataset.level = tempLevel(tel.cpuTempC != null ? Number(tel.cpuTempC) : null);
+
+        if (s.fwd) {
+          const activeTxOrTune = txActive || atuTuning;
+          s.fwd.val.textContent = activeTxOrTune || peakFwd > 0
+            ? `${fwdWatts.toFixed(1)} W (pk ${peakFwd.toFixed(1)} W)`
+            : '0.0 W (RX)';
+          s.fwd.tile.dataset.level = activeTxOrTune && fwdWatts > 0 ? 'ok' : 'ok';
+        }
+        if (s.swr) {
+          s.swr.val.textContent = `${swr.toFixed(2)}:1`;
+          s.swr.tile.dataset.level = swrLevel(swr);
+        }
+
+        for (const k of Object.keys(s)) {
+          const selected = this._selectedSensorKey === k;
+          s[k].tile.classList.toggle('is-selected', selected);
+          s[k].tile.setAttribute('aria-pressed', selected ? 'true' : 'false');
+        }
 
         const maxHot = Math.max(pt || 0, lt || 0, tf || 0);
         if (this._refs.txThermalAlert) {
@@ -3126,12 +3312,159 @@
           }
         }
       }
+      this._renderSensorGraph(snapshot);
       if (this._refs.omBadges) {
         this._refs.omBadges.kat4.classList.toggle('is-present', snapshot.hasAtu !== false);
         this._refs.omBadges.kpa4.classList.toggle('is-present', Boolean(snapshot.hasKpa4));
-        this._refs.omBadges.krx4.classList.toggle('is-present', snapshot.hasSubRx !== false);
+        this._refs.omBadges.krx4.classList.toggle('is-present', Boolean(snapshot.hasKrx4));
         this._refs.omBadges.amp.classList.toggle('is-present', Boolean(snapshot.hasLinearAmp));
       }
+    }
+
+    _renderSensorGraph() {
+      const panel = this._refs.sensorGraphPanel;
+      const canvas = this._refs.sensorGraphCanvas;
+      const key = this._selectedSensorKey;
+      if (!panel || !canvas) return;
+      const meta = key ? SENSOR_META_BY_KEY[key] : null;
+      if (!meta) {
+        panel.hidden = true;
+        return;
+      }
+      panel.hidden = false;
+      this._refs.sensorGraphTitle.textContent = `${meta.label} (${meta.unit})`;
+
+      const hist =
+        this.state && typeof this.state.getSensorHistory === 'function'
+          ? this.state.getSensorHistory(key, this._sensorWindowSec)
+          : { points: [], min: null, max: null, current: null };
+      const points = Array.isArray(hist.points) ? hist.points.slice() : [];
+      if (points.length === 0 && Number.isFinite(hist.current)) {
+        points.push({ ts: Date.now(), value: hist.current });
+      }
+      const fmt = (v) => (Number.isFinite(v) ? `${v.toFixed(meta.decimals)} ${meta.unit}` : '—');
+      const minVal = hist.min != null ? hist.min : (points[0] ? points[0].value : null);
+      const maxVal = hist.max != null ? hist.max : (points[0] ? points[0].value : null);
+      this._refs.sensorGraphStats.textContent = `Min ${fmt(minVal)} · Now ${fmt(hist.current)} · Max ${fmt(maxVal)}`;
+
+      const cssW = Math.max(220, canvas.clientWidth || 264);
+      const cssH = 104;
+      const dpr = Math.min(2, window.devicePixelRatio || 1);
+      if (canvas.width !== Math.round(cssW * dpr) || canvas.height !== Math.round(cssH * dpr)) {
+        canvas.width = Math.round(cssW * dpr);
+        canvas.height = Math.round(cssH * dpr);
+      }
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+      ctx.save();
+      ctx.scale(dpr, dpr);
+
+      ctx.fillStyle = '#090D16';
+      ctx.fillRect(0, 0, cssW, cssH);
+
+      const padL = 36;
+      const padR = 8;
+      const padT = 10;
+      const padB = 18;
+      const plotW = Math.max(10, cssW - padL - padR);
+      const plotH = Math.max(10, cssH - padT - padB);
+
+      if (points.length === 0) {
+        ctx.fillStyle = '#64748B';
+        ctx.font = '11px system-ui, sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText('Waiting for telemetry samples...', cssW / 2, cssH / 2 + 4);
+        ctx.restore();
+        return;
+      }
+
+      let lo = Number.isFinite(minVal) ? minVal : 0;
+      let hi = Number.isFinite(maxVal) ? maxVal : 1;
+      if (Number.isFinite(meta.minFloor)) lo = Math.min(lo, meta.minFloor);
+      if (hi - lo < (meta.unit === 'V' ? 0.5 : meta.unit === ':1' ? 0.4 : 2)) {
+        const mid = (hi + lo) * 0.5;
+        const half = meta.unit === 'V' ? 0.4 : meta.unit === ':1' ? 0.25 : 2;
+        lo = Number.isFinite(meta.minFloor) ? Math.max(meta.minFloor, mid - half) : mid - half;
+        hi = mid + half;
+      } else {
+        const span = hi - lo;
+        lo = Number.isFinite(meta.minFloor) ? Math.max(meta.minFloor, lo - span * 0.1) : lo - span * 0.1;
+        hi = hi + span * 0.12;
+      }
+
+      const nowTs = Date.now();
+      const startTs = nowTs - this._sensorWindowSec * 1000;
+      const xOf = (ts) => padL + clamp((ts - startTs) / Math.max(1000, nowTs - startTs), 0, 1) * plotW;
+      const yOf = (val) => padT + (1 - clamp((val - lo) / Math.max(1e-6, hi - lo), 0, 1)) * plotH;
+
+      // Subtle grid + Y axis ticks
+      ctx.strokeStyle = 'rgba(148, 163, 184, 0.12)';
+      ctx.lineWidth = 1;
+      ctx.fillStyle = '#94A3B8';
+      ctx.font = '10px ui-monospace, SFMono-Regular, monospace';
+      ctx.textAlign = 'right';
+      for (let g = 0; g <= 2; g++) {
+        const frac = g / 2;
+        const y = padT + frac * plotH;
+        const labelVal = hi - frac * (hi - lo);
+        ctx.beginPath();
+        ctx.moveTo(padL, y);
+        ctx.lineTo(cssW - padR, y);
+        ctx.stroke();
+        ctx.fillText(labelVal.toFixed(meta.decimals > 1 ? 1 : 0), padL - 4, y + 3);
+      }
+
+      // Optional threshold lines
+      const drawThresh = (val, color) => {
+        if (!Number.isFinite(val) || val < lo || val > hi) return;
+        const y = yOf(val);
+        ctx.save();
+        ctx.strokeStyle = color;
+        ctx.setLineDash([3, 3]);
+        ctx.beginPath();
+        ctx.moveTo(padL, y);
+        ctx.lineTo(cssW - padR, y);
+        ctx.stroke();
+        ctx.restore();
+      };
+      drawThresh(meta.warnMax ?? meta.warnMin, 'rgba(245, 158, 11, 0.55)');
+      drawThresh(meta.critMax ?? meta.critMin, 'rgba(244, 63, 94, 0.65)');
+
+      // X axis window labels
+      ctx.fillStyle = '#64748B';
+      ctx.textAlign = 'left';
+      ctx.fillText(`-${this._sensorWindowSec}s`, padL, cssH - 4);
+      ctx.textAlign = 'right';
+      ctx.fillText('now', cssW - padR, cssH - 4);
+
+      // Line + subtle fill
+      ctx.beginPath();
+      for (let i = 0; i < points.length; i++) {
+        const px = xOf(points[i].ts);
+        const py = yOf(points[i].value);
+        if (i === 0) ctx.moveTo(px, py);
+        else ctx.lineTo(px, py);
+      }
+      ctx.strokeStyle = meta.color;
+      ctx.lineWidth = 1.8;
+      ctx.stroke();
+
+      if (points.length >= 2) {
+        const lastPt = points[points.length - 1];
+        const firstPt = points[0];
+        ctx.lineTo(xOf(lastPt.ts), padT + plotH);
+        ctx.lineTo(xOf(firstPt.ts), padT + plotH);
+        ctx.closePath();
+        ctx.fillStyle = meta.color + '24';
+        ctx.fill();
+      }
+
+      const last = points[points.length - 1];
+      ctx.fillStyle = meta.color;
+      ctx.beginPath();
+      ctx.arc(xOf(last.ts), yOf(last.value), 3, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
     }
   }
 

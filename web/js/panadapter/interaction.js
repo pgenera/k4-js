@@ -63,12 +63,14 @@
       this._gestureAnchorRfHz = 14074000;
       this._gestureRx = 'A';
 
-      this._axisPanLastX = 0;
-      this._lastPanSendMs = -1e9;
+      this._panLastX = 0;
       this._lastEdgeSendMs = -1e9;
       this._lastSpanSendMs = -1e9;
       this._spanFlushTimer = null;
       this._pendingSpan = null;
+      this._lastIfCenterSendMs = -1e9;
+      this._ifCenterFlushTimer = null;
+      this._pendingIfCenter = null;
       this._lastRightHandledMs = -1e9;
       this._lastLockWarnMs = -1e9;
 
@@ -324,38 +326,6 @@
       }
     }
 
-    _applyPanDrag(xPx, fine, isFinal) {
-      const hit = this._dragHit;
-      if (!hit || !this.client) return;
-      if (this._isRxLocked(hit, this._dragRx)) {
-        if (isFinal) this._syncMouseTarget(this._dragRx);
-        this._notifyLocked(this._dragRx);
-        return;
-      }
-      const plotW = Math.max(1, hit.layout.specRect.w);
-      const dx = xPx - this._startX;
-      const deltaHz = -(dx / plotW) * hit.userSpanHz;
-      const rawHz = this._startFreqHz + deltaHz;
-
-      const rxKey = this._dragRx === 'B' ? 'rxB' : 'rxA';
-      const rxState = (this._getSnapshot()[rxKey]) || {};
-      const finalStep = fine ? 1 : rxState.stepHz || 100;
-      const step = isFinal ? finalStep : fine ? 1 : Math.min(finalStep, 100);
-      const snappedHz = clamp(Math.round(rawHz / step) * step, 100000, 54000000);
-
-      const now = performance.now();
-      if (!isFinal && now - this._lastPanSendMs < THROTTLE_MS) {
-        return;
-      }
-      this._lastPanSendMs = now;
-      if (isFinal) {
-        this._syncMouseTarget(this._dragRx);
-      }
-      if (typeof this.client.tune === 'function') {
-        this.client.tune(this._dragRx, snappedHz, { optimistically: true });
-      }
-    }
-
     _applyEdgeDrag(xPx, isFinal) {
       const info = this._edgeInfo;
       const hit = this._dragHit;
@@ -500,6 +470,47 @@
       }
     }
 
+    _sendIfCenter(rx, freqHz) {
+      if (!this.client || typeof this.client.sendCat !== 'function') return;
+      const clamped = clamp(Math.round(freqHz), 100000, 54000000);
+      const builders = K4.CatCodec && K4.CatCodec.builders;
+      if (builders && typeof builders.ifCenter === 'function') {
+        this.client.sendCat(builders.ifCenter(rx, clamped));
+      } else {
+        const prefix = rx === 'B' ? '$' : '';
+        this.client.sendCat(
+          'FI' + prefix + String(clamped).padStart(11, '0') + ';'
+        );
+      }
+    }
+
+    _sendIfCenterThrottled(rx, freqHz, forceImmediate = false) {
+      const clamped = clamp(Math.round(freqHz), 100000, 54000000);
+      const now = performance.now();
+      if (forceImmediate || now - this._lastIfCenterSendMs >= THROTTLE_MS) {
+        if (this._ifCenterFlushTimer) {
+          clearTimeout(this._ifCenterFlushTimer);
+          this._ifCenterFlushTimer = null;
+        }
+        this._pendingIfCenter = null;
+        this._lastIfCenterSendMs = now;
+        this._sendIfCenter(rx, clamped);
+        return;
+      }
+      this._pendingIfCenter = { rx, freqHz: clamped };
+      if (!this._ifCenterFlushTimer) {
+        const delay = Math.max(8, THROTTLE_MS - (now - this._lastIfCenterSendMs));
+        this._ifCenterFlushTimer = setTimeout(() => {
+          this._ifCenterFlushTimer = null;
+          if (this._destroyed || !this._pendingIfCenter) return;
+          const p = this._pendingIfCenter;
+          this._pendingIfCenter = null;
+          this._lastIfCenterSendMs = performance.now();
+          this._sendIfCenter(p.rx, p.freqHz);
+        }, delay);
+      }
+    }
+
     _pinchDist() {
       const pts = Array.from(this._touches.values());
       if (pts.length < 2) return 40;
@@ -517,14 +528,14 @@
       };
     }
 
-    _applyAxisPanDrag(xPx, isFinal) {
+    _applyViewportPanDrag(xPx, isFinal) {
       const hit = this._dragHit;
       if (!hit || !this.view || typeof this.view.panViewportByHz !== 'function') {
         return;
       }
       const plotW = Math.max(1, hit.layout.specRect.w);
-      const dxStep = xPx - this._axisPanLastX;
-      this._axisPanLastX = xPx;
+      const dxStep = xPx - this._panLastX;
+      this._panLastX = xPx;
       const curSpan =
         typeof this.view.getVisibleSpanHz === 'function'
           ? this.view.getVisibleSpanHz(this._dragRx)
@@ -533,6 +544,13 @@
       const res = this.view.panViewportByHz(this._dragRx, deltaHz);
       if (res) {
         this._sendSpanThrottled(this._dragRx, res.radioSpanHz, Boolean(isFinal));
+        if (Number.isFinite(res.recenterStreamHz)) {
+          this._sendIfCenterThrottled(
+            this._dragRx,
+            res.recenterStreamHz,
+            Boolean(isFinal)
+          );
+        }
       }
     }
 
@@ -581,10 +599,8 @@
           this._dragExceeded = false;
           this._startX = xPx;
           this._startY = yPx;
-          this._dragRx = this._resolveTouchQsyRx(hit);
-          const rxKey = this._dragRx === 'B' ? 'rxB' : 'rxA';
-          const rxState = (hit && hit.snapshot && hit.snapshot[rxKey]) || {};
-          this._startFreqHz = rxState.freqHz || 14074000;
+          this._panLastX = xPx;
+          this._dragRx = hit && hit.paneRx === 'B' ? 'B' : 'A';
           this._dragHit = hit;
         }
         return;
@@ -637,7 +653,7 @@
         this._activePointerId = e.pointerId;
         this._startX = xPx;
         this._startY = yPx;
-        this._axisPanLastX = xPx;
+        this._panLastX = xPx;
         this._dragExceeded = false;
         this._dragRx = hit.paneRx === 'B' ? 'B' : 'A';
         this._dragHit = hit;
@@ -653,11 +669,9 @@
       this._activePointerId = e.pointerId;
       this._startX = xPx;
       this._startY = yPx;
+      this._panLastX = xPx;
       this._dragExceeded = false;
-      this._dragRx = this._resolveMouseQsyRx(0, hit, Boolean(e.shiftKey)) || 'A';
-      const rxKey = this._dragRx === 'B' ? 'rxB' : 'rxA';
-      const rxState = (hit && hit.snapshot && hit.snapshot[rxKey]) || {};
-      this._startFreqHz = rxState.freqHz || 14074000;
+      this._dragRx = hit && hit.paneRx === 'B' ? 'B' : 'A';
       this._dragHit = hit;
 
       try {
@@ -714,7 +728,7 @@
             this._dragExceeded = true;
           }
           if (this._dragExceeded) {
-            this._applyPanDrag(xPx, false, false);
+            this._applyViewportPanDrag(xPx, false);
           }
         }
         return;
@@ -748,12 +762,9 @@
           if (this._dragMode === 'edge') {
             this.surface.style.cursor = 'ew-resize';
             this._applyEdgeDrag(xPx, false);
-          } else if (this._dragMode === 'axis-pan') {
-            this.surface.style.cursor = 'grabbing';
-            this._applyAxisPanDrag(xPx, false);
           } else {
             this.surface.style.cursor = 'grabbing';
-            this._applyPanDrag(xPx, Boolean(e.altKey), false);
+            this._applyViewportPanDrag(xPx, false);
           }
         }
         return;
@@ -778,7 +789,7 @@
         if (e.type === 'pointerup' && this._touches.size === 0) {
           if (!this._wasPinched) {
             if (this._dragExceeded) {
-              this._applyPanDrag(xPx, false, true);
+              this._applyViewportPanDrag(xPx, true);
             } else {
               const hit = this._hitTest(xPx, yPx);
               const rx = this._resolveTouchQsyRx(hit);
@@ -811,10 +822,8 @@
         if (this._dragExceeded) {
           if (this._dragMode === 'edge') {
             this._applyEdgeDrag(xPx, true);
-          } else if (this._dragMode === 'axis-pan') {
-            this._applyAxisPanDrag(xPx, true);
           } else {
-            this._applyPanDrag(xPx, Boolean(e.altKey), true);
+            this._applyViewportPanDrag(xPx, true);
           }
         } else if (e.button === 0 && e.type === 'pointerup') {
           const hit = this._hitTest(xPx, yPx);
@@ -1035,6 +1044,11 @@
         this._spanFlushTimer = null;
       }
       this._pendingSpan = null;
+      if (this._ifCenterFlushTimer) {
+        clearTimeout(this._ifCenterFlushTimer);
+        this._ifCenterFlushTimer = null;
+      }
+      this._pendingIfCenter = null;
       this.surface.removeEventListener('pointerdown', this._onPointerDown);
       this.surface.removeEventListener('pointermove', this._onPointerMove);
       this.surface.removeEventListener('pointerup', this._onPointerUp);
