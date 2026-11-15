@@ -28,6 +28,8 @@
     { id: 'auto-spot', title: 'Auto Spot CW', sub: 'Zero-beat active VFO on CW signal', tag: 'SPOT', query: 'auto spot' },
     { id: 'span-48', title: 'Span 48 kHz', sub: 'Set panadapter span to 48 kHz', tag: 'SPAN', query: 'span 48k' },
     { id: 'sub-toggle', title: 'Toggle Sub Receiver', sub: 'Enable or disable VFO B Sub RX', tag: 'SUB', query: 'sub' },
+    { id: 'open-settings', title: 'Settings & Preferences', sub: 'Panadapter snap, mouse target, arrow keys, F1–F8 macros', tag: 'SETTINGS', query: 'settings' },
+    { id: 'open-shortcuts', title: 'Keyboard Shortcuts Reference', sub: 'View K4 single-key shortcuts and macro bindings', tag: 'KEYS', query: 'shortcuts' },
   ];
 
   function formatHz(hz) {
@@ -76,6 +78,7 @@
       this.onSetTargetRx = opts.onSetTargetRx || (() => {});
       this.onSetPalette = opts.onSetPalette || (() => {});
       this.onToggleAudio = opts.onToggleAudio || (() => {});
+      this.onOpenSettings = opts.onOpenSettings || (() => {});
       this.onNotify = opts.onNotify || (() => {});
 
       this._isOpen = false;
@@ -170,15 +173,29 @@
     }
 
     open(initialValue) {
+      const initial = typeof initialValue === 'string' ? initialValue : '';
       this._isOpen = true;
       this.modal.hidden = false;
       this.modal.dataset.open = 'true';
-      this.inputEl.value = typeof initialValue === 'string' ? initialValue : '';
+      this.inputEl.value = initial;
       this._selectedIdx = 0;
       this._refresh();
+      this.inputEl.focus();
+      if (initial.length > 0 && typeof this.inputEl.setSelectionRange === 'function') {
+        this.inputEl.setSelectionRange(initial.length, initial.length);
+      }
       requestAnimationFrame(() => {
-        this.inputEl.focus();
-        this.inputEl.select();
+        if (!this._isOpen) return;
+        if (document.activeElement !== this.inputEl) {
+          this.inputEl.focus();
+        }
+        if (initial.length > 0) {
+          if (typeof this.inputEl.setSelectionRange === 'function' && this.inputEl.value === initial) {
+            this.inputEl.setSelectionRange(initial.length, initial.length);
+          }
+        } else {
+          this.inputEl.select();
+        }
       });
     }
 
@@ -248,6 +265,7 @@
 
       for (let i = 0; i < DEFAULT_PRESETS.length; i++) {
         const p = DEFAULT_PRESETS[i];
+        if (parsed && parsed.tag === p.tag && p.query === lower) continue;
         if (p.title.toLowerCase().includes(lower) || p.query.toLowerCase().includes(lower)) {
           items.push({
             title: p.title,
@@ -688,6 +706,24 @@
           sub: 'Control receiver stereo audio output',
           tag: 'AUDIO',
           run: () => this.onToggleAudio(lower === 'mute' ? true : (lower === 'unmute' ? false : undefined)),
+        };
+      }
+
+      // Settings & Keyboard Shortcuts
+      if (lower === 'settings' || lower === 'prefs' || lower === 'preferences') {
+        return {
+          title: 'Open Settings & Preferences',
+          sub: 'Panadapter snap, mouse target, arrow keys, F1–F8 macros',
+          tag: 'SETTINGS',
+          run: () => this.onOpenSettings(),
+        };
+      }
+      if (lower === 'shortcuts' || lower === 'keys' || lower === 'keybindings') {
+        return {
+          title: 'Open Keyboard Shortcuts Reference',
+          sub: 'View K4 single-key shortcuts and macro bindings',
+          tag: 'KEYS',
+          run: () => this.onOpenSettings('shortcuts'),
         };
       }
 

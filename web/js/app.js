@@ -25,7 +25,13 @@
     constructor() {
       this._params = new URLSearchParams(typeof location !== 'undefined' ? location.search : '');
       this._targetRx = 'A';
-      this._mouseQsyMode = (K4.storage && K4.storage.get('k4.mouseQsyMode', 'lr')) === 'pane' ? 'pane' : 'lr';
+      const prefs = K4.ClientPrefs;
+      this._mouseQsyMode = prefs
+        ? prefs.get('mouseQsyMode')
+        : (K4.storage && K4.storage.get('k4.mouseQsyMode', 'lr')) === 'pane'
+          ? 'pane'
+          : 'lr';
+      this._voiceClickSnapKhz = prefs ? prefs.get('voiceClickSnapKhz') : true;
       this._wheelRitMode = false;
       this._palette = K4.storage ? K4.storage.get('k4.palette', 'obsidian') : 'obsidian';
       this._peakHold = K4.storage ? K4.storage.get('k4.peakHold.v2', false) === true : false;
@@ -80,6 +86,7 @@
       this.audio = new K4.AudioEngine({ state: this.state });
 
       this._dom = {
+        topBar: document.getElementById('top-bar'),
         connBtn: document.getElementById('conn-btn'),
         connLabel: document.querySelector('#conn-btn .k4-conn-label'),
         connRtt: document.querySelector('#conn-btn .k4-conn-rtt'),
@@ -101,6 +108,7 @@
         txMicBtn: document.getElementById('tx-mic-btn'),
         txMicLabel: document.getElementById('tx-mic-label'),
         pttBtn: document.getElementById('ptt-btn'),
+        settingsBtn: document.getElementById('settings-btn'),
         drawerToggleBtn: document.getElementById('drawer-toggle'),
         panStage: document.getElementById('pan-stage'),
         drawer: document.getElementById('inspector-drawer'),
@@ -108,6 +116,7 @@
         mobileSheet: document.getElementById('mobile-sheet'),
         omnibarModal: document.getElementById('omnibar-modal'),
         connDialog: document.getElementById('connection-dialog'),
+        settingsModal: document.getElementById('settings-modal'),
         toastStack: document.getElementById('toast-stack'),
       };
 
@@ -118,6 +127,7 @@
         client: this.client,
         renderer: rendererOpt,
         mouseQsyMode: this._mouseQsyMode,
+        voiceClickSnapKhz: this._voiceClickSnapKhz,
         onSelectTarget: (rx) => this.setTargetRx(rx),
         onToggleWheelRit: () => this.toggleWheelRitMode(),
         onNotify: (msg, level) => this.toast(msg, level),
@@ -240,13 +250,7 @@
       this._hudCenterBtn.dataset.testid = 'hud-center-btn';
       this._hudCenterBtn.hidden = true;
       this._hudCenterBtn.title = 'Re-center zoomed panadapter viewport on VFO';
-      this._hudCenterBtn.addEventListener('click', () => {
-        const snap = this._getSnapshot();
-        const dispRx = this._dispRx(snap);
-        if (this.panadapter && this.panadapter.resetViewport) {
-          this.panadapter.resetViewport(dispRx, { syncRadioSpan: true });
-        }
-      });
+      this._hudCenterBtn.addEventListener('click', () => this._recenterPanadapter());
       group.appendChild(this._hudCenterBtn);
 
       group.appendChild(el('span', 'k4-hud-sep'));
@@ -289,13 +293,7 @@
       this._hudAutoSpotBtn.type = 'button';
       this._hudAutoSpotBtn.dataset.testid = 'auto-spot-btn';
       this._hudAutoSpotBtn.title = 'Zero-beat CW signal on active VFO';
-      this._hudAutoSpotBtn.addEventListener('click', () => {
-        if (typeof this.client.autoSpot === 'function') {
-          this.client.autoSpot(this._targetRx);
-        } else {
-          this.client.sendCat(`SP${this._targetRx === 'B' ? '$' : ''}3;`);
-        }
-      });
+      this._hudAutoSpotBtn.addEventListener('click', () => this._triggerAutoSpot());
       group.appendChild(this._hudAutoSpotBtn);
 
       this._hudCwSpotBtn = el('button', 'k4-hud-btn', 'Spot');
@@ -304,16 +302,7 @@
       this._hudCwSpotBtn.dataset.testid = 'cw-spot-btn';
       this._hudCwSpotBtn.setAttribute('aria-pressed', 'false');
       this._hudCwSpotBtn.title = 'Toggle CW Spot sidetone';
-      this._hudCwSpotBtn.addEventListener('click', () => {
-        const snap = this._getSnapshot();
-        const rxS = (this._targetRx === 'B' ? snap.rxB : snap.rxA) || {};
-        const nextOn = !(snap.spotTone || snap.cwSpotOn || rxS.spotMode === 1 || rxS.spotMode === 2);
-        if (typeof this.client.setSpotTone === 'function') {
-          this.client.setSpotTone(nextOn ? 1 : 0, 'A');
-        } else {
-          this.client.sendCat(`SP${nextOn ? '1' : '0'};`);
-        }
-      });
+      this._hudCwSpotBtn.addEventListener('click', () => this._toggleSpotTone());
       group.appendChild(this._hudCwSpotBtn);
 
       hudTop.appendChild(group);
@@ -377,11 +366,7 @@
 
     _initWidgets() {
       const handleSelectTarget = (rx) => {
-        if (window.innerWidth < 960 && this._targetRx === rx) {
-          this.setTargetRx(rx === 'A' ? 'B' : 'A');
-        } else {
-          this.setTargetRx(rx);
-        }
+        this.setTargetRx(rx);
       };
 
       const handleOpenInspector = (tabId) => {
@@ -428,6 +413,7 @@
         onSetTargetRx: (rx) => this.setTargetRx(rx),
         onSetPalette: (pal) => this.setPalette(pal),
         onToggleAudio: (muteOverride) => this.toggleAudio(muteOverride),
+        onOpenSettings: (section) => this.openSettings(section),
         onNotify: (msg, level) => this.toast(msg, level),
       });
 
@@ -470,6 +456,31 @@
         onConnectSubmit: (opts) => this.connect(opts),
         onDisconnectClick: () => this.disconnect(),
       });
+
+      this.settingsPanel = K4.SettingsPanel
+        ? new K4.SettingsPanel({
+            modal: this._dom.settingsModal,
+            client: this.client,
+            prefs: K4.ClientPrefs,
+            onNotify: (msg, level) => this.toast(msg, level),
+          })
+        : { open() {}, close() {}, isOpen: () => false };
+
+      if (K4.ClientPrefs && typeof K4.ClientPrefs.onChange === 'function') {
+        this._unsubClientPrefs = K4.ClientPrefs.onChange((key, val) => {
+          if (key === 'voiceClickSnapKhz') {
+            this._voiceClickSnapKhz = Boolean(val);
+            if (this.panadapter && typeof this.panadapter.setVoiceClickSnapKhz === 'function') {
+              this.panadapter.setVoiceClickSnapKhz(this._voiceClickSnapKhz);
+            }
+          } else if (key === 'mouseQsyMode') {
+            const next = val === 'pane' ? 'pane' : 'lr';
+            if (this._mouseQsyMode !== next) {
+              this.setMouseQsyMode(next);
+            }
+          }
+        });
+      }
     }
 
     _bindEvents() {
@@ -658,6 +669,18 @@
       this._dom.omnibarBtn.addEventListener('click', () => this.openOmnibar());
       this._dom.audioToggleBtn.addEventListener('click', () => this.toggleAudio());
       this._dom.drawerToggleBtn.addEventListener('click', () => this.toggleDrawer());
+      if (this._dom.settingsBtn) {
+        this._dom.settingsBtn.addEventListener('click', () => {
+          if (this.settingsPanel && this.settingsPanel.isOpen()) this.settingsPanel.close();
+          else this.openSettings();
+        });
+      }
+
+      this._syncTopbarHeight();
+      if (typeof ResizeObserver === 'function' && this._dom.topBar) {
+        this._topBarResizeObserver = new ResizeObserver(() => this._syncTopbarHeight());
+        this._topBarResizeObserver.observe(this._dom.topBar);
+      }
 
       // VFO Cluster (Item 10)
       if (this._dom.vfoAbBtn) {
@@ -676,9 +699,7 @@
           abHoldTimer = setTimeout(() => {
             abHoldTimer = null;
             abHoldTriggered = true;
-            if (typeof this.client.vfoCopy === 'function') this.client.vfoCopy(5);
-            else this.client.sendCat('AB5;');
-            this.toast('VFO A ↔ B full swap', 'info');
+            this._swapVfo(true);
           }, 450);
         });
         this._dom.vfoAbBtn.addEventListener('pointerup', clearAbHold);
@@ -689,55 +710,17 @@
             abHoldTriggered = false;
             return;
           }
-          const code = e.shiftKey ? 5 : 2;
-          if (typeof this.client.vfoCopy === 'function') this.client.vfoCopy(code);
-          else this.client.sendCat(`AB${code};`);
-          if (e.shiftKey) this.toast('VFO A ↔ B full swap', 'info');
+          this._swapVfo(Boolean(e.shiftKey));
         });
       }
       if (this._dom.vfoA2bBtn) {
-        this._dom.vfoA2bBtn.addEventListener('click', (e) => {
-          const now = Date.now();
-          const doFull = e.shiftKey || now < this._a2bWindowUntil;
-          if (this._a2bCueTimer) {
-            clearTimeout(this._a2bCueTimer);
-            this._a2bCueTimer = null;
-          }
-          if (doFull) {
-            this._a2bWindowUntil = 0;
-            this._dom.vfoA2bBtn.dataset.window = 'freq';
-            if (typeof this.client.vfoCopy === 'function') this.client.vfoCopy(3);
-            else this.client.sendCat('AB3;');
-            this.toast('VFO A → B full copy', 'info');
-          } else {
-            this._a2bWindowUntil = now + 3000;
-            this._dom.vfoA2bBtn.dataset.window = 'full';
-            if (typeof this.client.vfoCopy === 'function') this.client.vfoCopy(0);
-            else this.client.sendCat('AB0;');
-            this._a2bCueTimer = setTimeout(() => {
-              this._a2bCueTimer = null;
-              this._a2bWindowUntil = 0;
-              if (this._dom.vfoA2bBtn) this._dom.vfoA2bBtn.dataset.window = 'freq';
-            }, 3020);
-          }
-        });
+        this._dom.vfoA2bBtn.addEventListener('click', (e) => this._triggerA2B(Boolean(e.shiftKey)));
       }
       if (this._dom.vfoSplitBtn) {
-        this._dom.vfoSplitBtn.addEventListener('click', (e) => {
-          const snap = this._getSnapshot();
-          if (e.shiftKey && typeof this.client.setupQuickSplit === 'function') {
-            this.client.setupQuickSplit(1000);
-            this.toast('Quick Split (+1 kHz on VFO B)', 'info');
-          } else {
-            this.client.setSplit(!snap.splitEnabled);
-          }
-        });
+        this._dom.vfoSplitBtn.addEventListener('click', (e) => this._toggleSplit(Boolean(e.shiftKey)));
       }
       if (this._dom.vfoSubBtn) {
-        this._dom.vfoSubBtn.addEventListener('click', () => {
-          const snap = this._getSnapshot();
-          this.client.setSubRx(!snap.subRxEnabled);
-        });
+        this._dom.vfoSubBtn.addEventListener('click', () => this._toggleSubRx());
       }
 
       // Top-bar ANT & ATU pills (Item 13)
@@ -755,17 +738,13 @@
         this._dom.topAtuBtn.addEventListener('click', (e) => {
           const snap = this._getSnapshot();
           if (snap.hasAtu === false) return;
+          if (e.shiftKey) {
+            this._triggerAtuTune();
+            return;
+          }
           if (snap.atuTuning) {
             if (typeof this.client.stopAtuTune === 'function') this.client.stopAtuTune();
             else this.client.sendCat('TU0;');
-            return;
-          }
-          if (e.shiftKey) {
-            if (typeof this.client.startAtuTune === 'function') this.client.startAtuTune();
-            else {
-              const hot = Number(snap.atuSearchWindowUntil) > Date.now();
-              this.client.sendCat(hot ? 'TU4;' : 'TU3;');
-            }
             return;
           }
           const nextMode = Number(snap.atuMode) === 2 ? 1 : 2;
@@ -831,10 +810,17 @@
 
       // Global keyboard shortcuts & Hold-Only Spacebar PTT / Unconditional Escape Panic
       document.addEventListener('keydown', (e) => {
-        if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+        if ((e.metaKey || e.ctrlKey) && !e.altKey && e.key.toLowerCase() === 'k') {
           e.preventDefault();
           if (this.omnibar.isOpen()) this.omnibar.close();
           else this.openOmnibar();
+          return;
+        }
+
+        if ((e.metaKey || e.ctrlKey) && !e.altKey && e.key === ',') {
+          e.preventDefault();
+          if (this.settingsPanel && this.settingsPanel.isOpen()) this.settingsPanel.close();
+          else this.openSettings();
           return;
         }
 
@@ -843,6 +829,7 @@
           const modalOpen =
             this.omnibar.isOpen() ||
             this.connectionDialog.isOpen() ||
+            Boolean(this.settingsPanel && this.settingsPanel.isOpen()) ||
             this.inspector.isMobileSheetOpen();
           const txBusy = Boolean(
             snap.txActive || snap.pttHeld || this._pttHeldUi || snap.atuTuning || Number(snap.txBufferCount) > 0
@@ -862,12 +849,28 @@
 
         const tag = e.target && e.target.tagName ? e.target.tagName.toLowerCase() : '';
         const isEditing = tag === 'input' || tag === 'textarea' || tag === 'select' || (e.target && e.target.isContentEditable);
-        const modalOpen = this.omnibar.isOpen() || this.connectionDialog.isOpen();
+        const modalOpen =
+          this.omnibar.isOpen() ||
+          this.connectionDialog.isOpen() ||
+          Boolean(this.settingsPanel && this.settingsPanel.isOpen());
         if (isEditing || modalOpen) {
           return;
         }
 
-        if (e.code === 'Space') {
+        if (K4.ClientPrefs && K4.ClientPrefs.get('keyboardShortcuts') === false) {
+          return;
+        }
+
+        if (e.ctrlKey || e.metaKey) {
+          return;
+        }
+
+        const onVfoDigit = Boolean(e.target && e.target.classList && e.target.classList.contains('k4-vfo-digit'));
+        if (onVfoDigit && (e.key === 'ArrowUp' || e.key === 'ArrowDown' || (!e.altKey && /^[0-9]$/.test(e.key)))) {
+          return;
+        }
+
+        if (e.code === 'Space' && !e.altKey) {
           const snap = this._getSnapshot();
           const posture = snap.txPosture || (typeof this.client.getTxPosture === 'function' ? this.client.getTxPosture() : 'tx-armed');
           if (posture !== 'rx-only' && !snap.txInhibit) {
@@ -880,15 +883,104 @@
           }
         }
 
-        if (e.key === 'm' || e.key === 'M') {
+        if (e.key === '?' && !e.altKey) {
+          e.preventDefault();
+          this.openSettings('shortcuts');
+          return;
+        }
+
+        if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+          e.preventDefault();
+          const mult = e.shiftKey ? 10 : 1;
+          const dir = e.key === 'ArrowLeft' ? -1 : 1;
+          this.client.stepFrequency(this._targetRx, dir * mult, e.altKey ? 1 : undefined);
+          return;
+        }
+
+        if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+          e.preventDefault();
+          const dir = e.key === 'ArrowUp' ? 1 : -1;
+          const mode = K4.ClientPrefs ? K4.ClientPrefs.get('arrowUpDownMode') : 'coarse';
+          if (mode === 'band') {
+            this._stepBand(dir);
+          } else if (mode === 'step') {
+            this.client.stepFrequency(this._targetRx, dir, e.altKey ? 1 : undefined);
+          } else {
+            this.client.stepFrequency(this._targetRx, dir * 10, e.altKey ? 1 : undefined);
+          }
+          return;
+        }
+
+        if (e.altKey) {
+          return;
+        }
+
+        if (/^F[1-8]$/.test(e.key)) {
+          e.preventDefault();
+          this._executeFnMacro(e.key);
+          return;
+        }
+
+        if (/^[0-9]$/.test(e.key)) {
+          e.preventDefault();
+          this.openOmnibar(e.key);
+          return;
+        }
+
+        if (e.key === 'PageUp' || e.key === ']') {
+          e.preventDefault();
+          this._stepBand(1);
+        } else if (e.key === 'PageDown' || e.key === '[') {
+          e.preventDefault();
+          this._stepBand(-1);
+        } else if (e.key === 'a' && !e.shiftKey) {
+          e.preventDefault();
+          this.setTargetRx('A');
+        } else if (e.key === 'b' && !e.shiftKey) {
+          e.preventDefault();
+          this.setTargetRx('B');
+        } else if (e.key === 'A' || (e.shiftKey && e.key.toLowerCase() === 'a')) {
+          e.preventDefault();
+          this._triggerA2B(false);
+        } else if (e.key === 'x' || e.key === '/') {
+          e.preventDefault();
+          this._swapVfo(false);
+        } else if (e.key === 'X' || (e.shiftKey && e.key.toLowerCase() === 'x')) {
+          e.preventDefault();
+          this._swapVfo(true);
+        } else if (e.key === 's' && !e.shiftKey) {
+          e.preventDefault();
+          this._toggleSplit(false);
+        } else if (e.key === 'S' || (e.shiftKey && e.key.toLowerCase() === 's')) {
+          e.preventDefault();
+          this._toggleSplit(true);
+        } else if (e.key === 'u' || e.key === 'U') {
+          e.preventDefault();
+          this._toggleSubRx();
+        } else if (e.key === 'c' && !e.shiftKey) {
+          e.preventDefault();
+          this._triggerAutoSpot();
+        } else if (e.key === 'C' || (e.shiftKey && e.key.toLowerCase() === 'c')) {
+          e.preventDefault();
+          this._toggleSpotTone();
+        } else if (e.key === 'l' || e.key === 'L') {
+          e.preventDefault();
+          this._toggleLock();
+        } else if (e.key === 'r' && !e.shiftKey) {
+          e.preventDefault();
+          this._toggleRit();
+        } else if (e.key === 'R' || (e.shiftKey && e.key.toLowerCase() === 'r')) {
+          e.preventDefault();
+          this._clearRit();
+        } else if (e.key === 'T' || (e.shiftKey && e.key.toLowerCase() === 't')) {
+          e.preventDefault();
+          this._triggerAtuTune();
+        } else if (e.key === 'z' || e.key === 'Z' || e.key === 'Home') {
+          e.preventDefault();
+          this._recenterPanadapter();
+        } else if (e.key === 'm' || e.key === 'M') {
           e.preventDefault();
           this.toggleAudio();
-        } else if (e.key === 'ArrowLeft') {
-          e.preventDefault();
-          this.client.stepFrequency(this._targetRx, -1, e.altKey ? 1 : undefined);
-        } else if (e.key === 'ArrowRight') {
-          e.preventDefault();
-          this.client.stepFrequency(this._targetRx, 1, e.altKey ? 1 : undefined);
         } else if (e.key === '+' || e.key === '=') {
           e.preventDefault();
           this._stepSpan(-1);
@@ -899,9 +991,6 @@
           e.preventDefault();
           const snap = this._getSnapshot();
           this.client.setDisplay(this._dispRx(snap), { panFrozen: !snap.panFrozen });
-        } else if (e.key === '?') {
-          e.preventDefault();
-          this.toast('Shortcuts: Cmd/Ctrl+K Jump · M Mute · F Freeze · Space Hold-PTT · Esc Stop TX / Close', 'info');
         }
       });
 
@@ -932,6 +1021,7 @@
       });
 
       window.addEventListener('resize', () => {
+        this._syncTopbarHeight();
         this.inspector.syncHost();
         if (this.inspector && typeof this.inspector.onDrawerVisibilityChange === 'function') {
           this.inspector.onDrawerVisibilityChange();
@@ -1214,11 +1304,177 @@
     setMouseQsyMode(mode) {
       const next = mode === 'pane' ? 'pane' : 'lr';
       this._mouseQsyMode = next;
-      if (K4.storage) K4.storage.set('k4.mouseQsyMode', next);
+      if (K4.ClientPrefs && typeof K4.ClientPrefs.set === 'function') {
+        K4.ClientPrefs.set('mouseQsyMode', next);
+      } else if (K4.storage) {
+        K4.storage.set('k4.mouseQsyMode', next);
+      }
       if (this.panadapter && this.panadapter.setMouseQsyMode) {
         this.panadapter.setMouseQsyMode(next);
       }
       this._render();
+    }
+
+    _syncTopbarHeight() {
+      const bar = this._dom && this._dom.topBar;
+      if (!bar || typeof document === 'undefined' || !document.documentElement) return;
+      const rect = bar.getBoundingClientRect();
+      if (rect && rect.height > 0) {
+        document.documentElement.style.setProperty('--topbar-live-h', `${Math.ceil(rect.height)}px`);
+      }
+    }
+
+    _recenterPanadapter() {
+      const snap = this._getSnapshot();
+      const dispRx = this._dispRx(snap);
+      if (this.panadapter && this.panadapter.resetViewport) {
+        this.panadapter.resetViewport(dispRx, { syncRadioSpan: true });
+      }
+    }
+
+    _triggerAutoSpot() {
+      if (typeof this.client.autoSpot === 'function') {
+        this.client.autoSpot(this._targetRx);
+      } else {
+        this.client.sendCat(`SP${this._targetRx === 'B' ? '$' : ''}3;`);
+      }
+    }
+
+    _toggleSpotTone() {
+      const snap = this._getSnapshot();
+      const rxS = (this._targetRx === 'B' ? snap.rxB : snap.rxA) || {};
+      const nextOn = !(snap.spotTone || snap.cwSpotOn || rxS.spotMode === 1 || rxS.spotMode === 2);
+      if (typeof this.client.setSpotTone === 'function') {
+        this.client.setSpotTone(nextOn ? 1 : 0, 'A');
+      } else {
+        this.client.sendCat(`SP${nextOn ? '1' : '0'};`);
+      }
+    }
+
+    _swapVfo(fullSwap) {
+      const code = fullSwap ? 5 : 2;
+      if (typeof this.client.vfoCopy === 'function') this.client.vfoCopy(code);
+      else this.client.sendCat(`AB${code};`);
+      if (fullSwap) this.toast('VFO A ↔ B full swap', 'info');
+    }
+
+    _triggerA2B(fullOverride) {
+      const now = Date.now();
+      const doFull = Boolean(fullOverride) || now < (this._a2bWindowUntil || 0);
+      if (this._a2bCueTimer) {
+        clearTimeout(this._a2bCueTimer);
+        this._a2bCueTimer = null;
+      }
+      if (doFull) {
+        this._a2bWindowUntil = 0;
+        if (this._dom.vfoA2bBtn) this._dom.vfoA2bBtn.dataset.window = 'freq';
+        if (typeof this.client.vfoCopy === 'function') this.client.vfoCopy(3);
+        else this.client.sendCat('AB3;');
+        this.toast('VFO A → B full copy', 'info');
+      } else {
+        this._a2bWindowUntil = now + 3000;
+        if (this._dom.vfoA2bBtn) this._dom.vfoA2bBtn.dataset.window = 'full';
+        if (typeof this.client.vfoCopy === 'function') this.client.vfoCopy(0);
+        else this.client.sendCat('AB0;');
+        this._a2bCueTimer = setTimeout(() => {
+          this._a2bCueTimer = null;
+          this._a2bWindowUntil = 0;
+          if (this._dom.vfoA2bBtn) this._dom.vfoA2bBtn.dataset.window = 'freq';
+        }, 3020);
+      }
+    }
+
+    _toggleSplit(quickSplit) {
+      if (quickSplit && typeof this.client.setupQuickSplit === 'function') {
+        this.client.setupQuickSplit(1000);
+        this.toast('Quick Split (+1 kHz on VFO B)', 'info');
+      } else {
+        const snap = this._getSnapshot();
+        this.client.setSplit(!snap.splitEnabled);
+      }
+    }
+
+    _toggleSubRx() {
+      const snap = this._getSnapshot();
+      this.client.setSubRx(!snap.subRxEnabled);
+    }
+
+    _toggleLock() {
+      const snap = this._getSnapshot();
+      const rxS = (this._targetRx === 'B' ? snap.rxB : snap.rxA) || {};
+      const nextLocked = !Boolean(rxS.locked);
+      if (typeof this.client.setLock === 'function') {
+        this.client.setLock(this._targetRx, nextLocked);
+      } else {
+        this.client.sendCat(`LK${this._targetRx === 'B' ? '$' : ''}${nextLocked ? '1' : '0'};`);
+      }
+    }
+
+    _toggleRit() {
+      const snap = this._getSnapshot();
+      const rxS = (this._targetRx === 'B' ? snap.rxB : snap.rxA) || {};
+      const nextOn = !Boolean(rxS.ritOn);
+      if (typeof this.client.setRit === 'function') {
+        this.client.setRit(this._targetRx, { on: nextOn });
+      } else {
+        this.client.sendCat(`RT${this._targetRx === 'B' ? '$' : ''}${nextOn ? '1' : '0'};`);
+      }
+    }
+
+    _clearRit() {
+      if (typeof this.client.clearRit === 'function') {
+        this.client.clearRit(this._targetRx);
+      } else {
+        this.client.sendCat(`RC${this._targetRx === 'B' ? '$' : ''};`);
+      }
+      this.toast(`Cleared RIT VFO ${this._targetRx}`, 'info');
+    }
+
+    _stepBand(dir) {
+      const bands = Array.isArray(K4.BANDS) ? K4.BANDS : [];
+      if (bands.length === 0 || !this.client || typeof this.client.setBand !== 'function') return;
+      const snap = this._getSnapshot();
+      const rxS = (this._targetRx === 'B' ? snap.rxB : snap.rxA) || {};
+      let curIdx = -1;
+      if (rxS.band != null) {
+        const bnStr = String(rxS.band).padStart(2, '0');
+        curIdx = bands.findIndex((b) => b.bn === bnStr || String(b.id) === String(rxS.band));
+      }
+      if (curIdx < 0 && Number.isFinite(rxS.freqHz)) {
+        curIdx = bands.findIndex((b) => rxS.freqHz >= b.startHz && rxS.freqHz <= b.endHz);
+      }
+      if (curIdx < 0 && K4.BandPlan && typeof K4.BandPlan.getBandForFreq === 'function' && rxS.freqHz) {
+        const bpBand = K4.BandPlan.getBandForFreq(rxS.freqHz);
+        if (bpBand) curIdx = bands.findIndex((b) => b.id === bpBand.id || b.label === bpBand.label);
+      }
+      if (curIdx < 0) curIdx = 0;
+      const nextIdx = (curIdx + dir + bands.length) % bands.length;
+      const nextBand = bands[nextIdx];
+      if (nextBand) {
+        this.client.setBand(this._targetRx, nextBand);
+      }
+    }
+
+    _triggerAtuTune() {
+      const snap = this._getSnapshot();
+      if (snap.hasAtu === false) return;
+      const now = Date.now();
+      const hot = Number(snap.atuSearchWindowUntil) > now || now < (this._atuTuneWindowUntil || 0);
+      if (typeof this.client.startAtuTune === 'function') {
+        this.client.startAtuTune(hot);
+      } else {
+        this.client.sendCat(hot ? 'TU4;' : 'TU3;');
+      }
+      if (!snap.txInhibit) {
+        this._atuTuneWindowUntil = hot ? 0 : now + 3000;
+      }
+    }
+
+    _executeFnMacro(fnKey) {
+      const text = K4.ClientPrefs ? K4.ClientPrefs.getMacro(fnKey) : '';
+      if (K4.SettingsPanel && typeof K4.SettingsPanel.executeMacro === 'function') {
+        K4.SettingsPanel.executeMacro(text, this.client, (msg, level) => this.toast(msg, level));
+      }
     }
 
     toggleWheelRitMode(force) {
@@ -1438,15 +1694,25 @@
 
     openOmnibar(initialText) {
       this.connectionDialog.close();
+      if (this.settingsPanel) this.settingsPanel.close();
       this.inspector.closeMobileSheet();
+      this._syncTopbarHeight();
       this.omnibar.open(initialText);
     }
 
     openConnectionDialog() {
       this.omnibar.close();
+      if (this.settingsPanel) this.settingsPanel.close();
       this.inspector.closeMobileSheet();
       this.connectionDialog.syncConnectionState(this._getSnapshot().connection);
       this.connectionDialog.open();
+    }
+
+    openSettings(focusSection) {
+      this.omnibar.close();
+      this.connectionDialog.close();
+      this.inspector.closeMobileSheet();
+      if (this.settingsPanel) this.settingsPanel.open(focusSection);
     }
 
     openMobileSheet(tabId) {
@@ -1456,6 +1722,7 @@
     closeOverlays() {
       this.omnibar.close();
       this.connectionDialog.close();
+      if (this.settingsPanel) this.settingsPanel.close();
       this.inspector.closeMobileSheet();
     }
 
@@ -1553,18 +1820,21 @@
       if (!this._dom.audioToggleBtn || !this._dom.audioLabel) return;
       const aDiag =
         aDiagOverride || (this.audio && this.audio.getDiagnostics ? this.audio.getDiagnostics() : { started: false, muted: true });
+      const modeTxt = snap.encodeMode === 2 || snap.encodeMode === 3 ? 'Opus 48k' : (snap.encodeMode === 0 ? 'PCM 24b' : 'PCM 12k');
       if (!aDiag.started) {
         this._dom.audioToggleBtn.dataset.state = 'off';
         this._dom.audioLabel.textContent = 'Audio Off';
+        this._dom.audioToggleBtn.title = `Start Receiver Audio (${modeTxt})`;
         this._dom.audioToggleBtn.setAttribute('aria-pressed', 'false');
       } else if (aDiag.muted) {
         this._dom.audioToggleBtn.dataset.state = 'muted';
         this._dom.audioLabel.textContent = 'Muted';
+        this._dom.audioToggleBtn.title = `Unmute Receiver Audio (${modeTxt}, M)`;
         this._dom.audioToggleBtn.setAttribute('aria-pressed', 'false');
       } else {
         this._dom.audioToggleBtn.dataset.state = 'active';
-        const modeTxt = snap.encodeMode === 2 || snap.encodeMode === 3 ? 'Opus 48k' : (snap.encodeMode === 0 ? 'PCM 24b' : 'PCM 12k');
-        this._dom.audioLabel.textContent = modeTxt;
+        this._dom.audioLabel.textContent = 'Audio';
+        this._dom.audioToggleBtn.title = `Mute Receiver Audio (${modeTxt}, M)`;
         this._dom.audioToggleBtn.setAttribute('aria-pressed', 'true');
       }
     }
@@ -1636,7 +1906,7 @@
 
         const tm = snap.txMeters || {};
         const liveSwr = Number(tm.swr) >= 1.0 ? Number(tm.swr) : Number(snap.atuMatchedSwr) || 0;
-        const swrSuffix = liveSwr >= 1.0 ? ` ${liveSwr.toFixed(1)}` : '';
+        const swrLabel = liveSwr >= 1.0 ? ` (SWR ${liveSwr.toFixed(1)}:1)` : '';
 
         if (tuning) {
           btn.dataset.state = 'tuning';
@@ -1645,15 +1915,21 @@
         } else if (searchHot) {
           btn.dataset.state = 'search-hot';
           btn.textContent = 'ATU 2x FULL';
-          btn.title = 'Double-tap window open: Shift+Click to run Full Search ATU tune';
+          btn.title = 'Double-tap window open: Shift+Click or Shift+T to run Full Search ATU tune';
         } else if (Number(snap.atuMode) === 2) {
-          btn.dataset.state = 'auto';
-          btn.textContent = `ATU AUTO${swrSuffix}`;
-          btn.title = 'ATU Auto (click: Bypass · Shift+Click: ATU Tune · 2nd tap: Full Search)';
+          if (liveSwr >= 1.8) {
+            btn.dataset.state = 'warn';
+            btn.textContent = `ATU ${liveSwr.toFixed(1)}`;
+            btn.title = `ATU Auto — high SWR${swrLabel} (click: Bypass · Shift+Click / Shift+T: ATU Tune)`;
+          } else {
+            btn.dataset.state = 'auto';
+            btn.textContent = 'ATU';
+            btn.title = `ATU Auto${swrLabel} (click: Bypass · Shift+Click / Shift+T: ATU Tune · 2nd tap: Full Search)`;
+          }
         } else {
           btn.dataset.state = 'bypass';
-          btn.textContent = 'ATU BYP';
-          btn.title = 'ATU Bypassed (click: Auto · Shift+Click: ATU Tune)';
+          btn.textContent = 'BYP';
+          btn.title = `ATU Bypassed${swrLabel} (click: Auto · Shift+Click / Shift+T: ATU Tune)`;
         }
       }
     }

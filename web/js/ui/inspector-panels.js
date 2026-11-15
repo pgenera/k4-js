@@ -2443,34 +2443,52 @@
       kyInput.dataset.testid = 'cw-ky-input';
       kyInput.rows = 2;
       kyInput.maxLength = 64;
-      kyInput.placeholder = 'CW / FSK-D / PSK-D keyer text (Space or Send)...';
+      kyInput.placeholder = 'CW / FSK-D / PSK-D keyer (Enter sends · Esc aborts)...';
       kyCard.appendChild(kyInput);
       this._refs.cwKyInput = kyInput;
 
-      const kyActions = el('div', 'k4-btn-grid k4-btn-grid--2');
-      const kySendBtn = el('button', 'k4-btn k4-btn--amber', 'Send');
-      kySendBtn.type = 'button';
-      kySendBtn.dataset.testid = 'cw-ky-send';
-      kySendBtn.addEventListener('click', () => {
-        const text = (kyInput.value || '').trim();
-        if (!text) return;
+      const sendKeyerBuffer = (clearAfter) => {
+        const raw = kyInput.value || '';
+        if (!raw.trim()) return;
+        const payload = clearAfter ? raw : raw.trim();
         if (typeof this.client.sendKeyerText === 'function') {
-          this.client.sendKeyerText(text, ' ');
+          this.client.sendKeyerText(payload, ' ');
         } else {
-          this._sendCat(`KY ${text.slice(0, 24)};`);
+          this._sendCat(`KY ${payload.slice(0, 24)};`);
         }
-      });
+        if (clearAfter) kyInput.value = '';
+      };
 
-      const kyAbortBtn = el('button', 'k4-btn k4-btn--danger', 'Stop');
-      kyAbortBtn.type = 'button';
-      kyAbortBtn.dataset.testid = 'cw-ky-abort';
-      kyAbortBtn.addEventListener('click', () => {
+      const abortKeyerBuffer = () => {
         if (typeof this.client.clearKeyerBuffer === 'function') {
           this.client.clearKeyerBuffer();
         } else {
           this._sendCat('KY @;');
         }
+      };
+
+      kyInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
+          e.preventDefault();
+          sendKeyerBuffer(true);
+        } else if (e.key === 'Escape') {
+          e.preventDefault();
+          e.stopPropagation();
+          abortKeyerBuffer();
+          kyInput.blur();
+        }
       });
+
+      const kyActions = el('div', 'k4-btn-grid k4-btn-grid--2');
+      const kySendBtn = el('button', 'k4-btn k4-btn--amber', 'Send');
+      kySendBtn.type = 'button';
+      kySendBtn.dataset.testid = 'cw-ky-send';
+      kySendBtn.addEventListener('click', () => sendKeyerBuffer(false));
+
+      const kyAbortBtn = el('button', 'k4-btn k4-btn--danger', 'Stop');
+      kyAbortBtn.type = 'button';
+      kyAbortBtn.dataset.testid = 'cw-ky-abort';
+      kyAbortBtn.addEventListener('click', abortKeyerBuffer);
       kyActions.appendChild(kySendBtn);
       kyActions.appendChild(kyAbortBtn);
       kyCard.appendChild(kyActions);
