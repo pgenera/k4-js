@@ -194,6 +194,17 @@
       if (!this.configure()) return false;
       if (typeof globalThis.EncodedAudioChunk !== 'function') return false;
 
+      let durationUs = 20000;
+      if (
+        audioPkt &&
+        Number.isFinite(audioPkt.frameSamplesPerCh) &&
+        audioPkt.frameSamplesPerCh > 0 &&
+        Number.isFinite(audioPkt.sampleRate) &&
+        audioPkt.sampleRate > 0
+      ) {
+        durationUs = Math.round((audioPkt.frameSamplesPerCh / audioPkt.sampleRate) * 1e6);
+      }
+
       try {
         const chunk = new globalThis.EncodedAudioChunk({
           type: 'key',
@@ -201,7 +212,7 @@
           data: bytes,
         });
         this._decoder.decode(chunk);
-        this._timestampUs += 20000;
+        this._timestampUs += durationUs;
         this._packetsIn += 1;
         return true;
       } catch (err) {

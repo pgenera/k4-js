@@ -184,7 +184,7 @@
       const bootstrapCat =
         `RDY;K41;ER1;AI5;EM${emMode};SL${slTier};` +
         'FA;FB;MD;MD$;DT;DT$;BW;BW$;IS;IS$;CW;VT;VT$;LK;LK$;SB;FT;SMH;SMH$;' +
-        '#SPN;#SPN$;#REF;#REF$;#SCL;#SCL$;#AVG;#WBS;#WBS$;#AR;#AR$;#DPM;#MP;#MP$;MX;';
+        '#SPN;#SPN$;#REF;#REF$;#SCL;#AVG;#WBS;#AR;#DPM;#MP;#MP$;MX;';
       this.sendCat(bootstrapCat);
 
       this._pingTimer = setInterval(() => {

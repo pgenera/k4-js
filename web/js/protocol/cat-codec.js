@@ -198,7 +198,7 @@
     }),
     makeGlobalParser('PONG', (arg) => {
       const t = arg.trim();
-      if (!t) return null;
+      if (!t) return { kind: 'pong', rx: null, epoch: null };
       const epoch = Number(t);
       return { kind: 'pong', rx: null, epoch: Number.isFinite(epoch) ? epoch : t };
     }),
@@ -403,7 +403,14 @@
     }),
     makeGlobalParser('OM', (arg) => {
       const t = arg.trim();
-      return t ? { kind: 'optionModule', rx: null, om: t } : null;
+      if (!t) return null;
+      return {
+        kind: 'optionModule',
+        rx: null,
+        om: t,
+        optionModules: t,
+        hasSubRx: t.includes('S'),
+      };
     }),
     makeGlobalParser('SN', (arg) => {
       const t = arg.trim();
@@ -448,7 +455,8 @@
     if (!/^\d/.test(t)) return null;
     const stepIdx = parseInt(t[0], 10);
     if (stepIdx < 0 || stepIdx >= STEP_HZ_TABLE.length) return null;
-    return { kind: 'step', rx, stepIdx, stepHz: STEP_HZ_TABLE[stepIdx] };
+    const modeCode = t.length >= 2 && /^\d$/.test(t[1]) ? parseInt(t[1], 10) : null;
+    return { kind: 'step', rx, stepIdx, stepHz: STEP_HZ_TABLE[stepIdx], modeCode };
   }
 
   function parsePreamp(arg, rx) {
@@ -477,7 +485,7 @@
 
   function parseNoiseBlanker(arg, rx) {
     const t = arg.trim();
-    if (!/^\d{1,3}$/.test(t)) return null;
+    if (!/^\d{1,4}$/.test(t)) return null;
     if (t.length === 1) {
       return { kind: 'nb', rx, nbLevel: null, nbOn: t === '1' };
     }

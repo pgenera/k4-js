@@ -540,7 +540,12 @@
             onError: (err) => this.emit('error', err),
           });
         }
-        this._opusDecoder.decode(isRawPacket ? audioPkt.subarray(7) : audioPkt);
+        const opusInput = isRawPacket
+          ? (K4.BinaryPackets && typeof K4.BinaryPackets.parseAudio === 'function'
+            ? K4.BinaryPackets.parseAudio(audioPkt)
+            : audioPkt.subarray(7))
+          : audioPkt;
+        this._opusDecoder.decode(opusInput);
       }
     }
 

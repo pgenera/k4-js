@@ -126,6 +126,42 @@
     'UP',
   ].sort((a, b) => b.length - a.length);
 
+  const ALLOWED_HASH_PREFIXES = [
+    '#HREF',
+    '#HWBS',
+    '#HWFC',
+    '#HWFH',
+    '#HDPM',
+    '#SPN',
+    '#REF',
+    '#SCL',
+    '#AVG',
+    '#WBS',
+    '#WFC',
+    '#WFH',
+    '#DPM',
+    '#FRZ',
+    '#FXT',
+    '#FXA',
+    '#FSL',
+    '#PKM',
+    '#FPS',
+    '#CWT',
+    '#VFA',
+    '#VFB',
+    '#MKA',
+    '#MKB',
+    '#DSM',
+    '#HDM',
+    '#HDS',
+    '#UNM',
+    '#NBL',
+    '#SFL',
+    '#AR',
+    '#MP',
+    '#NB',
+  ];
+
   function matchPrefixBoundary(cmdUpper, prefix) {
     if (!cmdUpper.startsWith(prefix)) return false;
     if (cmdUpper.length === prefix.length) return true;
@@ -181,7 +217,12 @@
     }
 
     if (cmdUpper.startsWith('#')) {
-      return { allowed: true, reason: null };
+      for (let i = 0; i < ALLOWED_HASH_PREFIXES.length; i++) {
+        if (matchPrefixBoundary(cmdUpper, ALLOWED_HASH_PREFIXES[i])) {
+          return { allowed: true, reason: null };
+        }
+      }
+      return { allowed: false, reason: 'Unrecognized # command blocked by default-deny rx-only policy' };
     }
 
     for (let i = 0; i < ALLOWED_PREFIXES.length; i++) {

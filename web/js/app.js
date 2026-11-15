@@ -422,10 +422,30 @@
 
     _handleStartup() {
       const autoConnect = this._params.get('autoconnect');
+      const hasPassword = this._params.has('password');
+      const passwordParam = hasPassword ? this._params.get('password') || '' : null;
+      if (
+        hasPassword &&
+        typeof window !== 'undefined' &&
+        window.history &&
+        typeof window.history.replaceState === 'function'
+      ) {
+        try {
+          const cleanParams = new URLSearchParams(window.location.search);
+          if (cleanParams.has('password')) {
+            cleanParams.delete('password');
+            const qs = cleanParams.toString();
+            const cleanUrl = window.location.pathname + (qs ? `?${qs}` : '') + (window.location.hash || '');
+            window.history.replaceState(window.history.state, '', cleanUrl);
+          }
+        } catch (_) {
+          // Ignore History API errors on restricted origins.
+        }
+      }
       if (autoConnect === '1' || autoConnect === 'true') {
         const opts = this.connectionDialog.getOptions();
-        if (this._params.has('password')) {
-          opts.password = this._params.get('password') || '';
+        if (hasPassword) {
+          opts.password = passwordParam;
         }
         this.connect(opts).catch(() => {
           this.openConnectionDialog();

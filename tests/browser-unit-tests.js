@@ -636,6 +636,389 @@
     assertEqual(snap.rxB.ritOffsetHz, -120, 'RadioState rxB.ritOffsetHz');
   });
 
+  test('11. Sanitized K4 hardware CAT parsing & RadioState', () => {
+    const sn = K4.CatCodec.parseCommand('SN00999;');
+    assertEqual(sn && sn.kind, 'serial', 'SN parses as serial');
+    assertEqual(sn && sn.serial, '00999', 'SN serial extracted');
+
+    const omNoSub = K4.CatCodec.parseCommand('OM AP------4---;');
+    assertEqual(omNoSub && omNoSub.kind, 'optionModule', 'OM parses');
+    assertEqual(omNoSub && omNoSub.optionModules, 'AP------4---', 'OM modules field');
+    assertEqual(omNoSub && omNoSub.hasSubRx, false, 'OM hasSubRx false when no S');
+
+    const omSub = K4.CatCodec.parseCommand('OM AP-----S4---;');
+    assertEqual(omSub && omSub.hasSubRx, true, 'OM hasSubRx true when S present');
+
+    const barePong = K4.CatCodec.parseCommand('PONG;');
+    assertEqual(barePong && barePong.kind, 'pong', 'Bare PONG parses');
+    assertEqual(barePong && barePong.rx, null, 'Bare PONG rx null');
+    assertEqual(barePong && barePong.epoch, null, 'Bare PONG epoch null');
+
+    const numPong = K4.CatCodec.parseCommand('PONG12345;');
+    assertEqual(numPong && numPong.kind, 'pong', 'Numeric PONG parses');
+    assertEqual(numPong && numPong.epoch, 12345, 'Numeric PONG epoch parsed');
+
+    const nbA4 = K4.CatCodec.parseCommand('NB0000;');
+    assertEqual(nbA4 && nbA4.kind, 'nb', '4-digit NB0000 parses');
+    assertEqual(nbA4 && nbA4.rx, 'A', 'NB0000 rx A');
+    assertEqual(nbA4 && nbA4.nbLevel, 0, 'NB0000 level 0');
+    assertEqual(nbA4 && nbA4.nbOn, false, 'NB0000 off');
+
+    const nbB4 = K4.CatCodec.parseCommand('NB$0121;');
+    assertEqual(nbB4 && nbB4.rx, 'B', 'NB$0121 rx B');
+    assertEqual(nbB4 && nbB4.nbLevel, 12, 'NB$0121 level 12');
+    assertEqual(nbB4 && nbB4.nbOn, true, 'NB$0121 on');
+
+    const nbB0 = K4.CatCodec.parseCommand('NB$0000;');
+    assertEqual(nbB0 && nbB0.rx, 'B', 'NB$0000 rx B');
+    assertEqual(nbB0 && nbB0.nbLevel, 0, 'NB$0000 level 0');
+    assertEqual(nbB0 && nbB0.nbOn, false, 'NB$0000 off');
+
+    const nbA1 = K4.CatCodec.parseCommand('NB1;');
+    assertEqual(nbA1 && nbA1.nbLevel, null, '1-digit NB1 level null');
+    assertEqual(nbA1 && nbA1.nbOn, true, '1-digit NB1 on');
+
+    const vtA = K4.CatCodec.parseCommand('VT16;');
+    assertEqual(vtA && vtA.kind, 'step', 'VT16 parses');
+    assertEqual(vtA && vtA.rx, 'A', 'VT16 rx A');
+    assertEqual(vtA && vtA.stepIdx, 1, 'VT16 stepIdx 1');
+    assertEqual(vtA && vtA.stepHz, 10, 'VT16 stepHz 10');
+    assertEqual(vtA && vtA.modeCode, 6, 'VT16 modeCode 6');
+
+    const vtB = K4.CatCodec.parseCommand('VT$13;');
+    assertEqual(vtB && vtB.rx, 'B', 'VT$13 rx B');
+    assertEqual(vtB && vtB.stepIdx, 1, 'VT$13 stepIdx 1');
+    assertEqual(vtB && vtB.modeCode, 3, 'VT$13 modeCode 3');
+
+    const arExtOn = K4.CatCodec.parseCommand('#AR1206-021;');
+    assertEqual(arExtOn && arExtOn.kind, 'autoRef', '#AR1206-021 parses');
+    assertEqual(arExtOn && arExtOn.autoRef, true, '#AR1206-021 autoRef true');
+    assertEqual(K4.CatCodec.parseCommand('#AR1206-020;').autoRef, false, '#AR1206-020 autoRef false');
+    assertEqual(K4.CatCodec.parseCommand('#ARA;').autoRef, true, '#ARA autoRef true');
+    assertEqual(K4.CatCodec.parseCommand('#ARM;').autoRef, false, '#ARM autoRef false');
+    assertEqual(K4.CatCodec.parseCommand('#AR0;').autoRef, false, '#AR0 autoRef false');
+    assertEqual(K4.CatCodec.parseCommand('#AR1;').autoRef, true, '#AR1 autoRef true');
+    assertEqual(K4.CatCodec.parseCommand('#AR9;').autoRef, true, '#AR9 autoRef true');
+
+    const rgNeg = K4.CatCodec.parseCommand('RG-06;');
+    assertEqual(rgNeg && rgNeg.kind, 'rfGain', 'RG-06 parses');
+    assertEqual(rgNeg && rgNeg.rfGainDb, -6, 'RG-06 rfGainDb -6');
+
+    const mpOff = K4.CatCodec.parseCommand('#MP$-1;');
+    assert(mpOff !== null && mpOff.rx === 'B', '#MP$-1 parses for RX B');
+
+    const state = new K4.RadioState();
+    const frames = K4.CatCodec.splitFrames(
+      'SN00999;OM AP------4---;FA00014025000;MD3;CW0500;NB0000;NB$0000;VT16;VT$13;RG-06;#AR1206-021;#MP$-1;'
+    );
+    for (const f of frames) {
+      const parsed = K4.CatCodec.parseCommand(f);
+      if (parsed) state.applyParsedCat(parsed);
+    }
+    const snap = state.getSnapshot();
+    assertEqual(snap.rxA.freqHz, 14025000, 'Golden batch FA applied');
+    assertEqual(snap.rxA.mode, 3, 'Golden batch MD3 applied');
+    assertEqual(snap.rxA.nbOn, false, 'Golden batch NB0000 applied');
+    assertEqual(snap.rxA.stepIdx, 1, 'Golden batch VT16 applied');
+    assertEqual(snap.rxA.rfGainDb, -6, 'Golden batch RG-06 applied');
+    assertEqual(snap.rxA.autoRef, true, 'Golden batch #AR1206-021 applied');
+  });
+
+  test('12. RxOnlyGate # command allowlist blocks #TX/#CAL/unknown', () => {
+    const gate = new K4.RxOnlyGate('rx-only');
+    const allowedHashCmds = [
+      '#SPN;',
+      '#SPN$00500;',
+      '#REF;',
+      '#HREF$;',
+      '#SCL0;',
+      '#AVG10;',
+      '#WBS0;',
+      '#HWBS1;',
+      '#WFC0;',
+      '#HWFC1;',
+      '#WFH0;',
+      '#HWFH1;',
+      '#AR1206-021;',
+      '#ARA;',
+      '#ARM;',
+      '#DPM0;',
+      '#HDPM0;',
+      '#MP$-1;',
+      '#FRZ0;',
+      '#FXT0;',
+      '#FXA0;',
+      '#FSL0;',
+      '#PKM0;',
+      '#FPS30;',
+      '#CWT0;',
+      '#VFA;',
+      '#VFB;',
+      '#MKA0;',
+      '#MKB0;',
+      '#DSM0;',
+      '#HDM0;',
+      '#HDS0;',
+      '#UNM0;',
+      '#NB0;',
+      '#NBL0;',
+      '#SFL0;',
+    ];
+    for (const cmd of allowedHashCmds) {
+      const res = gate.inspectCat(cmd);
+      assertEqual(res.allowed.length, 1, `Allowed hash cmd accepted: ${cmd}`);
+      assertEqual(res.blocked.length, 0, `Allowed hash cmd not blocked: ${cmd}`);
+    }
+
+    const blockedHashCmds = ['#TX1;', '#TX$;', '#CAL1;', '#CAL$;', '#ZZZ1;', '#QSY1;', '#;'];
+    for (const cmd of blockedHashCmds) {
+      const res = gate.inspectCat(cmd);
+      assertEqual(res.allowed.length, 0, `Blocked hash cmd denied: ${cmd}`);
+      assertEqual(res.blocked.length, 1, `Blocked hash cmd recorded: ${cmd}`);
+    }
+
+    const mixed = gate.inspectCat('#TX1;#CAL1;#ZZZ1;#SPN$;#AR1206-021;');
+    assertEqual(mixed.blocked.length, 3, 'Mixed # batch blocks TX/CAL/ZZZ');
+    assertEqual(mixed.allowed.length, 2, 'Mixed # batch keeps #SPN$/#AR');
+    assertEqual(mixed.sanitized, '#SPN$;#AR1206-021;', 'Mixed # batch sanitized');
+  });
+
+  test('13. OpusPacketDecoder variable duration timestamps', () => {
+    const hadAudioDecoder = Object.prototype.hasOwnProperty.call(globalThis, 'AudioDecoder');
+    const hadEncodedAudioChunk = Object.prototype.hasOwnProperty.call(globalThis, 'EncodedAudioChunk');
+    const origAudioDecoder = globalThis.AudioDecoder;
+    const origEncodedAudioChunk = globalThis.EncodedAudioChunk;
+    const chunks = [];
+
+    try {
+      globalThis.EncodedAudioChunk = function MockEncodedAudioChunk(init) {
+        return { type: init.type, timestamp: init.timestamp, data: init.data };
+      };
+      globalThis.AudioDecoder = class MockAudioDecoder {
+        constructor() {
+          this.state = 'unconfigured';
+        }
+        static async isConfigSupported() {
+          return { supported: true };
+        }
+        configure() {
+          this.state = 'configured';
+        }
+        decode(chunk) {
+          chunks.push(chunk);
+        }
+        async flush() {}
+        close() {
+          this.state = 'closed';
+        }
+      };
+
+      const dec = new K4.OpusPacketDecoder();
+      assertEqual(
+        dec.decode({ frameSamplesPerCh: 240, sampleRate: 12000, data: new Uint8Array([0xbc, 1]) }),
+        true,
+        'SL0 decodes'
+      );
+      assertEqual(chunks[0].timestamp, 0, 'SL0 chunk starts at 0us');
+      assertEqual(dec._timestampUs, 20000, 'SL0 advances timestamp by 20000us');
+
+      assertEqual(
+        dec.decode({ frameSamplesPerCh: 480, sampleRate: 12000, data: new Uint8Array([0xbd, 2]) }),
+        true,
+        'SL2 decodes'
+      );
+      assertEqual(chunks[1].timestamp, 20000, 'SL2 chunk starts at 20000us');
+      assertEqual(dec._timestampUs, 60000, 'SL2 advances timestamp by 40000us');
+
+      assertEqual(
+        dec.decode({ frameSamplesPerCh: 720, sampleRate: 12000, data: new Uint8Array([0xbe, 3]) }),
+        true,
+        'SL3 decodes'
+      );
+      assertEqual(chunks[2].timestamp, 60000, 'SL3 chunk starts at 60000us');
+      assertEqual(dec._timestampUs, 120000, 'SL3 advances timestamp by 60000us');
+
+      assertEqual(dec.decode(new Uint8Array([0xbc, 4])), true, 'Raw Uint8Array decodes');
+      assertEqual(chunks[3].timestamp, 120000, 'Raw chunk starts at 120000us');
+      assertEqual(dec._timestampUs, 140000, 'Raw Uint8Array advances fallback 20000us');
+
+      const rawPkt = new Uint8Array(10);
+      rawPkt[0] = 1;
+      rawPkt[1] = 0;
+      rawPkt[2] = 7;
+      rawPkt[3] = 2; // EM2 Opus
+      rawPkt[4] = 480 & 0xff;
+      rawPkt[5] = (480 >> 8) & 0xff;
+      rawPkt[6] = 0; // 12000 Hz
+      rawPkt.set([0xbd, 5, 6], 7);
+      const parsedAudio = K4.BinaryPackets.parseAudio(rawPkt);
+      assertEqual(dec.decode(parsedAudio), true, 'BinaryPackets.parseAudio result decodes');
+      assertEqual(chunks[4].timestamp, 140000, 'Parsed EM2 SL2 chunk starts at 140000us');
+      assertEqual(dec._timestampUs, 180000, 'Parsed EM2 SL2 advances timestamp by 40000us');
+      assertEqual(dec.getStats().packetsIn, 5, 'Total 5 Opus chunks decoded');
+    } finally {
+      if (hadAudioDecoder) globalThis.AudioDecoder = origAudioDecoder;
+      else delete globalThis.AudioDecoder;
+      if (hadEncodedAudioChunk) globalThis.EncodedAudioChunk = origEncodedAudioChunk;
+      else delete globalThis.EncodedAudioChunk;
+    }
+  });
+
+  test('14. PanadapterInteraction click near passband edge tunes VFO without edge drag', () => {
+    const listeners = {};
+    const surface = {
+      style: {},
+      clientWidth: 1120,
+      clientHeight: 400,
+      getBoundingClientRect() {
+        return { left: 0, top: 0, width: 1120, height: 400 };
+      },
+      addEventListener(type, fn) {
+        listeners[type] = fn;
+      },
+      removeEventListener(type, fn) {
+        if (listeners[type] === fn) delete listeners[type];
+      },
+      setPointerCapture() {},
+      releasePointerCapture() {},
+    };
+
+    const snapshot = {
+      cwPitchHz: 500,
+      dualPanMode: 0,
+      subRxEnabled: false,
+      rxA: {
+        freqHz: 14086000,
+        mode: 3,
+        bwHz: 2700,
+        ifShiftHz: 1500,
+        panCenterHz: 14086000,
+        panSpanHz: 48000,
+        stepHz: 100,
+      },
+      rxB: {
+        freqHz: 14074000,
+        mode: 2,
+        bwHz: 2400,
+        ifShiftHz: 1500,
+        panCenterHz: 14074000,
+        panSpanHz: 48000,
+        stepHz: 100,
+      },
+    };
+
+    const layouts = [
+      {
+        rx: 'A',
+        paneRect: { x: 0, y: 0, w: 1120, h: 400 },
+        specRect: { x: 0, y: 0, w: 1120, h: 200 },
+        axisRect: { x: 0, y: 200, w: 1120, h: 24 },
+      },
+    ];
+    const tunes = [];
+    const filterEdits = [];
+    const hoverStates = [];
+    let lastClickFreqHz = null;
+
+    const view = {
+      getTargetRx: () => 'A',
+      getFrameState: () => ({
+        snapshot,
+        dualPanMode: 0,
+        panes: { A: { panCenterHz: 14086000, userSpanHz: 48000 } },
+      }),
+      setHoverState: (s) => hoverStates.push(s),
+      setLastClickFreqHz: (hz) => {
+        lastClickFreqHz = hz;
+      },
+    };
+    const renderer = { getLayouts: () => layouts };
+    const state = { getSnapshot: () => snapshot };
+    const client = {
+      tune: (rx, hz) => tunes.push({ rx, hz }),
+      setFilter: (rx, patch) => filterEdits.push({ rx, patch }),
+    };
+
+    const interaction = new K4.PanadapterInteraction({ surface, renderer, view, state, client });
+    try {
+      // Zero-drag left-click at center x=560 (3.5px from CW passband lowHz=14086150 -> within EDGE_HIT_PX=6)
+      listeners.pointerdown({
+        type: 'pointerdown',
+        pointerId: 1,
+        pointerType: 'mouse',
+        button: 0,
+        clientX: 560,
+        clientY: 100,
+        shiftKey: false,
+        altKey: false,
+      });
+      // Small <=5px jitter must not convert click into an edge drag
+      listeners.pointermove({
+        type: 'pointermove',
+        pointerId: 1,
+        pointerType: 'mouse',
+        button: 0,
+        clientX: 562,
+        clientY: 101,
+        shiftKey: false,
+        altKey: false,
+      });
+      listeners.pointerup({
+        type: 'pointerup',
+        pointerId: 1,
+        pointerType: 'mouse',
+        button: 0,
+        clientX: 560,
+        clientY: 100,
+        shiftKey: false,
+        altKey: false,
+      });
+
+      assertEqual(filterEdits.length, 0, 'No-drag click near passband edge does not mutate filter');
+      assertEqual(tunes.length, 1, 'No-drag click near passband edge tunes target VFO');
+      assertEqual(tunes[0].rx, 'A', 'Tuned VFO is RX A');
+      assertEqual(tunes[0].hz, 14085500, 'CW center click snaps to freqHz - cwPitchHz');
+      assertEqual(lastClickFreqHz, 14085500, 'Last click frequency recorded');
+
+      // Drag > DRAG_THRESHOLD_PX (5px) starting on the edge edits filter without tuning VFO
+      listeners.pointerdown({
+        type: 'pointerdown',
+        pointerId: 2,
+        pointerType: 'mouse',
+        button: 0,
+        clientX: 563,
+        clientY: 100,
+        shiftKey: false,
+        altKey: false,
+      });
+      listeners.pointermove({
+        type: 'pointermove',
+        pointerId: 2,
+        pointerType: 'mouse',
+        button: 0,
+        clientX: 590,
+        clientY: 100,
+        shiftKey: false,
+        altKey: false,
+      });
+      listeners.pointerup({
+        type: 'pointerup',
+        pointerId: 2,
+        pointerType: 'mouse',
+        button: 0,
+        clientX: 590,
+        clientY: 100,
+        shiftKey: false,
+        altKey: false,
+      });
+
+      assertEqual(tunes.length, 1, 'Edge drag (>5px) does not tune VFO');
+      assert(filterEdits.length >= 1, 'Edge drag (>5px) applies filter edit');
+    } finally {
+      interaction.destroy();
+    }
+  });
+
   async function runAll() {
     const resultsEl = document.getElementById('results');
     const summaryEl = document.getElementById('summary');

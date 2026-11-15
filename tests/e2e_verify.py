@@ -460,16 +460,16 @@ def run_file_origin_e2e(client: MarionetteClient, ws_url: str, password: str, st
         lambda: http_get_json(stats_url)["modeA"] == 3,
         "simulator modeA == 3 (CW)",
     )
-    # Wait for panCenterHz to reflect CW +500 Hz offset from simulator
+    # Wait for 0x02 PAN centerFreqHz == FA in CW mode (real K4 firmware R40.B1 behavior)
     wait_until(
         lambda: client.execute_script(
             """
             const m = globalThis.k4App.panadapter.getMetrics();
             const s = globalThis.k4App.state.getSnapshot();
-            return s.rxA.mode === 3 && Math.abs(m.panCenterHz - (s.rxA.freqHz + 500)) < 10;
+            return s.rxA.mode === 3 && Math.abs(m.panCenterHz - s.rxA.freqHz) < 10;
             """
         ),
-        "CW panCenterHz +500 Hz alignment",
+        "CW 0x02 PAN centerFreqHz == freqHz",
     )
     cw_center = client.execute_script("return globalThis.k4App.panadapter.getMetrics().panCenterHz;")
     # Click center of panadapter (0.50): in CW mode with 500 Hz pitch, dial MUST snap to cw_center - 500

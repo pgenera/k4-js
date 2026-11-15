@@ -432,9 +432,11 @@
       if (edgeHit) {
         this._dragMode = 'edge';
         this._activePointerId = e.pointerId;
+        this._startX = xPx;
+        this._startY = yPx;
         this._edgeInfo = edgeHit;
         this._dragHit = hit;
-        this._dragExceeded = true;
+        this._dragExceeded = false;
         this.surface.style.cursor = 'ew-resize';
         try {
           this.surface.setPointerCapture(e.pointerId);
@@ -516,13 +518,10 @@
         });
       }
 
-      if (this._dragMode === 'edge' && e.pointerId === this._activePointerId) {
-        this.surface.style.cursor = 'ew-resize';
-        this._applyEdgeDrag(xPx, false);
-        return;
-      }
-
-      if (this._dragMode === 'pan' && e.pointerId === this._activePointerId) {
+      if (
+        (this._dragMode === 'edge' || this._dragMode === 'pan') &&
+        e.pointerId === this._activePointerId
+      ) {
         if (
           !this._dragExceeded &&
           Math.hypot(xPx - this._startX, yPx - this._startY) > DRAG_THRESHOLD_PX
@@ -530,8 +529,13 @@
           this._dragExceeded = true;
         }
         if (this._dragExceeded) {
-          this.surface.style.cursor = 'grabbing';
-          this._applyPanDrag(xPx, Boolean(e.altKey), false);
+          if (this._dragMode === 'edge') {
+            this.surface.style.cursor = 'ew-resize';
+            this._applyEdgeDrag(xPx, false);
+          } else {
+            this.surface.style.cursor = 'grabbing';
+            this._applyPanDrag(xPx, Boolean(e.altKey), false);
+          }
         }
         return;
       }
@@ -574,11 +578,13 @@
         // ignore
       }
 
-      if (this._dragMode === 'edge') {
-        this._applyEdgeDrag(xPx, true);
-      } else if (this._dragMode === 'pan') {
+      if (this._dragMode === 'edge' || this._dragMode === 'pan') {
         if (this._dragExceeded) {
-          this._applyPanDrag(xPx, Boolean(e.altKey), true);
+          if (this._dragMode === 'edge') {
+            this._applyEdgeDrag(xPx, true);
+          } else {
+            this._applyPanDrag(xPx, Boolean(e.altKey), true);
+          }
         } else if (e.button === 0 && e.type === 'pointerup') {
           const hit = this._hitTest(xPx, yPx);
           const rx =
