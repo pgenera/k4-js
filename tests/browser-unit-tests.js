@@ -2568,6 +2568,177 @@
     }
   });
 
+  // 32. NR / SSNR CAT codec, RxOnlyGate, RadioState mutual exclusivity, Client.setNr & Client.setSubRx
+  test('NR / SSNR CatCodec, RxOnlyGate, RadioState mutual exclusivity & Client.setNr/setSubRx', () => {
+    const K4 = globalThis.K4;
+
+    // CatCodec parsing: NR000, NR041, NR042, NRS052, NRS051, NRS$121
+    const p0 = K4.CatCodec.parseCommand('NR000;');
+    assertEqual(p0 && p0.kind, 'nr', 'NR000 kind');
+    assertEqual(p0.nrKind, 'lms', 'NR000 nrKind');
+    assertEqual(p0.rx, 'A', 'NR000 rx');
+    assertEqual(p0.modeDigit, 0, 'NR000 modeDigit');
+    assertEqual(p0.level, 0, 'NR000 level');
+    assertEqual(p0.nrOn, false, 'NR000 nrOn');
+    assertEqual(p0.lastUsed, false, 'NR000 lastUsed');
+
+    const pLmsOn = K4.CatCodec.parseCommand('NR041;');
+    assertEqual(pLmsOn.nrKind, 'lms', 'NR041 nrKind');
+    assertEqual(pLmsOn.level, 4, 'NR041 level');
+    assertEqual(pLmsOn.nrOn, true, 'NR041 nrOn');
+
+    const pLmsLast = K4.CatCodec.parseCommand('NR042;');
+    assertEqual(pLmsLast.modeDigit, 2, 'NR042 modeDigit');
+    assertEqual(pLmsLast.level, 4, 'NR042 level');
+    assertEqual(pLmsLast.nrOn, false, 'NR042 nrOn');
+    assertEqual(pLmsLast.lastUsed, true, 'NR042 lastUsed');
+
+    const pSsnrLast = K4.CatCodec.parseCommand('NRS052;');
+    assertEqual(pSsnrLast.nrKind, 'ssnr', 'NRS052 nrKind');
+    assertEqual(pSsnrLast.modeDigit, 2, 'NRS052 modeDigit');
+    assertEqual(pSsnrLast.level, 5, 'NRS052 level');
+    assertEqual(pSsnrLast.nrOn, false, 'NRS052 nrOn');
+    assertEqual(pSsnrLast.lastUsed, true, 'NRS052 lastUsed');
+
+    const pSsnrOn = K4.CatCodec.parseCommand('NRS051;');
+    assertEqual(pSsnrOn.nrKind, 'ssnr', 'NRS051 nrKind');
+    assertEqual(pSsnrOn.level, 5, 'NRS051 level');
+    assertEqual(pSsnrOn.nrOn, true, 'NRS051 nrOn');
+
+    const pSsnrB = K4.CatCodec.parseCommand('NRS$121;');
+    assertEqual(pSsnrB.rx, 'B', 'NRS$121 rx');
+    assertEqual(pSsnrB.nrKind, 'ssnr', 'NRS$121 nrKind');
+    assertEqual(pSsnrB.level, 12, 'NRS$121 level');
+    assertEqual(pSsnrB.nrOn, true, 'NRS$121 nrOn');
+
+    // Builders never emit NR001 / NRS001 / NR$001 / NRS$001 when turning ON
+    assertEqual(K4.CatCodec.builders.nr('A', 0, true), 'NR041;', 'builders.nr(A,0,true) falls back to NR041;');
+    assertEqual(K4.CatCodec.builders.nr('B', -1, true), 'NR$041;', 'builders.nr(B,-1,true) falls back to NR$041;');
+    assertEqual(K4.CatCodec.builders.ssnr('A', 0, true), 'NRS051;', 'builders.ssnr(A,0,true) falls back to NRS051;');
+    assertEqual(K4.CatCodec.builders.ssnr('B', 0, true), 'NRS$051;', 'builders.ssnr(B,0,true) falls back to NRS$051;');
+    assertEqual(K4.CatCodec.builders.nr('A', 0, false), 'NR000;', 'builders.nr(A,0,false)');
+    assertEqual(K4.CatCodec.builders.ssnr('A', 0, false), 'NRS000;', 'builders.ssnr(A,0,false)');
+    assertEqual(K4.CatCodec.builders.nrToggle('A'), 'NR/;', 'builders.nrToggle');
+    assertEqual(K4.CatCodec.builders.ssnrToggle('B'), 'NRS$/;');
+
+    // RxOnlyGate allows NRS / NRS$ reads and sets in rx-only posture
+    const gate = new K4.RxOnlyGate({ policy: 'rx-only' });
+    for (const cmd of ['NRS;', 'NRS$;', 'NRS051;', 'NRS$121;', 'NR041;']) {
+      const check = gate.inspectCat(cmd);
+      assertEqual(check.blocked.length, 0, `RxOnlyGate allows ${cmd}`);
+      assertEqual(check.allowed.length, 1, `RxOnlyGate returns allowed token for ${cmd}`);
+    }
+
+    // RadioState NR000;NRS052; baseline, NR041; -> LMS active, NRS051; -> SSNR active (mutually exclusive)
+    const state = new K4.RadioState();
+    state.applyParsedCat(K4.CatCodec.parseCommand('NR000;'));
+    state.applyParsedCat(K4.CatCodec.parseCommand('NRS052;'));
+    let rxA = state.getSnapshot().rxA;
+    assertEqual(rxA.nrOn, false, 'NR000+NRS052 nrOn false');
+    assertEqual(rxA.ssnrLastUsed, true, 'NR000+NRS052 ssnrLastUsed true');
+    assertEqual(rxA.ssnrLevel, 5, 'NR000+NRS052 ssnrLevel 5');
+    assertEqual(rxA.nrMode, 'ssnr', 'NR000+NRS052 defaults nrMode to ssnr');
+
+    state.applyParsedCat(K4.CatCodec.parseCommand('NR041;'));
+    rxA = state.getSnapshot().rxA;
+    assertEqual(rxA.lmsNrOn, true, 'NR041 lmsNrOn true');
+    assertEqual(rxA.ssnrOn, false, 'NR041 ssnrOn false');
+    assertEqual(rxA.nrMode, 'lms', 'NR041 nrMode lms');
+    assertEqual(rxA.nrOn, true, 'NR041 nrOn true');
+    assertEqual(rxA.nrLevel, 4, 'NR041 nrLevel 4');
+
+    state.applyParsedCat(K4.CatCodec.parseCommand('NRS051;'));
+    rxA = state.getSnapshot().rxA;
+    assertEqual(rxA.ssnrOn, true, 'NRS051 ssnrOn true');
+    assertEqual(rxA.lmsNrOn, false, 'NRS051 lmsNrOn false');
+    assertEqual(rxA.nrMode, 'ssnr', 'NRS051 nrMode ssnr');
+    assertEqual(rxA.nrOn, true, 'NRS051 nrOn true');
+    assertEqual(rxA.nrLevel, 5, 'NRS051 nrLevel 5');
+
+    // Client.setNr and Client.setSubRx(true)
+    const sent = [];
+    const client = new K4.Client({ state, gate });
+    client.sendCat = (cmd) => {
+      sent.push(cmd);
+      return true;
+    };
+    state.applyParsedCat(K4.CatCodec.parseCommand('NR000;'));
+    state.applyParsedCat(K4.CatCodec.parseCommand('NRS052;'));
+    sent.length = 0;
+    client.setNr('A', { on: true });
+    assertEqual(sent[0], 'NRS051;NR;NR$;NRS;NRS$;', 'setNr({on:true}) from NRS052 sends NRS051 + poll');
+    assert(!sent[0].includes('NR001') && !sent[0].includes('NRS001'), 'setNr never emits NR001/NRS001');
+
+    client.setNr('A', { mode: 'lms', level: 0 });
+    assertEqual(sent[1], 'NR041;NR;NR$;NRS;NRS$;', 'setNr({mode:lms,level:0}) while ON substitutes default 4');
+
+    client.setSubRx(true);
+    assert(
+      sent[2].includes('SB1;') &&
+      sent[2].includes('SMH;') &&
+      sent[2].includes('SMH$;') &&
+      sent[2].includes('NRS$;') &&
+      sent[2].includes('NR$;'),
+      `setSubRx(true) queries dual-RX SMH/NR/NRS, got ${sent[2]}`
+    );
+  });
+
+  // 33. PanadapterView defaults peakHold to false on fresh startup (Note 5)
+  test('PanadapterView defaults _peakHold to false on fresh startup', () => {
+    const K4 = globalThis.K4;
+    const state = new K4.RadioState();
+    const container = document.createElement('div');
+    container.style.width = '640px';
+    container.style.height = '320px';
+    document.body.appendChild(container);
+    let view = null;
+    try {
+      view = new K4.PanadapterView({ container, state, renderer: '2d' });
+      assertEqual(view._peakHold, false, 'PanadapterView._peakHold defaults to false');
+    } finally {
+      if (view && typeof view.destroy === 'function') view.destroy();
+      container.remove();
+    }
+  });
+
+  // 34. RadioState coalesces streaming CW/TB decodedText chunks per RX & isolates snapshots
+  test('RadioState coalesces streaming TB/TB$ chunks per RX and keeps snapshots immutable', () => {
+    const K4 = globalThis.K4;
+    const state = new K4.RadioState();
+
+    for (const ch of ['C', 'Q', ' ', 'D', 'E', ' ', 'K']) {
+      state.applyParsedCat(K4.CatCodec.parseCommand(`TB001${ch};`));
+    }
+    let snap1 = state.getSnapshot();
+    assertEqual(snap1.decodedText.length, 1, '7 single-char TB packets coalesce into 1 line');
+    assertEqual(snap1.decodedText[0].rx, 'A', 'Coalesced RX A');
+    assertEqual(snap1.decodedText[0].text, 'CQ DE K', 'Coalesced text matches CQ DE K');
+    assertEqual(snap1.decodedText[0].closed, false, 'Open line has closed=false');
+
+    // Interleaved RX B stream should not split RX A's line
+    state.applyParsedCat(K4.CatCodec.parseCommand('TB$001T;'));
+    state.applyParsedCat(K4.CatCodec.parseCommand('TB001 ;'));
+    state.applyParsedCat(K4.CatCodec.parseCommand('TB$001U;'));
+    state.applyParsedCat(K4.CatCodec.parseCommand('TB0017;'));
+    state.applyParsedCat(K4.CatCodec.parseCommand('TB0013;'));
+
+    const snap2 = state.getSnapshot();
+    assertEqual(snap2.decodedText.length, 2, 'Interleaved RX A/B streams maintain 2 open lines');
+    assertEqual(snap2.decodedText[0].text, 'CQ DE K 73', 'RX A kept coalescing across RX B');
+    assertEqual(snap2.decodedText[1].text, 'TU', 'RX B coalesced independently');
+
+    // Prior snapshot object was cloned and must remain untouched by later updates
+    assertEqual(snap1.decodedText[0].text, 'CQ DE K', 'Prior snapshot decodedText entry immutable');
+
+    // CRLF/LF closes the line and starts a fresh open line
+    state.applyParsedCat(K4.CatCodec.parseCommand('TB006\r\nNEXT;'));
+    const snap3 = state.getSnapshot();
+    assertEqual(snap3.decodedText.length, 3, 'Newline opens next RX A decodedText line');
+    assertEqual(snap3.decodedText[0].closed, true, 'Previous RX A line closed after newline');
+    assertEqual(snap3.decodedText[2].text, 'NEXT', 'New RX A line started with NEXT');
+    assertEqual(snap3.decodedText[2].closed, false, 'New RX A line remains open');
+  });
+
   async function runAll() {
     const resultsEl = document.getElementById('results');
     const summaryEl = document.getElementById('summary');

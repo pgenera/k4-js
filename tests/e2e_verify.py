@@ -8,6 +8,7 @@ import argparse
 import base64
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -425,11 +426,441 @@ def run_browser_unit_tests(client: MarionetteClient, test_url: str | None = None
             """
         )
         raise AssertionError(f"{exc} | diag={diag} | console={client.collect_console_errors()}") from None
-    assert results["total"] >= 31, f"Expected >= 31 unit tests, got {results}"
+    assert results["total"] >= 34, f"Expected >= 34 unit tests, got {results}"
     assert results["failed"] == 0, f"Browser unit tests failed: {results}"
     errs = client.collect_console_errors()
     assert not errs, f"Console errors during test.html ({label}): {errs}"
     print(f"      PASS ({label}): {results['passed']}/{results['total']} unit tests passed, 0 console errors")
+
+
+FORBIDDEN_UI_JARGON_RE = re.compile(r"(?:firewall|live\s+rf|\barm\b|\barmed\b|\bdisarm\b|intercept|policy:|prohibited|tx\s+panic)", re.IGNORECASE)
+
+
+def assert_no_forbidden_jargon(text: str, location: str) -> None:
+    m = FORBIDDEN_UI_JARGON_RE.search(text or "")
+    assert not m, f"Forbidden jargon {m.group(0)!r} found in {location}: {text!r}"
+    assert not re.search(r"\bSAFE\b", text or ""), f"Forbidden 'SAFE' label found in {location}: {text!r}"
+
+
+def verify_peak_hold_default_off(client: MarionetteClient) -> None:
+    """Note 5: Fresh startup has peak-hold-switch aria-pressed='false' and panadapter._peakHold === false."""
+    res = client.execute_script(
+        """
+        globalThis.k4App.inspector.selectDesktopTab('display');
+        const sw = document.querySelector('[data-testid="peak-hold-switch"]');
+        return {
+          exists: Boolean(sw),
+          ariaPressed: sw ? sw.getAttribute('aria-pressed') : null,
+          panPeakHold: Boolean(globalThis.k4App.panadapter && globalThis.k4App.panadapter._peakHold),
+        };
+        """
+    )
+    assert res["exists"] and res["ariaPressed"] == "false" and res["panPeakHold"] is False, (
+        f"Note 5 failed: expected peak-hold OFF on fresh startup, got {res}"
+    )
+
+
+def verify_ui_notes_and_cw(client: MarionetteClient, stats_url: str) -> None:
+    """Verify Notes 1-4, 6 + CW decode contrast/coalescing/mnemonics + Mini-Pan/CAT cleanup."""
+    # Note 4: Natural ham labels + zero old security jargon across top-bar, confirm popover, tabs, Transmit Lock, Omnibar blocked card
+    chrome_texts = client.execute_script(
+        """
+        const topBar = document.getElementById('top-bar');
+        const rxBadge = document.querySelector('[data-testid="rx-only-badge"]');
+        const rxBtn = document.querySelector('[data-testid="tx-mode-rx"]');
+        const armBtn = document.querySelector('[data-testid="tx-mode-armed"]');
+        const pop = document.querySelector('[data-testid="tx-arm-confirm"]');
+        const warnPill = pop ? pop.querySelector('.k4-tx-arm-warn-pill') : null;
+        globalThis.k4App.inspector.selectDesktopTab('audio');
+        const audioText = document.getElementById('inspector-drawer')?.textContent || '';
+        globalThis.k4App.inspector.selectDesktopTab('tx');
+        const txText = document.getElementById('inspector-drawer')?.textContent || '';
+        const tiles = Array.from(document.querySelectorAll('.k4-sensor-tile')).map((el) => el.textContent || '');
+        const hudLoupe = globalThis.k4App._hudLoupeBtn;
+        return {
+          topBarText: topBar ? topBar.textContent : '',
+          rxBadgeText: rxBadge ? rxBadge.textContent.trim() : '',
+          rxBtnText: rxBtn ? rxBtn.textContent.trim() : '',
+          armBtnText: armBtn ? armBtn.textContent.trim() : '',
+          popText: pop ? pop.textContent : '',
+          warnPillText: warnPill ? warnPill.textContent.trim() : '',
+          audioText,
+          txText,
+          tiles,
+          hudLoupeText: hudLoupe ? hudLoupe.textContent.trim() : '',
+          hudLoupeTitle: hudLoupe ? hudLoupe.title : '',
+        };
+        """
+    )
+    assert "RX ONLY" in chrome_texts["rxBadgeText"] and chrome_texts["rxBtnText"] == "RX ONLY", chrome_texts
+    assert chrome_texts["armBtnText"] == "TX RDY", f"Expected TX RDY button, got {chrome_texts['armBtnText']!r}"
+    assert chrome_texts["warnPillText"] == "TX ON", f"Expected TX ON pill, got {chrome_texts['warnPillText']!r}"
+    assert "Transmit Lock" in chrome_texts["audioText"] and "Transmit Lock" in chrome_texts["txText"], chrome_texts
+    assert_no_forbidden_jargon(chrome_texts["topBarText"], "#top-bar")
+    assert_no_forbidden_jargon(chrome_texts["popText"], "tx-arm-confirm")
+    assert_no_forbidden_jargon(chrome_texts["audioText"], "Audio/Transmit Lock tab")
+    assert_no_forbidden_jargon(chrome_texts["txText"], "TX tab")
+
+    # Note 1: Zero 'Graph' text in any .k4-sensor-tile, clicking sensor-tile-pt opens graph modal
+    assert len(chrome_texts["tiles"]) == 8, f"Expected 8 sensor tiles, got {chrome_texts['tiles']}"
+    for tile_txt in chrome_texts["tiles"]:
+        assert "graph" not in tile_txt.lower(), f"Note 1 failed: unexpected 'Graph' text in sensor tile {tile_txt!r}"
+    client.execute_script("document.querySelector('[data-testid=\"sensor-tile-pt\"]').click();")
+    wait_until(
+        lambda: client.execute_script(
+            """
+            const p = document.querySelector('[data-testid="sensor-graph-panel"]');
+            const c = document.querySelector('[data-testid="sensor-graph-canvas"]');
+            return p && p.hidden === false && c && c.width > 0 && c.height > 0;
+            """
+        ),
+        "Note 1: sensor-tile-pt opens sensor graph modal",
+    )
+    client.execute_script("document.querySelector('[data-testid=\"sensor-graph-close\"]')?.click();")
+    wait_until(
+        lambda: client.execute_script(
+            "const p = document.querySelector('[data-testid=\"sensor-graph-panel\"]'); return p && p.hidden === true;"
+        ),
+        "Sensor graph modal closes",
+    )
+
+    # Note 4 + Mini-Pan Omnibar checks (without pressing Enter on blocked 'tx')
+    client.click_element(client.find_element('[data-testid="omnibar-btn"]'))
+    wait_until(
+        lambda: client.execute_script("const m = document.querySelector('[data-testid=\"omnibar-modal\"]'); return m && m.dataset.open === 'true';"),
+        "Omnibar open for Note 4 / Mini-Pan checks",
+    )
+    client.clear_and_type('[data-testid="omnibar-input"]', "tx")
+    wait_until(
+        lambda: client.execute_script(
+            "const item = document.querySelector('.k4-omnibar-item'); return item && item.textContent.includes('Blocked in RX-Only');"
+        ),
+        "Omnibar displays Blocked in RX-Only card for 'tx'",
+    )
+    omni_blocked = client.execute_script("return document.querySelector('.k4-omnibar-list')?.textContent || '';")
+    assert_no_forbidden_jargon(omni_blocked, "Omnibar blocked card")
+    assert "Transmit Lock" in omni_blocked and "RX ONLY" in omni_blocked, f"Unexpected omnibar blocked copy: {omni_blocked!r}"
+
+    # Mini-Pan & CAT cleanup (#114)
+    assert chrome_texts["hudLoupeText"].startswith("Mini-Pan") and chrome_texts["hudLoupeTitle"] == "Toggle Mini-Pan", chrome_texts
+    client.clear_and_type('[data-testid="omnibar-input"]', "minipan")
+    wait_until(
+        lambda: client.execute_script(
+            "const l = document.querySelector('.k4-omnibar-list'); return l && l.textContent.includes('Mini-Pan');"
+        ),
+        "Omnibar displays Mini-Pan card",
+    )
+    omni_mp = client.execute_script("return document.querySelector('.k4-omnibar-list')?.textContent || '';")
+    assert "loupe" not in omni_mp.lower() and "MINI-PAN" in omni_mp, f"Unexpected Mini-Pan omnibar text: {omni_mp!r}"
+    client.send_keys(client.find_element('[data-testid="omnibar-input"]'), "\uE00C")  # Escape
+    wait_until(
+        lambda: client.execute_script("const m = document.querySelector('[data-testid=\"omnibar-modal\"]'); return m && m.dataset.open === 'false';"),
+        "Omnibar closes after Escape",
+    )
+
+    # Check zero 'loupe' and zero parenthesized raw CAT codes across inspector tabs & ticker
+    cat_cleanup = client.execute_script(
+        """
+        const drawer = document.getElementById('inspector-drawer');
+        const tabTexts = [];
+        for (const tab of ['band-mode', 'dsp', 'display', 'audio', 'tx']) {
+          globalThis.k4App.inspector.selectDesktopTab(tab);
+          tabTexts.push(drawer ? drawer.textContent : '');
+        }
+        const badge = document.querySelector('[data-testid="text-ticker"] .k4-ticker-badge');
+        const dspSel = document.querySelector('[data-testid="dsp-td-select"]');
+        const dspRow = dspSel ? (dspSel.closest('.k4-dsp-row, .k4-card') || dspSel.parentElement) : null;
+        return {
+          allText: tabTexts.join(' '),
+          badgeText: badge ? badge.textContent.trim() : '',
+          dspDecodeText: dspRow ? dspRow.textContent : '',
+        };
+        """
+    )
+    assert "loupe" not in cat_cleanup["allText"].lower(), "Found leftover 'loupe' in inspector UI"
+    for raw_code in ["(TB$)", "(TD)", "(TD / TD$)", "(#MP)", "(#FRZ)", "(PB0)", "(VT)"]:
+        assert raw_code not in cat_cleanup["allText"], f"Found raw CAT code {raw_code!r} in inspector UI"
+    assert cat_cleanup["badgeText"] == "DECODE", f"Expected DECODE badge, got {cat_cleanup['badgeText']!r}"
+    assert "(TD" not in cat_cleanup["dspDecodeText"], f"Found (TD in DSP decode card: {cat_cleanup['dspDecodeText']!r}"
+
+    # CW Select / Option contrast & dark background check
+    sel_check = client.execute_script(
+        """
+        function parseCssColor(str) {
+          const m = String(str || '').match(/rgba?\\((\\d+),\\s*(\\d+),\\s*(\\d+)(?:,\\s*([\\d.]+))?\\)/);
+          if (!m) return null;
+          return { r: Number(m[1]), g: Number(m[2]), b: Number(m[3]), a: m[4] === undefined ? 1 : Number(m[4]) };
+        }
+        function relLum(c) {
+          const f = (v) => {
+            const s = v / 255;
+            return s <= 0.03928 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4);
+          };
+          return 0.2126 * f(c.r) + 0.7152 * f(c.g) + 0.0722 * f(c.b);
+        }
+        function contrast(c1, c2) {
+          const l1 = relLum(c1), l2 = relLum(c2);
+          return (Math.max(l1, l2) + 0.05) / (Math.min(l1, l2) + 0.05);
+        }
+        globalThis.k4App.inspector.selectDesktopTab('dsp');
+        const sels = [
+          document.querySelector('[data-testid="ticker-td-select"]'),
+          document.querySelector('[data-testid="dsp-td-select"]'),
+          ...Array.from(document.querySelectorAll('.k4-select')),
+        ].filter(Boolean);
+        const out = [];
+        for (const s of sels) {
+          const cs = getComputedStyle(s);
+          const bg = parseCssColor(cs.backgroundColor);
+          const fg = parseCssColor(cs.color);
+          const opt = s.querySelector('option');
+          const ocs = opt ? getComputedStyle(opt) : null;
+          const obg = ocs ? parseCssColor(ocs.backgroundColor) : null;
+          const ofg = ocs ? parseCssColor(ocs.color) : null;
+          out.push({
+            id: s.dataset.testid || s.className,
+            bg, fg, bgLum: bg ? relLum(bg) : null, ratio: bg && fg ? contrast(bg, fg) : null,
+            obg, ofg, obgLum: obg ? relLum(obg) : null, oratio: obg && ofg ? contrast(obg, ofg) : null,
+          });
+        }
+        return out;
+        """
+    )
+    assert len(sel_check) >= 2, f"Expected select elements, got {sel_check}"
+    for item in sel_check:
+        assert item["bg"] and item["bg"]["a"] == 1 and item["bgLum"] < 0.08, f"Select not opaque dark: {item}"
+        assert item["ratio"] >= 7.0, f"Select contrast < 7.0: {item}"
+        if item["obg"] and item["obg"]["a"] == 1:
+            assert item["obgLum"] < 0.08 and item["oratio"] >= 7.0, f"Option contrast issue: {item}"
+
+    # CW Streaming Coalescing check (inject 1-char packets after newline)
+    coalesce_res = client.execute_script(
+        """
+        const inject = (raw) => {
+          for (const tok of K4.CatCodec.splitFrames(raw)) {
+            const p = K4.CatCodec.parseCommand(tok);
+            if (p) globalThis.k4App.state.applyParsedCat(p);
+          }
+          globalThis.k4App._render();
+        };
+        const beforeLines = document.querySelectorAll('[data-testid="text-ticker"] .k4-ticker-line').length;
+        inject('TB001\\n;TB001T;TB001E;TB001S;TB001T;TB001 ;TB001C;TB001W;');
+        const msgs = Array.from(document.querySelectorAll('[data-testid="text-ticker"] .k4-ticker-msg')).map((e) => e.textContent);
+        const testCwMatches = msgs.filter((m) => m.includes('TEST CW'));
+        const afterLines = document.querySelectorAll('[data-testid="text-ticker"] .k4-ticker-line').length;
+        return { beforeLines, afterLines, testCwCount: testCwMatches.length, lastMsg: msgs[msgs.length - 1] || '' };
+        """
+    )
+    assert coalesce_res["testCwCount"] == 1 and "TEST CW" in coalesce_res["lastMsg"], f"CW coalescing failed: {coalesce_res}"
+    assert coalesce_res["afterLines"] <= coalesce_res["beforeLines"] + 1, f"7 single-char packets split across multiple lines: {coalesce_res}"
+
+    # Note 2: NR000;NRS052; baseline -> nr-switch turns ON and STAYS ON; LMS <-> SSNR stays ON; omnibar nr on / ssnr on
+    client.execute_script("globalThis.k4App.inspector.selectDesktopTab('dsp');")
+    client.execute_script("globalThis.k4App.client.sendCat('NR000;NRS052;NR;NRS;');")
+    wait_until(
+        lambda: client.execute_script(
+            """
+            const rxA = globalThis.k4App.state.getSnapshot().rxA;
+            const sw = document.querySelector('[data-testid="nr-switch"]');
+            return rxA.nrOn === false && rxA.ssnrLastUsed === true && rxA.nrMode === 'ssnr' &&
+                   sw && sw.getAttribute('aria-pressed') === 'false';
+            """
+        ),
+        "Note 2 baseline NR000;NRS052; established (nrOn=false, nrMode=ssnr)",
+    )
+    client.click_element(client.find_element('[data-testid="nr-switch"]'))
+    wait_until(
+        lambda: client.execute_script(
+            "const rxA = globalThis.k4App.state.getSnapshot().rxA; return rxA.nrOn === true && rxA.ssnrOn === true && rxA.nrMode === 'ssnr';"
+        ),
+        "Note 2: clicking nr-switch from NRS052 turns SSNR ON",
+    )
+    time.sleep(1.05)
+    stays_on_1 = client.execute_script(
+        """
+        const rxA = globalThis.k4App.state.getSnapshot().rxA;
+        const sw = document.querySelector('[data-testid="nr-switch"]');
+        return { nrOn: rxA.nrOn, ssnrOn: rxA.ssnrOn, nrMode: rxA.nrMode, pressed: sw?.getAttribute('aria-pressed') };
+        """
+    )
+    assert stays_on_1["nrOn"] is True and stays_on_1["ssnrOn"] is True and stays_on_1["pressed"] == "true", (
+        f"Note 2 failed: NR did not stay ON after 1s: {stays_on_1}"
+    )
+
+    client.click_element(client.find_element('[data-testid="nr-mode-lms"]'))
+    wait_until(
+        lambda: client.execute_script(
+            "const rxA = globalThis.k4App.state.getSnapshot().rxA; return rxA.nrOn === true && rxA.lmsNrOn === true && rxA.ssnrOn === false && rxA.nrMode === 'lms';"
+        ),
+        "Note 2: switching nr-mode-ssnr -> nr-mode-lms keeps NR ON in LMS",
+    )
+    time.sleep(1.05)
+    assert client.execute_script("return globalThis.k4App.state.getSnapshot().rxA.lmsNrOn === true;"), "LMS NR bounced off after 1s"
+
+    client.click_element(client.find_element('[data-testid="nr-mode-ssnr"]'))
+    wait_until(
+        lambda: client.execute_script(
+            "const rxA = globalThis.k4App.state.getSnapshot().rxA; return rxA.nrOn === true && rxA.ssnrOn === true && rxA.lmsNrOn === false && rxA.nrMode === 'ssnr';"
+        ),
+        "Note 2: switching nr-mode-lms -> nr-mode-ssnr keeps NR ON in SSNR",
+    )
+    time.sleep(1.05)
+    assert client.execute_script("return globalThis.k4App.state.getSnapshot().rxA.ssnrOn === true;"), "SSNR bounced off after 1s"
+
+    client.click_element(client.find_element('[data-testid="nr-switch"]'))
+    wait_until(
+        lambda: client.execute_script("return globalThis.k4App.state.getSnapshot().rxA.nrOn === false;"),
+        "nr-switch turns NR OFF",
+    )
+
+    for cmd_text, expected_mode in [("nr on", "lms"), ("ssnr on", "ssnr")]:
+        client.click_element(client.find_element('[data-testid="omnibar-btn"]'))
+        wait_until(
+            lambda: client.execute_script("const m = document.querySelector('[data-testid=\"omnibar-modal\"]'); return m && m.dataset.open === 'true';"),
+            f"Omnibar open for {cmd_text!r}",
+        )
+        client.clear_and_type('[data-testid="omnibar-input"]', cmd_text)
+        client.send_keys(client.find_element('[data-testid="omnibar-input"]'), "\uE007")
+        wait_until(
+            lambda em=expected_mode: client.execute_script(
+                f"const rxA = globalThis.k4App.state.getSnapshot().rxA; return rxA.nrOn === true && rxA.nrMode === '{em}';"
+            ),
+            f"Note 2: Omnibar {cmd_text!r} enables {expected_mode}",
+        )
+    client.execute_script("globalThis.k4App.client.setNr('A', { on: false });")
+    wait_until(
+        lambda: client.execute_script("return globalThis.k4App.state.getSnapshot().rxA.nrOn === false;"),
+        "NR restored OFF after Note 2 checks",
+    )
+
+    # Note 3: Zero-jitter S-meter across S3 -> S9+25 -> S9+40 + smooth peak-hold decay
+    jitter = client.execute_script(
+        """
+        const injectAndMeasure = (tok) => {
+          const p = K4.CatCodec.parseCommand(tok);
+          if (p) globalThis.k4App.state.applyParsedCat(p);
+          globalThis.k4App._render();
+          const rect = (el) => {
+            if (!el) return null;
+            const r = el.getBoundingClientRect();
+            return { left: r.left, right: r.right, width: r.width };
+          };
+          const dbmEl = document.querySelector('[data-testid="smeter-dbm"]');
+          return {
+            text: dbmEl ? dbmEl.textContent : '',
+            slot: rect(document.querySelector('.k4-smeter-slot')),
+            txInd: rect(document.querySelector('[data-testid="k4-tx-vfo-indicator"]')),
+            dbm: rect(dbmEl),
+            sunit: rect(dbmEl?.querySelector('.k4-smeter-sunit')),
+            sep: rect(dbmEl?.querySelector('.k4-smeter-sep')),
+            num: rect(dbmEl?.querySelector('.k4-smeter-dbm-num')),
+          };
+        };
+        return [
+          injectAndMeasure('SMH-103;'),
+          injectAndMeasure('SMH-048;'),
+          injectAndMeasure('SMH-033;'),
+        ];
+        """
+    )
+    assert (
+        "-103 dBm" in jitter[0]["text"]
+        and "S9+25" in jitter[1]["text"]
+        and "-48 dBm" in jitter[1]["text"]
+        and "S9+40" in jitter[2]["text"]
+        and "-33 dBm" in jitter[2]["text"]
+    ), f"Unexpected S-meter text progression: {jitter}"
+    for key in ["slot", "txInd", "dbm", "sunit", "sep", "num"]:
+        for edge in ["left", "right", "width"]:
+            vals = [sample[key][edge] for sample in jitter]
+            delta = max(vals) - min(vals)
+            assert delta <= 0.5, f"Note 3 jitter > 0.5px on {key}.{edge}: delta={delta:.3f}px vals={vals}"
+
+    peak_start = client.execute_script(
+        """
+        globalThis.k4App.state.applyParsedCat(K4.CatCodec.parseCommand('SMH-033;'));
+        globalThis.k4App._render();
+        globalThis.k4App.state.applyParsedCat(K4.CatCodec.parseCommand('SMH-103;'));
+        globalThis.k4App._render();
+        const peakEl = document.querySelector('[data-testid="smeter-block-a"] .k4-smeter-peak');
+        const fillEl = document.querySelector('[data-testid="smeter-block-a"] .k4-smeter-fill');
+        return { peakLeft: parseFloat(peakEl.style.left), fillWidth: parseFloat(fillEl.style.width) };
+        """
+    )
+    assert peak_start["peakLeft"] > 95.0, f"Expected initial peak at S9+40 (>95%), got {peak_start}"
+    time.sleep(0.55)
+    peak_later = client.execute_script(
+        """
+        const peakEl = document.querySelector('[data-testid="smeter-block-a"] .k4-smeter-peak');
+        const fillEl = document.querySelector('[data-testid="smeter-block-a"] .k4-smeter-fill');
+        return { peakLeft: parseFloat(peakEl.style.left), fillWidth: parseFloat(fillEl.style.width) };
+        """
+    )
+    assert peak_later["fillWidth"] < peak_later["peakLeft"] < peak_start["peakLeft"], (
+        f"Note 3 peak-hold failed to decay smoothly: start={peak_start}, later={peak_later}"
+    )
+
+    # Note 6: SB0 single S-meter vs SB1 Dual RX independent SMH/SMH$ + zero horizontal overflow at 1440x900 & 1024x768
+    single_rx = client.execute_script(
+        """
+        const slot = document.querySelector('.k4-smeter-slot');
+        const a = document.querySelector('[data-testid="smeter-block-a"]');
+        const b = document.querySelector('[data-testid="smeter-block-b"]');
+        return {
+          dualCls: slot ? slot.classList.contains('is-dual-rx') : null,
+          aVisible: Boolean(a && !a.hidden && a.getBoundingClientRect().width > 0),
+          bHidden: Boolean(!b || b.hidden || getComputedStyle(b).display === 'none'),
+        };
+        """
+    )
+    assert single_rx["dualCls"] is False and single_rx["aVisible"] is True and single_rx["bHidden"] is True, single_rx
+
+    client.execute_script("globalThis.k4App.client.setSubRx(true);")
+    wait_until(
+        lambda: client.execute_script(
+            """
+            const slot = document.querySelector('.k4-smeter-slot');
+            const b = document.querySelector('[data-testid="smeter-block-b"]');
+            return globalThis.k4App.state.getSnapshot().subRxEnabled === true &&
+                   slot && slot.classList.contains('is-dual-rx') &&
+                   b && !b.hidden && b.getBoundingClientRect().width > 0;
+            """
+        ),
+        "Note 6: SB1 shows Dual RX S-meter block A + B",
+    )
+    dual_readings = client.execute_script(
+        """
+        globalThis.k4App.state.applyParsedCat(K4.CatCodec.parseCommand('SMH-080;'));
+        globalThis.k4App.state.applyParsedCat(K4.CatCodec.parseCommand('SMH$-070;'));
+        globalThis.k4App._render();
+        const da = document.querySelector('[data-testid="smeter-dbm"]');
+        const db = document.querySelector('[data-testid="smeter-b-dbm"]');
+        const fa = document.querySelector('[data-testid="smeter-block-a"] .k4-smeter-fill');
+        const fb = document.querySelector('[data-testid="smeter-block-b"] .k4-smeter-fill');
+        return {
+          textA: da ? da.textContent : '',
+          textB: db ? db.textContent : '',
+          widthA: fa ? parseFloat(fa.style.width) : 0,
+          widthB: fb ? parseFloat(fb.style.width) : 0,
+        };
+        """
+    )
+    assert "-80 dBm" in dual_readings["textA"] and "-70 dBm" in dual_readings["textB"], dual_readings
+    assert dual_readings["widthB"] > dual_readings["widthA"] + 5.0, dual_readings
+
+    for vw, vh in [(1440, 900), (1024, 768)]:
+        client.set_window_rect(vw, vh)
+        overflow = client.execute_script(
+            "return { sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth };"
+        )
+        assert overflow["sw"] <= overflow["cw"], f"Note 6 horizontal overflow at {vw}x{vh} (Dual RX): {overflow}"
+
+    client.set_window_rect(1440, 900)
+    client.execute_script("globalThis.k4App.client.setSubRx(false);")
+    wait_until(
+        lambda: client.execute_script("return globalThis.k4App.state.getSnapshot().subRxEnabled === false;"),
+        "Sub-RX restored OFF after Note 6 checks",
+    )
 
 
 def run_file_origin_e2e(client: MarionetteClient, ws_url: str, password: str, stats_url: str):
@@ -467,6 +898,8 @@ def run_file_origin_e2e(client: MarionetteClient, ws_url: str, password: str, st
         ),
         "initial VFO A/B and S-meter hydration",
     )
+
+    verify_peak_hold_default_off(client)
 
     # Verify active spectrum/waterfall rendering (>= 20 frames & non-uniform canvas pixels)
     wait_until(
@@ -635,7 +1068,7 @@ def run_file_origin_e2e(client: MarionetteClient, ws_url: str, password: str, st
             """
             const el = document.querySelector('[data-testid="text-ticker"]');
             const snap = globalThis.k4App.state.getSnapshot();
-            const hasSemi = snap.decodedText.some((d) => d.text === 'CQ DE W6ELE K ; 73 ;');
+            const hasSemi = snap.decodedText.some((d) => d.text.includes('CQ DE W6ELE K ; 73 ;'));
             return hasSemi && el && el.textContent.includes('CQ DE W6ELE K ; 73 ;');
             """
         ),
@@ -770,6 +1203,8 @@ def run_file_origin_e2e(client: MarionetteClient, ws_url: str, password: str, st
     wait_until(lambda: http_get_json(stats_url)["faHz"] == 7074000, "Bookmark recall returns VFO A to 7074000 Hz")
     client.execute_script("K4.BookmarkStore.resetDefaults();")
 
+    verify_ui_notes_and_cw(client, stats_url)
+
     # Verify RxOnlyGate blocks TX commands locally and simulator sees 0 TX violations
     gate_res = client.execute_script(
         "return globalThis.k4App.client.sendCat('TX;TU1;KY CQ;PC050;SW01;');"
@@ -845,6 +1280,7 @@ def run_http_origin_and_screenshots(
         ),
         "Base K4 OM capabilities hydrated",
     )
+    verify_peak_hold_default_off(client)
     assert k4_cap["radioModel"] == "K4" and k4_cap["hasDiversity"] is False and k4_cap["hasKrx4"] is False, (
         f"Expected Base K4 model without KRX4/Diversity: {k4_cap}"
     )
@@ -1116,6 +1552,9 @@ def run_http_origin_and_screenshots(
         ),
         "2-step TX arm confirmation popover opens with Microphone summary before arming",
     )
+    pop_text = client.execute_script("return document.querySelector('[data-testid=\"tx-arm-confirm\"]').textContent;")
+    assert_no_forbidden_jargon(pop_text, "open tx-arm-confirm popover")
+    assert "TX ON" in pop_text and "Enable TX" in pop_text, pop_text
     client.click_element(client.find_element('[data-testid="tx-arm-confirm-btn"]'))
     wait_until(
         lambda: client.execute_script(
@@ -1356,13 +1795,32 @@ def run_http_origin_and_screenshots(
     client.take_screenshot(desktop_png)
     assert os.path.getsize(desktop_png) > 5000, f"Desktop screenshot too small: {desktop_png}"
 
-    # Switch to Mobile 390x844 and verify mobile nav + bottom sheet
+    # Switch to Mobile 390x844 and verify mobile nav + bottom sheet + zero horizontal overflow
     client.set_window_rect(390, 844)
     wait_until(
         lambda: client.execute_script(
             "const nav = document.querySelector('[data-testid=\"mobile-nav\"]'); return nav && getComputedStyle(nav).display !== 'none';"
         ),
         "mobile nav bar visible at 390x844",
+    )
+    mob_overflow = client.execute_script(
+        "return { sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth };"
+    )
+    assert mob_overflow["sw"] <= mob_overflow["cw"], f"Horizontal overflow at 390x844 (Single RX): {mob_overflow}"
+    # Verify Dual RX at 390x844 also has zero horizontal overflow
+    client.execute_script("globalThis.k4App.client.setSubRx(true);")
+    wait_until(
+        lambda: client.execute_script("return globalThis.k4App.state.getSnapshot().subRxEnabled === true;"),
+        "Dual RX enabled at 390x844 overflow check",
+    )
+    mob_dual_overflow = client.execute_script(
+        "return { sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth };"
+    )
+    assert mob_dual_overflow["sw"] <= mob_dual_overflow["cw"], f"Horizontal overflow at 390x844 (Dual RX): {mob_dual_overflow}"
+    client.execute_script("globalThis.k4App.client.setSubRx(false);")
+    wait_until(
+        lambda: client.execute_script("return globalThis.k4App.state.getSnapshot().subRxEnabled === false;"),
+        "Dual RX disabled before mobile screenshot",
     )
     # Open a mobile bottom sheet tab
     client.click_element(client.find_element('[data-testid="mobile-nav"] button'))
