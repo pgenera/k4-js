@@ -65,6 +65,23 @@
     return Boolean(ws && ws.readyState === 0);
   }
 
+  const TB_POLL_RELEVANT_KEYS = new Set([
+    'connection',
+    'rxA',
+    'rxB',
+    'rxA.textDecode',
+    'rxB.textDecode',
+    'rxA.mode',
+    'rxB.mode',
+    'rxA.dataSubMode',
+    'rxB.dataSubMode',
+    'subRx',
+    'subRxEnabled',
+    'ifInfo',
+    'vfoCopy',
+    'state',
+  ]);
+
   /**
    * K4 WebSocket transport client managing SHA-384 auth, stream framing, keepalive,
    * receive-only enforcement, and optimistic + CAT-confirmed RadioState updates.
@@ -78,17 +95,19 @@
     constructor(opts = {}) {
       super();
       this.state = opts.state || new K4.RadioState();
-      this.gate = opts.gate || new K4.RxOnlyGate('rx-only');
+      this.gate = opts.gate || new K4.RxOnlyGate('tx-enabled');
       this._framer = new K4.PacketFramer((payload) => this._handleFrame(payload));
       this._ws = null;
       this._connGen = 0;
       this._pingTimer = null;
       this._tbPollTimer = null;
       this._totTimer = null;
-      this._txPosture = 'rx-only';
-      if (this.state && typeof this.state.on === 'function') {
-        this.state.on('change', () => this._syncTbPolling());
-      }
+      const gatePolicy =
+        typeof this.gate.getPolicy === 'function' ? this.gate.getPolicy() : 'tx-enabled';
+      const startRxOnly = gatePolicy === 'rx-only';
+      this._txPosture = startRxOnly ? 'rx-only' : 'tx-armed';
+      this._targetRx = 'A';
+      this._isAuthenticated = false;
       this._bootstrapTimer = null;
       this._bootstrapSent = false;
       this._pendingEmMode = 1;
@@ -107,15 +126,55 @@
         audioPacketsIn: 0,
       };
 
-      // Always initialize in mandatory 'rx-only' safety posture regardless of passed gate/state.
-      this._disarmToRxOnly({ silentCat: true, emitPttChange: false });
+      // Trusted operator default ('tx-armed') unless an explicit 'rx-only' gate was supplied.
+      this.gate.setTxAudioAllowed(false);
+      if (this.state && typeof this.state.updateTxSafety === 'function') {
+        this.state.updateTxSafety(
+          {
+            operatingPolicy: startRxOnly ? 'rx-only' : 'tx-enabled',
+            txPosture: this._txPosture,
+            txTestMode: false,
+            pttHeld: false,
+            txStartedAt: null,
+            txActive: false,
+            atuTuning: false,
+            atuTuneKind: null,
+            atuSearchWindowUntil: 0,
+          },
+          'txPosture'
+        );
+      }
 
-      this.state.on('change', (snapshot, changedKey) => {
-        this.emit('state', snapshot, changedKey);
-      });
+      if (this.state && typeof this.state.on === 'function') {
+        this.state.on('change', (snapshot, changedKey, changedKeys) => {
+          const keys =
+            changedKeys instanceof Set ? changedKeys : new Set([changedKey || 'state']);
+          if (keys.has('connection') || keys.has('state')) {
+            const conn = snapshot && snapshot.connection;
+            this._isAuthenticated = Boolean(
+              conn && conn.authStatus === 'authenticated' && conn.status === 'connected'
+            );
+          }
+          for (const k of keys) {
+            if (TB_POLL_RELEVANT_KEYS.has(k)) {
+              this._syncTbPolling();
+              break;
+            }
+          }
+          this.emit('state', snapshot, changedKey, changedKeys);
+        });
+      }
       this.gate.on('blocked', (entry) => {
         this.emit('blocked', entry);
       });
+    }
+
+    /**
+     * Fast cached connection authentication check avoiding full snapshot cloning per packet.
+     * @returns {boolean}
+     */
+    get isAuthenticated() {
+      return this._isAuthenticated;
     }
 
     /**
@@ -218,60 +277,78 @@
       }
     }
 
-    _disarmToRxOnly({ silentCat = false, emitPttChange = true, sendDisconnectRx = false } = {}) {
+    _sendStopTxTeardownCat(snap, { silentCat = false, sendDisconnectRx = false, wasTest = false } = {}) {
+      if (silentCat || !isWsOpen(this._ws)) return false;
+      const wasActive = Boolean(snap.pttHeld || snap.txActive || snap.atuTuning);
+      const cmds = [];
+      if (snap.atuTuning) cmds.push('TU0;');
+      if (wasActive || sendDisconnectRx) cmds.push('RX;');
+      if (wasTest) cmds.push('TS0;');
+      if (cmds.length === 0) return false;
+      try {
+        this.sendCat(cmds.join(''));
+        return true;
+      } catch (_) {
+        // Ignore teardown errors.
+        return false;
+      }
+    }
+
+    _teardownActiveTx({
+      disarm = false,
+      silentCat = false,
+      emitPttChange = true,
+      sendDisconnectRx = false,
+    } = {}) {
       this._clearTotTimer();
       const snap = this.state ? this.state.getSnapshot() : {};
-      const wasActive = Boolean(snap.pttHeld || snap.txActive || snap.atuTuning);
-      const wasTestPosture = this._txPosture === 'tx-test';
+      const canTxStop = this._txPosture !== 'rx-only';
+      const wasTest = canTxStop && (this._txPosture === 'tx-test' || Boolean(snap.txTestMode));
 
-      let cleanupSent = false;
-      if (!silentCat && wasTestPosture && isWsOpen(this._ws)) {
-        const stopPrefix = snap.atuTuning ? 'TU0;RX;' : (wasActive || sendDisconnectRx ? 'RX;' : '');
-        try {
-          this.sendCat(`${stopPrefix}TS0;`);
-          cleanupSent = true;
-        } catch (_) {
-          // Ignore teardown errors.
-        }
+      if (canTxStop || sendDisconnectRx) {
+        this._sendStopTxTeardownCat(snap, { silentCat, sendDisconnectRx, wasTest });
+      }
+      if (disarm) {
+        this.gate.setPolicy('rx-only');
+      }
+      this.gate.setTxAudioAllowed(false);
+
+      if (disarm) {
+        this._txPosture = 'rx-only';
+      } else if (this._txPosture === 'tx-test') {
+        this._txPosture = 'tx-armed';
       }
 
-      this.gate.setPolicy('rx-only');
-      this.gate.setTxAudioAllowed(false);
-      this._txPosture = 'rx-only';
-
       if (this.state && typeof this.state.updateTxSafety === 'function') {
-        this.state.updateTxSafety(
-          Object.assign(
-            {
-              operatingPolicy: 'rx-only',
-              txPosture: 'rx-only',
-              pttHeld: false,
-              txStartedAt: null,
-              txActive: false,
-              atuTuning: false,
-              atuTuneKind: null,
-            },
-            wasTestPosture ? { txTestMode: false } : null
-          ),
-          'txPosture'
-        );
+        const patch = {
+          txPosture: this._txPosture,
+          pttHeld: false,
+          txStartedAt: null,
+          txActive: false,
+          atuTuning: false,
+          atuTuneKind: null,
+          atuSearchWindowUntil: 0,
+        };
+        if (disarm) patch.operatingPolicy = 'rx-only';
+        if (canTxStop) patch.txTestMode = false;
+        this.state.updateTxSafety(patch, disarm ? 'txPosture' : 'txActive');
       }
 
       if (emitPttChange) {
         this.emit('txPttChange', {
           active: false,
-          posture: 'rx-only',
+          posture: this._txPosture,
           testMode: false,
         });
       }
+    }
 
-      if (!silentCat && !cleanupSent && (wasActive || sendDisconnectRx) && isWsOpen(this._ws)) {
-        try {
-          this.sendCat(snap.atuTuning ? 'TU0;RX;' : 'RX;');
-        } catch (_) {
-          // Ignore teardown errors.
-        }
-      }
+    _stopTransientTx(opts = {}) {
+      return this._teardownActiveTx(Object.assign({}, opts, { disarm: false }));
+    }
+
+    _disarmToRxOnly(opts = {}) {
+      return this._teardownActiveTx(Object.assign({}, opts, { disarm: true }));
     }
 
     _stopKeepalive() {
@@ -330,7 +407,7 @@
     }
 
     _sendCleanDisconnectCat() {
-      this._disarmToRxOnly({ silentCat: false, emitPttChange: true });
+      this._stopTransientTx({ silentCat: false, emitPttChange: true, sendDisconnectRx: true });
       if (isWsOpen(this._ws)) {
         try {
           this.sendCat('RRN;');
@@ -376,8 +453,8 @@
         );
       }
 
-      const conn = this.state.getSnapshot().connection;
-      if (conn.authStatus !== 'authenticated' || conn.status !== 'connected') {
+      if (!this._isAuthenticated) {
+        this._isAuthenticated = true;
         this.state.updateConnection({
           status: 'connected',
           authStatus: 'authenticated',
@@ -390,27 +467,33 @@
         case 0: {
           this._metrics.catPacketsIn++;
           const cmds = K4.CatCodec.splitFrames(pkt.text);
-          for (let i = 0; i < cmds.length; i++) {
-            const raw = cmds[i];
-            const parsed = K4.CatCodec.parseCommand(raw);
-            if (parsed) {
-              if (parsed.kind === 'pong') {
-                if (this._lastPingSentPerfMs !== null) {
-                  const rttMs = Math.max(0, Math.round(nowMs() - this._lastPingSentPerfMs));
-                  this.state.updateConnection({ rttMs });
-                  this._emitConnection();
+          const catEvents = [];
+          this.state.batch(() => {
+            for (let i = 0; i < cmds.length; i++) {
+              const raw = cmds[i];
+              const parsed = K4.CatCodec.parseCommand(raw);
+              if (parsed) {
+                if (parsed.kind === 'pong') {
+                  if (this._lastPingSentPerfMs !== null) {
+                    const rttMs = Math.max(0, Math.round(nowMs() - this._lastPingSentPerfMs));
+                    this.state.updateConnection({ rttMs }, 'connection.rttMs');
+                    this._emitConnection();
+                  }
+                } else if (parsed.kind === 'radioError') {
+                  this.emit('error', {
+                    source: 'radio',
+                    code: parsed.code,
+                    message: parsed.message || `K4 error ${parsed.code}`,
+                    raw,
+                  });
                 }
-              } else if (parsed.kind === 'radioError') {
-                this.emit('error', {
-                  source: 'radio',
-                  code: parsed.code,
-                  message: parsed.message || `K4 error ${parsed.code}`,
-                  raw,
-                });
+                this.state.applyParsedCat(parsed);
               }
-              this.state.applyParsedCat(parsed);
+              catEvents.push({ parsed, raw });
             }
-            this.emit('cat', { parsed, raw });
+          });
+          for (let i = 0; i < catEvents.length; i++) {
+            this.emit('cat', catEvents[i]);
           }
           break;
         }
@@ -444,11 +527,12 @@
       const encodeModeOpt = opts.encodeMode !== undefined ? opts.encodeMode : 'auto';
       const latencyTierOpt = opts.latencyTier !== undefined ? opts.latencyTier : 2;
 
-      // Close any existing socket cleanly before opening a fresh session, and enforce 'rx-only'.
+      // Close any existing socket cleanly before opening a fresh session without dropping TX posture.
+      this._isAuthenticated = false;
       if (this._ws) {
         this.disconnect();
       } else {
-        this._disarmToRxOnly({ silentCat: true, emitPttChange: true });
+        this._stopTransientTx({ silentCat: true, emitPttChange: true });
       }
 
       const gen = ++this._connGen;
@@ -589,10 +673,11 @@
 
             this._stopKeepalive();
             this._detachPagehide();
+            this._isAuthenticated = false;
             if (this._ws === ws) {
               this._ws = null;
             }
-            this._disarmToRxOnly({ silentCat: true, emitPttChange: true });
+            this._stopTransientTx({ silentCat: true, emitPttChange: true });
 
             if (!opened) {
               if (!this._manualDisconnect && attemptIdx + 1 < attempts.length) {
@@ -668,7 +753,8 @@
 
       const ws = this._ws;
       const wsWasOpen = isWsOpen(ws);
-      this._disarmToRxOnly({ silentCat: !wsWasOpen, emitPttChange: true });
+      this._isAuthenticated = false;
+      this._stopTransientTx({ silentCat: !wsWasOpen, emitPttChange: true, sendDisconnectRx: wsWasOpen });
 
       if (ws) {
         ws.onopen = null;
@@ -1473,6 +1559,7 @@
           txActive: false,
           atuTuning: false,
           atuTuneKind: null,
+          atuSearchWindowUntil: 0,
           txBufferCount: 0,
         },
         'txActive'
@@ -1501,6 +1588,16 @@
     }
 
     /**
+     * Cycle TX antenna port (1 -> 2 -> 3 -> 1) and apply ANn;.
+     */
+    cycleTxAntenna() {
+      const snap = this.state ? this.state.getSnapshot() : {};
+      const cur = clamp(Math.round(Number(snap.txAntenna) || 1), 1, 3);
+      const next = (cur % 3) + 1;
+      return this.setTxAntenna(next);
+    }
+
+    /**
      * Set KAT4 ATU mode (1 = BYPASS, 2 = AUTO). Never emits AT0.
      * @param {number} mode
      */
@@ -1517,9 +1614,27 @@
      * Start TX tune or KAT4 ATU tune (1=tune, 2=tune LP, 3=ATU tune, 4=ATU extended search).
      * @param {number} [kind=3]
      */
-    startAtuTune(kind = 3) {
-      const k = clamp(Math.round(Number(kind) || 3), 1, 4);
-      if (this.state.getSnapshot().txInhibit) {
+    /**
+     * Start KAT4 ATU tune (`TU3;`) or upgrade to Full Search (`TU4;`) when `fullSearch === true`
+     * or when triggered again within the 5s double-tap search window (`atuSearchWindowUntil > Date.now()`).
+     * Numeric ATU codes `1..4` are also accepted for direct KAT4 control.
+     * @param {boolean|number} [fullSearch=false]
+     */
+    startAtuTune(fullSearch = false) {
+      const snap = this.state.getSnapshot();
+      const now = Date.now();
+      const windowActive = Number(snap.atuSearchWindowUntil) > now;
+      let k;
+      if (fullSearch === true) {
+        k = 4;
+      } else if (typeof fullSearch === 'number' && Number.isFinite(fullSearch)) {
+        const numKind = clamp(Math.round(fullSearch), 1, 4);
+        k = numKind === 3 && windowActive ? 4 : numKind;
+      } else {
+        k = windowActive ? 4 : 3;
+      }
+
+      if (snap.txInhibit) {
         return {
           sent: false,
           allowed: [],
@@ -1531,7 +1646,14 @@
       this.state.resetTxMeterPeaks();
       const res = this.sendCat(K4.CatCodec.builders.atuTune(k) + 'TM1;PO1;');
       if (res.blocked.length === 0) {
-        this.state.update({ atuTuning: true, atuTuneKind: k }, 'atuTuning');
+        this.state.update(
+          {
+            atuTuning: true,
+            atuTuneKind: k,
+            atuSearchWindowUntil: k === 3 ? now + 5000 : 0,
+          },
+          'atuTuning'
+        );
       }
       return res;
     }
@@ -1540,8 +1662,60 @@
      * Abort active ATU tune or tune cycle (TU0;RX;).
      */
     stopAtuTune() {
-      this.state.update({ atuTuning: false, atuTuneKind: null }, 'atuTuning');
+      this.state.update(
+        { atuTuning: false, atuTuneKind: null, atuSearchWindowUntil: 0 },
+        'atuTuning'
+      );
       return this.sendCat('TU0;RX;');
+    }
+
+    /**
+     * Record active tuning receiver target ('A' or 'B') for receiver-agnostic helpers such as autoSpot().
+     * @param {'A'|'B'} rx
+     * @returns {'A'|'B'}
+     */
+    setTargetRx(rx) {
+      this._targetRx = rx === 'B' ? 'B' : 'A';
+      return this._targetRx;
+    }
+
+    _resolveTargetRx(rx) {
+      if (rx === 'A' || rx === 'B') return rx;
+      if (this._targetRx === 'B') return 'B';
+      const snap = this.state ? this.state.getSnapshot() : {};
+      if (snap.subRxEnabled && snap.activeTxVfo === 'B') return 'B';
+      return 'A';
+    }
+
+    /**
+     * Zero-beat CW Auto-Spot (`SP3;` for Main RX, `SP$3;` for Sub-RX). Emits zero RF and is allowed in RX-only.
+     * @param {'A'|'B'|null} [rx=null]
+     */
+    autoSpot(rx = null) {
+      const target = this._resolveTargetRx(rx);
+      const cmd = K4.CatCodec.builders.spot(3, target);
+      const freqQuery = target === 'B' ? 'FB;' : 'FA;';
+      const res = this.sendCat(cmd + freqQuery);
+      if (res.blocked.length === 0) {
+        this.state.applyParsedCat({ kind: 'spot', rx: target, mode: 3, value: 3 });
+      }
+      return res;
+    }
+
+    /**
+     * Set CW Spot Tone mode (`SP0;` off, `SP1;` fixed tone, `SP2;` CW pitch tone).
+     * Per K4 Rev D4, spot tone commands apply to Main RX (`SP0..SP2;`); Sub-RX only accepts `SP$3;`.
+     * @param {number} [mode=1]
+     * @param {'A'|'B'} [rx='A']
+     */
+    setSpotTone(mode = 1, _rx = 'A') {
+      const m = clamp(Math.round(Number.isFinite(Number(mode)) ? Number(mode) : 1), 0, 2);
+      const cmd = K4.CatCodec.builders.spot(m, 'A');
+      const res = this.sendCat(cmd + 'SP;');
+      if (res.blocked.length === 0) {
+        this.state.applyParsedCat({ kind: 'spot', rx: 'A', mode: m, value: m });
+      }
+      return res;
     }
 
     /**
@@ -1578,6 +1752,22 @@
     }
 
     /**
+     * Copy or swap VFO A / VFO B parameters (`AB0..AB5;`).
+     * 0: A->B freq, 1: B->A freq, 2: A<->B freq swap,
+     * 3: A->B all, 4: B->A all, 5: A<->B all swap.
+     * @param {number} [code=3]
+     */
+    vfoCopy(code = 3) {
+      const c = Number.isFinite(Number(code)) ? clamp(Math.round(Number(code)), 0, 5) : 3;
+      const query = c <= 2 ? 'FA;FB;' : 'FA;FB;MD;MD$;DT;DT$;BW;BW$;IS;IS$;FT;';
+      const res = this.sendCat(K4.CatCodec.builders.vfoCopy(c) + query);
+      if (res.blocked.length === 0) {
+        this.state.applyParsedCat({ kind: 'vfoCopy', rx: null, mode: c });
+      }
+      return res;
+    }
+
+    /**
      * Configure Quick Split: copy VFO A -> B (AB3), tune VFO B to FA + offsetHz, and enable FT1.
      * @param {number} [offsetHz=1000]
      */
@@ -1589,19 +1779,14 @@
         K4.CatCodec.builders.vfoCopy(3) +
         K4.CatCodec.builders.freq('B', targetHz) +
         K4.CatCodec.builders.split(true) +
-        'FB;MD$;FT;';
+        'FB;MD$;DT$;BW$;IS$;FT;';
       const res = this.sendCat(cmd);
       if (res.blocked.length === 0) {
-        this.state.updateRx(
-          'B',
-          {
-            freqHz: targetHz,
-            mode: snap.rxA ? snap.rxA.mode : undefined,
-            dataSubMode: snap.rxA ? snap.rxA.dataSubMode : undefined,
-          },
-          'rxB.freqHz'
-        );
-        this.state.update({ splitEnabled: true, activeTxVfo: 'B' }, 'splitEnabled');
+        this.state.batch(() => {
+          this.state.applyParsedCat({ kind: 'vfoCopy', rx: null, mode: 3 });
+          this.state.updateRx('B', { freqHz: targetHz }, 'rxB.freqHz');
+          this.state.update({ splitEnabled: true, activeTxVfo: 'B' }, 'splitEnabled');
+        });
       }
       return res;
     }

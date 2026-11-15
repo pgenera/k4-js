@@ -140,6 +140,7 @@
       ifCenterHz: null,
       ritOn: false,
       ritOffsetHz: 0,
+      spotMode: 0,
       band: bandForFreq(defaultFreqHz),
     };
   }
@@ -200,13 +201,14 @@
         radioId: '',
         serial: '',
       },
-      operatingPolicy: 'rx-only',
-      txPosture: 'rx-only',
+      operatingPolicy: 'tx-enabled',
+      txPosture: 'tx-armed',
       pttHeld: false,
       txActive: false,
       txTestMode: false,
       txInhibit: false,
       cwPitchHz: 500,
+      spotTone: 0,
       subRxEnabled: false,
       splitEnabled: false,
       xitEnabled: false,
@@ -279,6 +281,17 @@
       this._nextTextId = 0;
       this._lastNonZeroTuneSwr = null;
       this._sensorHistory = [];
+      this._batchDepth = 0;
+      this._batchKeys = new Set();
+      this._decodedTextDirty = true;
+      this._decodedTextCache = [];
+      this._perf = {
+        emits: 0,
+        batchedEmits: 0,
+        suppressedEmits: 0,
+        snapshotCalls: 0,
+        decodedTextCopies: 0,
+      };
       if (initial && typeof initial === 'object') {
         if (initial.rxA) Object.assign(this._state.rxA, initial.rxA);
         if (initial.rxB) Object.assign(this._state.rxB, initial.rxB);
@@ -326,6 +339,12 @@
      * @returns {Object}
      */
     getSnapshot() {
+      this._perf.snapshotCalls++;
+      if (this._decodedTextDirty) {
+        this._decodedTextCache = this._state.decodedText.map((d) => ({ ...d }));
+        this._decodedTextDirty = false;
+        this._perf.decodedTextCopies++;
+      }
       return {
         rxA: Object.assign({}, this._state.rxA),
         rxB: Object.assign({}, this._state.rxB),
@@ -337,6 +356,7 @@
         txTestMode: this._state.txTestMode,
         txInhibit: this._state.txInhibit,
         cwPitchHz: this._state.cwPitchHz,
+        spotTone: this._state.spotTone,
         subRxEnabled: this._state.subRxEnabled,
         splitEnabled: this._state.splitEnabled,
         xitEnabled: this._state.xitEnabled,
@@ -394,9 +414,41 @@
         encodeMode: this._state.encodeMode,
         streamingLatency: this._state.streamingLatency,
         telemetry: Object.assign({}, this._state.telemetry),
-        decodedText: this._state.decodedText.map((d) => ({ ...d })),
+        decodedText: this._decodedTextCache,
         band: this._state.band,
       };
+    }
+
+    /**
+     * Return lightweight batching/snapshot performance counters.
+     * @returns {{ emits: number, batchedEmits: number, suppressedEmits: number, snapshotCalls: number, decodedTextCopies: number }}
+     */
+    getPerf() {
+      return Object.assign({}, this._perf);
+    }
+
+    /**
+     * Suppress intermediate 'change' emissions while executing `fn()`, then
+     * emit a single batched 'change' event with `(snapshot, primaryKey, changedKeysSet)`
+     * when the outermost batch exits (safe for nested calls).
+     * @param {Function} fn
+     * @returns {*}
+     */
+    batch(fn) {
+      this._batchDepth++;
+      try {
+        return fn();
+      } finally {
+        this._batchDepth--;
+        if (this._batchDepth === 0 && this._batchKeys.size > 0) {
+          const keys = this._batchKeys;
+          this._batchKeys = new Set();
+          const primaryKey = keys.size === 1 ? keys.values().next().value : 'batch';
+          this._perf.emits++;
+          this._perf.batchedEmits++;
+          this.emit('change', this.getSnapshot(), primaryKey, keys);
+        }
+      }
     }
 
     /**
@@ -417,17 +469,31 @@
     }
 
     _emitChange(changedKey) {
-      this.emit('change', this.getSnapshot(), changedKey);
+      const key = changedKey || 'state';
+      if (this._batchDepth > 0) {
+        this._batchKeys.add(key);
+        this._perf.suppressedEmits++;
+        return;
+      }
+      this._perf.emits++;
+      this.emit('change', this.getSnapshot(), key, new Set([key]));
     }
 
     /**
      * Merge a partial update into connection metadata and notify subscribers.
      * @param {Object} patch
+     * @param {string} [changedKey]
      */
-    updateConnection(patch) {
+    updateConnection(patch, changedKey) {
       if (!patch || typeof patch !== 'object') return;
       Object.assign(this._state.connection, patch);
-      this._emitChange('connection');
+      if (changedKey) {
+        this._emitChange(changedKey);
+        return;
+      }
+      const keys = Object.keys(patch);
+      const key = keys.length === 1 && keys[0] === 'rttMs' ? 'connection.rttMs' : 'connection';
+      this._emitChange(key);
     }
 
     /**
@@ -573,6 +639,9 @@
      */
     update(patch, changedKey) {
       if (!patch || typeof patch !== 'object') return;
+      if (Object.prototype.hasOwnProperty.call(patch, 'decodedText')) {
+        this._decodedTextDirty = true;
+      }
       Object.assign(this._state, patch);
       this._emitChange(changedKey || Object.keys(patch)[0] || 'state');
     }
@@ -615,6 +684,7 @@
     clearDecodedText() {
       if (this._state.decodedText.length === 0) return;
       this._state.decodedText = [];
+      this._decodedTextDirty = true;
       this._emitChange('decodedText');
     }
 
@@ -1025,7 +1095,7 @@
 
         case 'txMeters': {
           const m = this._state.txMeters;
-          const fwdWatts = this._state.powerRange === 'L' ? parsed.fwdRaw / 10 : parsed.fwdRaw;
+          const fwdWatts = this._state.powerRange === 'H' ? parsed.fwdRaw : parsed.fwdRaw / 10;
           const swr = parsed.swrTenths > 0 ? parsed.swrTenths / 10 : 0;
           const active = Boolean(
             this._state.txActive ||
@@ -1093,6 +1163,11 @@
             if (!prevTuning) {
               this._lastNonZeroTuneSwr = null;
             }
+            if (parsed.tuneState === 3) {
+              this._state.atuSearchWindowUntil = Date.now() + 5000;
+            } else if (parsed.tuneState === 4) {
+              this._state.atuSearchWindowUntil = 0;
+            }
           } else {
             if (prevTuning && (prevKind === 3 || prevKind === 4)) {
               const matched =
@@ -1106,7 +1181,11 @@
               this._state.atuLastTunedFreqHz = this._state[txVfoKey].freqHz;
               if (prevKind === 3) {
                 this._state.atuSearchWindowUntil = Date.now() + 5000;
+              } else {
+                this._state.atuSearchWindowUntil = 0;
               }
+            } else {
+              this._state.atuSearchWindowUntil = 0;
             }
             this._state.atuTuning = false;
             this._state.atuTuneKind = null;
@@ -1116,6 +1195,88 @@
             }
           }
           this._emitChange('atuTuning');
+          return true;
+        }
+
+        case 'spot': {
+          const modeVal = Number.isFinite(parsed.mode) ? parsed.mode : parsed.value;
+          if (!Number.isFinite(modeVal)) return false;
+          if (parsed.rx === 'B') {
+            this._state.rxB.spotMode = modeVal;
+            this._emitChange('rxB.spotMode');
+          } else {
+            this._state.rxA.spotMode = modeVal;
+            if (modeVal >= 0 && modeVal <= 2) {
+              this._state.spotTone = modeVal;
+              this._emitChange('spotTone');
+            } else {
+              this._emitChange('rxA.spotMode');
+            }
+          }
+          return true;
+        }
+
+        case 'vfoCopy': {
+          const m = parsed.mode;
+          const a = this._state.rxA;
+          const b = this._state.rxB;
+          const SLICE_FIELDS = [
+            'freqHz',
+            'mode',
+            'dataSubMode',
+            'bwHz',
+            'ifShiftHz',
+            'preamp',
+            'attDb',
+            'nbOn',
+            'nbLevel',
+            'nrOn',
+            'nrMode',
+            'nrLevel',
+            'lmsNrOn',
+            'lmsNrLevel',
+            'ssnrOn',
+            'ssnrLevel',
+            'lmsNrLastUsed',
+            'ssnrLastUsed',
+            'notchAuto',
+            'notchManual',
+            'notchFreqHz',
+            'apfOn',
+            'apfBwIdx',
+            'spotMode',
+            'band',
+          ];
+          if (m === 0) {
+            b.freqHz = a.freqHz;
+            b.band = bandForFreq(b.freqHz);
+          } else if (m === 1) {
+            a.freqHz = b.freqHz;
+            a.band = bandForFreq(a.freqHz);
+            this._state.band = a.band;
+          } else if (m === 2) {
+            const tmpFreq = a.freqHz;
+            a.freqHz = b.freqHz;
+            b.freqHz = tmpFreq;
+            a.band = bandForFreq(a.freqHz);
+            b.band = bandForFreq(b.freqHz);
+            this._state.band = a.band;
+          } else if (m === 3) {
+            for (const f of SLICE_FIELDS) b[f] = a[f];
+          } else if (m === 4) {
+            for (const f of SLICE_FIELDS) a[f] = b[f];
+            this._state.band = a.band;
+          } else if (m === 5) {
+            for (const f of SLICE_FIELDS) {
+              const tmp = a[f];
+              a[f] = b[f];
+              b[f] = tmp;
+            }
+            this._state.band = a.band;
+          } else {
+            return false;
+          }
+          this._emitChange('vfoCopy');
           return true;
         }
 
@@ -1278,6 +1439,7 @@
               this._state.decodedText.length - MAX_DECODED_TEXT
             );
           }
+          this._decodedTextDirty = true;
           this._emitChange('decodedText');
           return true;
         }

@@ -347,6 +347,8 @@
     }),
     makeRxParser('AP$', (arg, rx) => parseApf(arg, rx)),
     makeRxParser('AP', (arg, rx) => parseApf(arg, rx)),
+    makeRxParser('SP$', (arg, rx) => parseSpot(arg, rx)),
+    makeRxParser('SP', (arg, rx) => parseSpot(arg, rx)),
     makeRxParser('BN$', (arg, rx) => parseBand(arg, rx)),
     makeRxParser('BN', (arg, rx) => parseBand(arg, rx)),
     makeRxParser('TD$', (arg, rx) => parseTextDecode(arg, rx)),
@@ -714,7 +716,7 @@
     const m = t.match(/^(\d{1,3})([LHX]?)$/);
     if (!m) return null;
     const raw = parseInt(m[1], 10);
-    const r = m[2] || 'L';
+    const r = m[2] || (raw > 100 ? 'H' : 'L');
     const powerWatts = r === 'H' ? raw : raw / 10;
     return { kind: 'powerControl', rx: null, powerWatts, powerRange: r };
   }
@@ -871,6 +873,12 @@
       apfOn: t[0] === '1',
       apfBwIdx: t.length >= 2 ? parseInt(t[1], 10) : 0,
     };
+  }
+
+  function parseSpot(arg, rx) {
+    const v = parseIntStrict(arg);
+    if (v === null || v < 0 || v > 3) return null;
+    return { kind: 'spot', rx, mode: v, value: v };
   }
 
   function parseBand(arg, rx) {
@@ -1193,12 +1201,18 @@
       return 'PO' + (on ? '1' : '0') + ';';
     },
     power(watts, range) {
-      const r = range ? String(range).toUpperCase() : (Number(watts) <= 10 ? 'L' : 'H');
+      const numWatts = Number.isFinite(Number(watts)) ? Number(watts) : 10;
+      const explicitRange =
+        range !== undefined && range !== null && String(range).trim() !== ''
+          ? String(range).trim().toUpperCase()
+          : null;
+      const r = explicitRange || (numWatts <= 10 ? 'L' : 'H');
       if (r === 'L' || r === 'X') {
-        const tenths = Math.round(clamp(Number(watts), 0.1, 10.0) * 10);
+        const tenths = Math.round(clamp(numWatts, 0.1, 10.0) * 10);
         return 'PC' + String(tenths).padStart(3, '0') + r + ';';
       }
-      const w = Math.round(clamp(Number(watts), 1, 110));
+      const minHigh = explicitRange === 'H' ? 1 : 11;
+      const w = Math.round(clamp(numWatts, minHigh, 110));
       return 'PC' + String(w).padStart(3, '0') + 'H;';
     },
     txAntenna(port) {
@@ -1218,11 +1232,22 @@
     atuTune(kind = 3) {
       return 'TU' + clamp(Math.round(Number(kind)), 0, 4) + ';';
     },
+    /**
+     * Build CW Spot / Auto-Spot command (`SP0..3;` Main RX, `SP$3;` Sub-RX Auto-Spot).
+     * Per K4 Rev D4 only `SP$3;` is valid on Sub-RX; `SP0..2;` control Main RX Spot Tone.
+     * @param {number} [mode=3] - 0: Spot off, 1: Fixed tone, 2: CW pitch tone, 3: Auto-Spot
+     * @param {'A'|'B'} [rx='A']
+     */
+    spot(mode = 3, rx = 'A') {
+      const m = Number.isFinite(Number(mode)) ? clamp(Math.round(Number(mode)), 0, 3) : 3;
+      return 'SP' + (rx === 'B' ? '$' : '') + m + ';';
+    },
     split(on) {
       return 'FT' + (on ? '1' : '0') + ';';
     },
     vfoCopy(mode = 3) {
-      return 'AB' + clamp(Math.round(Number(mode)), 0, 5) + ';';
+      const m = Number.isFinite(Number(mode)) ? Number(mode) : 3;
+      return 'AB' + clamp(Math.round(m), 0, 5) + ';';
     },
     xit(on) {
       return 'XT' + (on ? '1' : '0') + ';';

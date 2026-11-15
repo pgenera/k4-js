@@ -79,9 +79,6 @@
     'VOX',
     '#TX',
     '#CAL',
-    'SP1',
-    'SP2',
-    'SP3',
     'ACT',
     'KZL',
     'KZF',
@@ -138,6 +135,8 @@
     'RRN',
     'DNB',
     'UPB',
+    'AB',
+    'SP',
     'FA',
     'FB',
     'MD',
@@ -276,7 +275,6 @@
 
     if (
       cmdUpper === 'RX' ||
-      cmdUpper === 'SP0' ||
       cmdUpper === 'ID' ||
       cmdUpper === 'OM' ||
       cmdUpper === 'SN' ||
@@ -317,10 +315,6 @@
       /^SI(?:FP|RF|DA|DD|DU|RC)[01]$/.test(cmdUpper)
     ) {
       return { allowed: true, reason: null };
-    }
-
-    if (cmdUpper.startsWith('SP')) {
-      return { allowed: false, reason: 'TX spot/sidetone command blocked in rx-only mode' };
     }
 
     for (let i = 0; i < BLOCKED_PREFIXES.length; i++) {
