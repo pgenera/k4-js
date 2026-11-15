@@ -95,3 +95,4 @@ When `policy === 'rx-only'`:
   6. **Default-deny fallback**: any unrecognized command (including SET forms of GET-only commands like `AN1;`, `FT1;`, `IDW6ELE;`, `PP` SET, unknown `#*`, or `VC$12;`) is blocked.
   - Return `{ allowed: string[], blocked: string[], sanitized: string }`. Every blocked command increments `stats.blockedCatCount`, appends to `stats.recentBlocked` (max 25), and emits `'blocked'`.
 - `inspectBinary(typeByte)`: in `'rx-only'`, ONLY allow `typeByte === 0x00` (CAT). Block `0x01` (outbound TX audio) and any other non-`0x00` byte, increment `stats.blockedBinaryCount`, record in `stats.recentBlocked`, emit `'blocked'`.
+- See [07-transmit-and-atu.md](./07-transmit-and-atu.md) for `'tx-enabled'` runtime allow/deny rules (`setPolicy`, `setTxAudioAllowed`, permanent destructive command blocklist, `KY` case preservation), TX/ATU/sensor GET additions in `'rx-only'`, and outbound `K4.BinaryPackets.encodeAudio` wire framing.

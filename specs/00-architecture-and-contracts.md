@@ -120,6 +120,8 @@ Every class and helper signature referenced across boundaries MUST match these e
 - `audioEngine.pushPacket(audioPkt)` -> decodes via `PcmDecoder` (`EM0`/`EM1`) or `OpusPacketDecoder` (`EM2`/`EM3`), applies `32.0` calibrated gain + soft limiter, resamples into stereo ring buffer, and taps 12 kHz PCM into AF FFT & WAV clip recorder.
 - `audioEngine.getAfSpectrum(maxHz = 3200)` -> `{ binsDb, binHz, sampleRate, maxHz, hasSignal }`; `startRecording()`, `stopRecording()`, `isRecording()`, `getRecordingStatus()`, and `K4.encodeWavPcm16(...)`.
 
+- **Transmit, Sensors, ATU & Cert-Free Localhost Dev**: See [07-transmit-and-atu.md](./07-transmit-and-atu.md) for the complete TX posture/safety contract (`'rx-only'` default, `'tx-test'` `TS1`, `'tx-armed'` `TS0`, hold-only PTT + Spacebar), `RxOnlyGate` TX allow/deny policy, `K4.BinaryPackets.encodeAudio`, `RadioState` & `K4.Client` TX/ATU/sensor APIs, `AudioEngine` TX sources (`mic` / `two-tone` / `tone-1k` / `wav`), Panadapter TX passband overlay, and UI `data-testid` contracts.
+
 ### Stable `data-testid` Attributes for UI & E2E Tests (`ui` & `sim-deploy`)
 - `[data-testid="conn-btn"]` (top bar connection status pill)
 - `[data-testid="conn-dialog"]`, `[data-testid="ws-url-input"]`, `[data-testid="password-input"]`, `[data-testid="connect-submit"]`, `[data-testid="disconnect-btn"]`

@@ -46,3 +46,6 @@ K4 streaming audio arrives `32×` (`~30 dB`) below full scale (`K4_GAIN_BOOST = 
 - Decoded 12 kHz stereo PCM frames (from both `EM0`/`EM1` PCM and WebCodecs `EM2`/`EM3` `AudioData` outputs, downsampled/tapped prior to mute attenuation) feed both an internal 1024-sample mono FFT ring buffer and an active stereo `.wav` clip buffer, working identically even when WebAudio `AudioContext` is suspended or muted.
 - `getAfSpectrum(maxHz = 3200)` computes a Hann-windowed 1024-point radix-2 FFT and returns `{ binsDb: Float32Array, binHz, sampleRate: 12000, maxHz, hasSignal }`.
 - `K4.encodeWavPcm16(chunks, totalFrames, sampleRate = 12000, channels = 2)` writes a standard 44-byte RIFF/WAVE PCM16 buffer; `startRecording(meta)`, `stopRecording()`, `isRecording()`, and `getRecordingStatus()` enforce a 300 s capture safety ceiling and return `{ wavBytes, blob, durationSec, sampleRate, channels, totalFrames, filename }`.
+
+## 6. Outbound TX Audio Capture & Cert-Free Localhost Dev
+- See [07-transmit-and-atu.md](./07-transmit-and-atu.md) Section 5 for outbound `EM1` S16LE (`12 kHz`) TX capture (`mic`, `two-tone`, `tone-1k`, `wav`), `setTxPacketHandler`, input VU/soft-limiter, and `http://localhost:9280` zero-cert Secure Context architecture.
