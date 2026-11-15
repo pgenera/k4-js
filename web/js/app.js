@@ -280,7 +280,7 @@
 
       const tHead = el('div', 'k4-ticker-header');
       const tSum = el('div', 'k4-ticker-summary');
-      this._tickerBadge = el('span', 'k4-ticker-badge', 'TB$ TEXT');
+      this._tickerBadge = el('span', 'k4-ticker-badge', 'DECODE');
       this._tickerPreview = el('span', 'k4-ticker-preview', 'Waiting for decoded CW / RTTY / PSK...');
       tSum.appendChild(this._tickerBadge);
       tSum.appendChild(this._tickerPreview);
@@ -1311,13 +1311,31 @@
 
     _renderDecodedText(entries) {
       const list = Array.isArray(entries) ? entries : [];
-      const last = list.length > 0 ? list[list.length - 1] : null;
-      const sig = `${list.length}:${last ? `${last.rx}:${last.text}` : ''}`;
+      const start = Math.max(0, list.length - 60);
+      let sig = String(list.length);
+      for (let i = start; i < list.length; i++) {
+        const e = list[i];
+        const t = e && typeof e.text === 'string' ? e.text : '';
+        sig += `|${e ? e.id : ''}:${e ? e.rx : ''}:${t.length}:${t.slice(-8)}`;
+      }
       if (sig === this._lastDecodedSignature) return;
       this._lastDecodedSignature = sig;
 
-      this._tickerBadge.textContent = list.length > 0 ? `TB$ TEXT (${list.length})` : 'TB$ TEXT';
-      this._tickerPreview.textContent = last ? `[${last.rx || 'A'}] ${last.text}` : 'Waiting for decoded CW / RTTY / PSK...';
+      this._tickerBadge.textContent = 'DECODE';
+      let latest = list.length > 0 ? list[list.length - 1] : null;
+      for (let i = start; i < list.length; i++) {
+        const e = list[i];
+        if (e && latest && Number(e.timestamp || 0) > Number(latest.timestamp || 0)) {
+          latest = e;
+        }
+      }
+      if (latest) {
+        const latestText = typeof latest.text === 'string' ? latest.text : String(latest.text || '');
+        const previewTxt = latestText.length > 44 ? '…' + latestText.slice(-44) : latestText;
+        this._tickerPreview.textContent = `[${latest.rx || 'A'}] ${previewTxt}`;
+      } else {
+        this._tickerPreview.textContent = 'Waiting for decoded CW / RTTY / PSK...';
+      }
 
       if (
         list.length > this._lastTickerCount &&
@@ -1332,7 +1350,6 @@
       this._lastTickerCount = list.length;
 
       this._tickerBody.textContent = '';
-      const start = Math.max(0, list.length - 60);
       for (let i = start; i < list.length; i++) {
         const entry = list[i];
         const line = el('div', 'k4-ticker-line');

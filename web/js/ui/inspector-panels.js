@@ -210,7 +210,7 @@
       selectEl.value = targetVal;
     }
     selectEl.disabled = !desc.supported;
-    selectEl.title = desc.reason || 'Text Decode Mode (TD / TD$)';
+    selectEl.title = desc.reason || 'Text Decode Mode';
     return desc;
   }
 
@@ -497,7 +497,7 @@
       pane.appendChild(modeCard);
 
       // Tuning Step
-      const stepCard = makeCard('Tuning Step (VT)');
+      const stepCard = makeCard('Tuning Step');
       const stepGrid = el('div', 'k4-pill-grid');
       this._refs.stepBtns = [];
       for (let i = 0; i < STEP_LABELS.length; i++) {
@@ -961,7 +961,7 @@
       ritApfCard.appendChild(apfSeg);
       pane.appendChild(ritApfCard);
 
-      const tdCard = makeCard('CW / DATA Text Decode (TD)');
+      const tdCard = makeCard('CW / Data Text Decode');
       const tdRow = el('div', 'k4-decode-row');
       const tdSelect = document.createElement('select');
       tdSelect.className = 'k4-select';
