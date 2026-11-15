@@ -352,14 +352,23 @@ func (s *SimServer) handleConn(ctx context.Context, conn net.Conn) {
 					lastOvB = ovB
 					sb.WriteString(fmt.Sprintf("OV$%d0;", ovB))
 				}
-				// Emit TB/TB$ quickly at startup (tick 2) and every 2.5s thereafter when near beacon
+				// Emit TB/TB$ startup semicolon line at tick 2, then stream 1 char/tick from tick 6 onward.
 				txBufDigit := s.radio.TxBufferDigit()
-				if tickCount == 2 || tickCount%10 == 0 {
+				if tickCount == 2 {
 					if NearBeacon(rxA.FreqHz) {
 						sb.WriteString(fmt.Sprintf("TB%d20CQ DE W6ELE K ; 73 ;;", txBufDigit))
 					}
 					if NearBeacon(rxB.FreqHz) {
 						sb.WriteString(fmt.Sprintf("TB$%d20CQ DE W6ELE K ; 73 ;;", txBufDigit))
+					}
+				} else if tickCount >= 6 {
+					const cwBeaconStream = "\nCQ DE W6ELE K ; 73 ;"
+					ch := cwBeaconStream[(tickCount-6)%len(cwBeaconStream)]
+					if rxA.TextDecodeMode > 0 && NearBeacon(rxA.FreqHz) {
+						sb.WriteString(fmt.Sprintf("TB%d01%c;", txBufDigit, ch))
+					}
+					if subRx && rxB.TextDecodeMode > 0 && NearBeacon(rxB.FreqHz) {
+						sb.WriteString(fmt.Sprintf("TB$%d01%c;", txBufDigit, ch))
 					}
 				}
 				if tickCount == 2 || tickCount%4 == 0 || s.radio.IsTxOrAtuActive() {
