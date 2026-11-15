@@ -53,7 +53,6 @@ var validAudioMixes = map[string]bool{
 var permanentBlockedPrefixes = []string{
 	"DARM", "DARS", "DAPM", "DAMP", "DARC",
 	"#TX", "MOX", "VOX", "SWT", "SWH",
-	"SP1", "SP2", "SP3",
 	"RRP", "RRC", "RRT",
 	"#CAL", "EE", "LB", "WM", "PS", "RS", "EC", "SW",
 }
@@ -62,7 +61,7 @@ const (
 	omOptionModuleStr    = "OM AP-S----4---;"
 	autoRefNoiseFloorDbm = -115
 	rvModulesStr         = "RV.DDC0-00.65 (0:35);RV.DUC-00.45 (1:18);RV.FP-03.57;RV.DSP-01.69;RV.RFB-00.78;RV.REF-00.20;RV.DAP-00.29;RV.KSRV-2016;RV.KUI-1801;RV.KUP-646;RV.KCFG-78;RV.R-R40.B1;"
-	medfSampleStr     = "MEDF0001,Speaker%2C Internal,AUDIO,BIN,0,0,1,1,0,1,OFF,ON;" +
+	medfSampleStr        = "MEDF0001,Speaker%2C Internal,AUDIO,BIN,0,0,1,1,0,1,OFF,ON;" +
 		"MEDF0002,TX ALC,TX,BIN,1,0,1,1,1,1,OFF,ON;" +
 		"MEDF0004,KAT4 ATU Option,TX,DEC,1,0,3,2,2,1,NOT_INST,BYPASS,AUTO,TEST;" +
 		"MEDF0005,KRX4 2ND RX Option,RX,BIN,1,0,1,0,0,1,NOT_INST,ENABLED;" +
@@ -74,38 +73,38 @@ const (
 )
 
 type RxState struct {
-	FreqHz            int64
-	Mode              int
-	DataSubMode       int
-	BwHz              int
-	IfShiftHz         int
-	StepIdx           int
-	StepMode          int
-	Locked            bool
-	Preamp            int
-	PreampOn          bool
-	AttenDb           int
-	AttenOn           bool
-	AfGain            int
-	RfGainDb          int
-	Squelch           int
-	NbOn              bool
-	NbLevel           int
-	NrOn              bool
-	NrLevel           int
-	NrLastUsed        bool
-	NrsOn             bool
-	NrsLevel          int
-	NrsLastUsed       bool
-	NotchOn           bool
-	NotchHz           int
-	Agc               int
-	ApfOn             bool
-	ApfBwIdx          int
-	PanSpanHz         int
-	PanTierKHz        int
-	PanRefDbm         int
-	PanScaleDb        int
+	FreqHz              int64
+	Mode                int
+	DataSubMode         int
+	BwHz                int
+	IfShiftHz           int
+	StepIdx             int
+	StepMode            int
+	Locked              bool
+	Preamp              int
+	PreampOn            bool
+	AttenDb             int
+	AttenOn             bool
+	AfGain              int
+	RfGainDb            int
+	Squelch             int
+	NbOn                bool
+	NbLevel             int
+	NrOn                bool
+	NrLevel             int
+	NrLastUsed          bool
+	NrsOn               bool
+	NrsLevel            int
+	NrsLastUsed         bool
+	NotchOn             bool
+	NotchHz             int
+	Agc                 int
+	ApfOn               bool
+	ApfBwIdx            int
+	PanSpanHz           int
+	PanTierKHz          int
+	PanRefDbm           int
+	PanScaleDb          int
 	WfBlack             int
 	AutoRef             bool
 	FixedTune           bool
@@ -118,6 +117,9 @@ type RxState struct {
 	TextDecodeMode      int
 	TextDecodeThreshold int
 	TextDecodeLines     int
+	SpotToneActive      bool
+	SpotPulseActive     bool
+	SpotPulseUntil      float64
 }
 
 type atuMatchKey struct {
@@ -252,27 +254,27 @@ type Radio struct {
 
 func NewRadio() *Radio {
 	baseA := RxState{
-		FreqHz:      14074000,
-		Mode:        ModeDATA,
-		DataSubMode: 0,
-		BwHz:        2700,
-		IfShiftHz:   1500,
-		StepIdx:     1,
-		StepMode:    6,
-		Preamp:      0,
-		AttenDb:     0,
-		AfGain:      30,
-		RfGainDb:    0,
-		Squelch:     0,
-		NbLevel:     0,
-		NrOn:        false,
-		NrLevel:     0,
-		NrLastUsed:  false,
-		NrsOn:       false,
-		NrsLevel:    5,
-		NrsLastUsed: true,
-		NotchHz:     750,
-		Agc:         1,
+		FreqHz:              14074000,
+		Mode:                ModeDATA,
+		DataSubMode:         0,
+		BwHz:                2700,
+		IfShiftHz:           1500,
+		StepIdx:             1,
+		StepMode:            6,
+		Preamp:              0,
+		AttenDb:             0,
+		AfGain:              30,
+		RfGainDb:            0,
+		Squelch:             0,
+		NbLevel:             0,
+		NrOn:                false,
+		NrLevel:             0,
+		NrLastUsed:          false,
+		NrsOn:               false,
+		NrsLevel:            5,
+		NrsLastUsed:         true,
+		NotchHz:             750,
+		Agc:                 1,
 		PanSpanHz:           48000,
 		PanTierKHz:          SpectrumTierKHzWithHysteresis(48000, 0),
 		PanRefDbm:           autoRefNoiseFloorDbm,
@@ -429,7 +431,7 @@ func (r *Radio) IsTxOrAtuActive() bool {
 	return r.TxActive || r.AtuTuning
 }
 
-// ForceRx clears any active TX/ATU/DVR/keyer state safely (used on last socket disconnect).
+// ForceRx clears any active TX/ATU/DVR/keyer/spot state safely (used on last socket disconnect).
 func (r *Radio) ForceRx() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -440,6 +442,12 @@ func (r *Radio) ForceRx() {
 	r.KyQueue = ""
 	r.KyKeying = false
 	r.TxAudioEnv = 0
+	r.RxA.SpotToneActive = false
+	r.RxA.SpotPulseActive = false
+	r.RxA.SpotPulseUntil = 0
+	r.RxB.SpotToneActive = false
+	r.RxB.SpotPulseActive = false
+	r.RxB.SpotPulseUntil = 0
 }
 
 func (r *Radio) txVfoLocked() *RxState {
@@ -625,6 +633,9 @@ func (r *Radio) execPowerLocked(prefix, arg string) (string, bool) {
 		rangeCh = string(last)
 		numStr = arg[:len(arg)-1]
 	}
+	if !isAsciiDigits(numStr) || len(numStr) > 3 {
+		return "?;", false
+	}
 	v, err := strconv.Atoi(numStr)
 	if err != nil {
 		return "?;", false
@@ -784,9 +795,25 @@ func (r *Radio) HandleInboundAudio(payload []byte, tSec float64) {
 	r.TxAudioLastAt = tSec
 }
 
+func (r *Radio) advanceSpotLocked(tSec float64) bool {
+	expired := false
+	if r.RxA.SpotPulseActive && tSec >= r.RxA.SpotPulseUntil {
+		r.RxA.SpotPulseActive = false
+		r.RxA.SpotPulseUntil = 0
+		expired = true
+	}
+	if r.RxB.SpotPulseActive && tSec >= r.RxB.SpotPulseUntil {
+		r.RxB.SpotPulseActive = false
+		r.RxB.SpotPulseUntil = 0
+		expired = true
+	}
+	return expired && !r.RxA.SpotToneActive && !r.RxA.SpotPulseActive && !r.RxB.SpotPulseActive
+}
+
 func (r *Radio) advanceAsyncCompletionLocked(tSec float64) string {
 	kyDone := r.drainKeyerLocked(tSec)
 	atuDone, finalSwr := r.advanceAtuLocked(tSec)
+	spotDone := r.advanceSpotLocked(tSec)
 
 	var sb strings.Builder
 	if atuDone {
@@ -803,6 +830,9 @@ func (r *Radio) advanceAsyncCompletionLocked(tSec float64) string {
 		r.LastSwrTenths = 0
 		r.LastAlcBars = 0
 		sb.WriteString("TB000;KY0;TQ0;TQX0;TM000000000000;PO0000;")
+	}
+	if spotDone {
+		sb.WriteString("SP0;")
 	}
 	return sb.String()
 }
@@ -1069,7 +1099,11 @@ func (r *Radio) fullSnapshotLocked(tSec float64) string {
 	sb.WriteString(fmt.Sprintf("LK%d;", bool01(r.RxA.Locked)))
 	sb.WriteString(fmt.Sprintf("LK$%d;", bool01(r.RxB.Locked)))
 	sb.WriteString(fmt.Sprintf("SB%d;", bool01(r.SubRxEnabled)))
-	sb.WriteString("SP0;")
+	if r.RxA.SpotToneActive {
+		sb.WriteString("SP1;")
+	} else {
+		sb.WriteString("SP0;")
+	}
 	sb.WriteString(fmt.Sprintf("FT%d;", bool01(r.SplitEnabled)))
 	sb.WriteString(fmt.Sprintf("LN%d;", bool01(r.VfoLinked)))
 	sb.WriteString(formatPA("PA", r.RxA))
@@ -1579,11 +1613,7 @@ func (r *Radio) execSingleLocked(orig, upper string, tSec float64) string {
 		if arg != "" {
 			isSet = true
 			if hz, err := strconv.ParseInt(arg, 10, 64); err == nil {
-				oldCenter := r.RxA.FreqHz + r.RxA.PanCenterOffsetHz
-				r.RxA.FreqHz = clampInt64(hz, 100000, 54000000)
-				if r.RxA.FixedTune {
-					r.RxA.PanCenterOffsetHz = clampInt64(oldCenter-r.RxA.FreqHz, -5000000, 5000000)
-				}
+				r.setRxFreqLocked('A', hz)
 			}
 		}
 		resp = fmt.Sprintf("FA%011d;", r.RxA.FreqHz)
@@ -1592,11 +1622,7 @@ func (r *Radio) execSingleLocked(orig, upper string, tSec float64) string {
 		if arg != "" {
 			isSet = true
 			if hz, err := strconv.ParseInt(arg, 10, 64); err == nil {
-				oldCenter := r.RxB.FreqHz + r.RxB.PanCenterOffsetHz
-				r.RxB.FreqHz = clampInt64(hz, 100000, 54000000)
-				if r.RxA.FixedTune {
-					r.RxB.PanCenterOffsetHz = clampInt64(oldCenter-r.RxB.FreqHz, -5000000, 5000000)
-				}
+				r.setRxFreqLocked('B', hz)
 			}
 		}
 		resp = fmt.Sprintf("FB%011d;", r.RxB.FreqHz)
@@ -1683,11 +1709,42 @@ func (r *Radio) execSingleLocked(orig, upper string, tSec float64) string {
 			}
 		}
 		resp = fmt.Sprintf("SB%d;", bool01(r.SubRxEnabled))
-	case upper == "SP0":
-		return "SP0;"
 	case strings.HasPrefix(upper, "SP"):
-		// SP is SET-only in D4; bare SP; or invalid SP args return ?;
-		return "?;"
+		rx, _, arg := splitSubRx(upper, "SP")
+		if rx == 'B' {
+			// Per K4 Rev. D4, only SP$3 is valid on Sub-RX; SP$ and SP$0..2 return ?;
+			if arg != "3" {
+				return "?;"
+			}
+			return r.execAutoSpotLocked('B', tSec)
+		}
+		switch arg {
+		case "0":
+			isSet = true
+			r.RxA.SpotToneActive = false
+			r.RxA.SpotPulseActive = false
+			r.RxA.SpotPulseUntil = 0
+			r.RxB.SpotPulseActive = false
+			r.RxB.SpotPulseUntil = 0
+			resp = "SP0;"
+		case "1":
+			isSet = true
+			r.RxA.SpotToneActive = true
+			r.RxA.SpotPulseActive = false
+			r.RxA.SpotPulseUntil = 0
+			resp = "SP1;"
+		case "2":
+			isSet = true
+			r.RxA.SpotToneActive = false
+			r.RxA.SpotPulseActive = true
+			r.RxA.SpotPulseUntil = tSec + 0.50
+			resp = "SP2;"
+		case "3":
+			return r.execAutoSpotLocked('A', tSec)
+		default:
+			// SP is SET-only in D4; bare SP; or invalid SP args return ?;
+			return "?;"
+		}
 	case strings.HasPrefix(upper, "DV"):
 		arg := strings.TrimPrefix(upper, "DV")
 		if arg != "" {
@@ -1807,43 +1864,31 @@ func (r *Radio) execSingleLocked(orig, upper string, tSec float64) string {
 		if len(arg) != 1 || arg[0] < '0' || arg[0] > '5' {
 			return "?;"
 		}
-		isSet = true
 		r.TxCatCommands++
-		kind := arg[0] - '0'
-		if kind == 0 || kind == 1 || kind == 2 || kind == 3 || kind == 5 {
-			r.RxB.FreqHz = r.RxA.FreqHz
+		switch arg[0] {
+		case '0': // Copy VFO A frequency -> VFO B frequency
+			r.setRxFreqLocked('B', r.RxA.FreqHz)
+			return fmt.Sprintf("FB%011d;", r.RxB.FreqHz)
+		case '1': // Copy VFO B frequency -> VFO A frequency
+			r.setRxFreqLocked('A', r.RxB.FreqHz)
+			return fmt.Sprintf("FA%011d;", r.RxA.FreqHz)
+		case '2': // Swap VFO A <-> VFO B frequencies
+			freqA, freqB := r.RxA.FreqHz, r.RxB.FreqHz
+			r.setRxFreqLocked('A', freqB)
+			r.setRxFreqLocked('B', freqA)
+			return fmt.Sprintf("FA%011d;FB%011d;", r.RxA.FreqHz, r.RxB.FreqHz)
+		case '3': // Copy VFO A full slice params -> VFO B
+			copySliceParams(&r.RxB, &r.RxA, r.RxA.FixedTune)
+			return formatSliceCAT('B', r.RxB)
+		case '4': // Copy VFO B full slice params -> VFO A
+			copySliceParams(&r.RxA, &r.RxB, r.RxA.FixedTune)
+			return formatSliceCAT('A', r.RxA)
+		case '5': // Swap VFO A <-> VFO B full slice params
+			origA := r.RxA
+			copySliceParams(&r.RxA, &r.RxB, r.RxA.FixedTune)
+			copySliceParams(&r.RxB, &origA, r.RxA.FixedTune)
+			return formatSliceCAT('A', r.RxA) + formatSliceCAT('B', r.RxB)
 		}
-		if kind == 1 || kind == 2 || kind == 3 || kind == 5 {
-			r.RxB.Mode = r.RxA.Mode
-			r.RxB.DataSubMode = r.RxA.DataSubMode
-		}
-		if kind == 2 || kind == 3 || kind == 4 || kind == 5 {
-			r.RxB.BwHz = r.RxA.BwHz
-			r.RxB.IfShiftHz = r.RxA.IfShiftHz
-		}
-		if kind == 3 {
-			r.RxB.Preamp = r.RxA.Preamp
-			r.RxB.PreampOn = r.RxA.PreampOn
-			r.RxB.AttenDb = r.RxA.AttenDb
-			r.RxB.AttenOn = r.RxA.AttenOn
-			r.RxB.Agc = r.RxA.Agc
-			r.RxB.NbOn = r.RxA.NbOn
-			r.RxB.NbLevel = r.RxA.NbLevel
-			r.RxB.NrOn = r.RxA.NrOn
-			r.RxB.NrLevel = r.RxA.NrLevel
-			r.RxB.NrLastUsed = r.RxA.NrLastUsed
-			r.RxB.NrsOn = r.RxA.NrsOn
-			r.RxB.NrsLevel = r.RxA.NrsLevel
-			r.RxB.NrsLastUsed = r.RxA.NrsLastUsed
-			r.RxB.NotchOn = r.RxA.NotchOn
-			r.RxB.NotchHz = r.RxA.NotchHz
-			r.RxB.ApfOn = r.RxA.ApfOn
-			r.RxB.ApfBwIdx = r.RxA.ApfBwIdx
-		}
-		resp = fmt.Sprintf(
-			"FB%011d;MD$%d;DT$%d;BW$%04d;IS$%04d;",
-			r.RxB.FreqHz, r.RxB.Mode, r.RxB.DataSubMode, r.RxB.BwHz/10, r.RxB.IfShiftHz/10,
-		)
 	case strings.HasPrefix(upper, "XT"):
 		arg := strings.TrimPrefix(upper, "XT")
 		switch arg {
@@ -2643,6 +2688,87 @@ func (r *Radio) rxPtr(rx byte) *RxState {
 		return &r.RxB
 	}
 	return &r.RxA
+}
+
+func (r *Radio) setRxFreqLocked(rx byte, hz int64) {
+	target := r.rxPtr(rx)
+	oldCenter := target.FreqHz + target.PanCenterOffsetHz
+	target.FreqHz = clampInt64(hz, 100000, 54000000)
+	if r.RxA.FixedTune {
+		target.PanCenterOffsetHz = clampInt64(oldCenter-target.FreqHz, -5000000, 5000000)
+	}
+}
+
+func (r *Radio) execAutoSpotLocked(rx byte, tSec float64) string {
+	target := r.rxPtr(rx)
+	if target.Mode == ModeCW || target.Mode == ModeCWR {
+		if targetHz, ok := AutoSpotTargetHz(*target, r.CwPitchHz); ok {
+			r.setRxFreqLocked(rx, targetHz)
+		}
+		target.SpotPulseActive = true
+		target.SpotPulseUntil = tSec + 0.50
+	}
+	spCmd, freqPrefix := "SP3;", "FA"
+	if rx == 'B' {
+		spCmd, freqPrefix = "SP$3;", "FB"
+	}
+	if r.AiMode == 5 {
+		return fmt.Sprintf("%s%s%011d;", spCmd, freqPrefix, target.FreqHz)
+	}
+	return fmt.Sprintf("%s%011d;", freqPrefix, target.FreqHz)
+}
+
+func copySliceParams(dst, src *RxState, fixedTune bool) {
+	if fixedTune {
+		oldCenter := dst.FreqHz + dst.PanCenterOffsetHz
+		dst.PanCenterOffsetHz = clampInt64(oldCenter-src.FreqHz, -5000000, 5000000)
+	}
+	dst.FreqHz = src.FreqHz
+	dst.Mode = src.Mode
+	dst.DataSubMode = src.DataSubMode
+	dst.BwHz = src.BwHz
+	dst.IfShiftHz = src.IfShiftHz
+	dst.Preamp = src.Preamp
+	dst.PreampOn = src.PreampOn
+	dst.AttenDb = src.AttenDb
+	dst.AttenOn = src.AttenOn
+	dst.Agc = src.Agc
+	dst.NbOn = src.NbOn
+	dst.NbLevel = src.NbLevel
+	dst.NrOn = src.NrOn
+	dst.NrLevel = src.NrLevel
+	dst.NrLastUsed = src.NrLastUsed
+	dst.NrsOn = src.NrsOn
+	dst.NrsLevel = src.NrsLevel
+	dst.NrsLastUsed = src.NrsLastUsed
+	dst.NotchOn = src.NotchOn
+	dst.NotchHz = src.NotchHz
+	dst.ApfOn = src.ApfOn
+	dst.ApfBwIdx = src.ApfBwIdx
+}
+
+func formatSliceCAT(rx byte, s RxState) string {
+	dollar := ""
+	freqPrefix := "FA"
+	if rx == 'B' {
+		dollar = "$"
+		freqPrefix = "FB"
+	}
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("%s%011d;", freqPrefix, s.FreqHz))
+	sb.WriteString(fmt.Sprintf("MD%s%d;", dollar, s.Mode))
+	sb.WriteString(fmt.Sprintf("DT%s%d;", dollar, s.DataSubMode))
+	sb.WriteString(fmt.Sprintf("BW%s%04d;", dollar, s.BwHz/10))
+	sb.WriteString(fmt.Sprintf("IS%s%04d;", dollar, s.IfShiftHz/10))
+	sb.WriteString(formatPA("PA"+dollar, s))
+	sb.WriteString(formatRA("RA"+dollar, s))
+	sb.WriteString(fmt.Sprintf("NB%s%03d%d;", dollar, s.NbLevel, bool01(s.NbOn)))
+	sb.WriteString(fmt.Sprintf("NR%s%02d%d;", dollar, s.NrLevel, nrModeDigit(s.NrOn, s.NrLastUsed)))
+	sb.WriteString(fmt.Sprintf("NRS%s%02d%d;", dollar, s.NrsLevel, nrModeDigit(s.NrsOn, s.NrsLastUsed)))
+	sb.WriteString(fmt.Sprintf("NM%s%04d%d;", dollar, s.NotchHz, bool01(s.NotchOn)))
+	sb.WriteString(fmt.Sprintf("GT%s%d;", dollar, s.Agc))
+	sb.WriteString(fmt.Sprintf("AP%s%d%d;", dollar, bool01(s.ApfOn), s.ApfBwIdx))
+	return sb.String()
 }
 
 func splitSubRx(upper, base string) (rx byte, prefix string, arg string) {

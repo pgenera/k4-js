@@ -95,16 +95,16 @@ func TestRadioCATAndTxGateTracking(t *testing.T) {
 		t.Fatalf("SL query = %q, want SL4;", slReply)
 	}
 
-	// Verify TX/tune/keyer/PC/SW blocked & tracked, while RX; and SP0; pass
-	okReply, _ := r.HandleCAT("RX;SP0;", 1.0)
+	// Verify TX/tune/keyer/PC/SW blocked & tracked, while RX; and SP0..3;/SP$3; pass (zero RF emitted)
+	okReply, _ := r.HandleCAT("RX;SP0;SP1;SP2;SP3;SP$3;SP0;", 1.0)
 	if strings.Contains(okReply, "?") {
-		t.Fatalf("RX;/SP0; should be allowed, got %q", okReply)
+		t.Fatalf("RX;/SP0..3;/SP$3; should be allowed in RX-only, got %q", okReply)
 	}
 	if r.Stats().TxBlockedViolations != 0 {
 		t.Fatalf("expected 0 violations, got %d", r.Stats().TxBlockedViolations)
 	}
 
-	txCmds := []string{"TX;", "TU1;", "KY CQ;", "PC050;", "SW11;", "SP1;"}
+	txCmds := []string{"TX;", "TU1;", "KY CQ;", "PC050;", "SW11;"}
 	for _, cmd := range txCmds {
 		rep, _ := r.HandleCAT(cmd, 1.0)
 		if rep != "?;" {
@@ -115,8 +115,8 @@ func TestRadioCATAndTxGateTracking(t *testing.T) {
 	if st.TxBlockedViolations != int64(len(txCmds)) {
 		t.Fatalf("TxBlockedViolations = %d, want %d", st.TxBlockedViolations, len(txCmds))
 	}
-	if st.LastBlockedTxCmd != "SP1" {
-		t.Fatalf("LastBlockedTxCmd = %q, want SP1", st.LastBlockedTxCmd)
+	if st.LastBlockedTxCmd != "SW11" {
+		t.Fatalf("LastBlockedTxCmd = %q, want SW11", st.LastBlockedTxCmd)
 	}
 }
 
@@ -828,11 +828,13 @@ func TestTxCatCommandsAndSafetyInhibitAndIF(t *testing.T) {
 		t.Fatalf("VOX/keyer config reply = %q", rep)
 	}
 
-	// AB3 copies VFO A params to VFO B
+	// AB3 copies VFO A params to VFO B and broadcasts all changed slice CAT frames
 	r.HandleCAT("FA00007074000;MD2;BW0240;IS0150;PA21;", 0.0)
 	abRep, _ := r.HandleCAT("AB3;", 0.0)
-	if abRep != "FB00007074000;MD$2;DT$0;BW$0240;IS$0150;" {
-		t.Fatalf("AB3 reply = %q", abRep)
+	for _, tok := range []string{"FB00007074000;", "MD$2;", "DT$0;", "BW$0240;", "IS$0150;", "PA$21;"} {
+		if !strings.Contains(abRep, tok) {
+			t.Fatalf("AB3 reply %q missing %q", abRep, tok)
+		}
 	}
 
 	// IF reflects XIT [24], TX [28], Split [32] while preserving 38-char K4 layout
@@ -1485,4 +1487,349 @@ func TestNrNrsSemanticsAndSubRxSMeter(t *testing.T) {
 			t.Fatalf("return to SB0 SM$/SMH$ = %q", rep)
 		}
 	})
+}
+
+func goertzelMag(samples []float32, stride, offset int, targetHz, sampleRate float64) float64 {
+	n := len(samples) / stride
+	if n == 0 {
+		return 0
+	}
+	omega := 2.0 * math.Pi * targetHz / sampleRate
+	coeff := 2.0 * math.Cos(omega)
+	var sPrev, sPrev2 float64
+	for i := 0; i < n; i++ {
+		x := float64(samples[i*stride+offset])
+		s := x + coeff*sPrev - sPrev2
+		sPrev2 = sPrev
+		sPrev = s
+	}
+	power := sPrev2*sPrev2 + sPrev*sPrev - coeff*sPrev*sPrev2
+	if power < 0 {
+		power = 0
+	}
+	return math.Sqrt(power) / float64(n)
+}
+
+func TestCwSpotAndAutoSpotZeroBeatAndAudio(t *testing.T) {
+	t.Run("ValidationAndRxOnlyAllowance", func(t *testing.T) {
+		r := NewRxOnlyRadio()
+		// Per K4 Rev. D4, SP; SP$; SP$0..2; and invalid codes return ?; without counting as TX violations.
+		for _, bad := range []string{"SP;", "SP$;", "SP$0;", "SP$1;", "SP$2;", "SP4;", "SP$4;", "SPX;"} {
+			if rep, _ := r.HandleCAT(bad, 0.0); rep != "?;" {
+				t.Fatalf("cmd %q returned %q, want ?;", bad, rep)
+			}
+		}
+		if r.Stats().TxBlockedViolations != 0 {
+			t.Fatalf("invalid SP syntax should not increment TxBlockedViolations, got %d", r.Stats().TxBlockedViolations)
+		}
+
+		// SP0, SP1, SP2, SP3, SP$3 are pure RX/sidetone and allowed in RX-only mode.
+		if rep, _ := r.HandleCAT("SP1;", 0.0); rep != "SP1;" {
+			t.Fatalf("SP1; reply = %q, want SP1;", rep)
+		}
+		if snap, _ := r.HandleCAT("RDY;AI5;", 0.0); !strings.Contains(snap, "SP1;") {
+			t.Fatalf("RDY while SP1 active missing SP1;: %q", snap)
+		}
+		if rep, _ := r.HandleCAT("SP0;", 0.0); rep != "SP0;" {
+			t.Fatalf("SP0; reply = %q, want SP0;", rep)
+		}
+		if snap, _ := r.HandleCAT("RDY;AI5;", 0.0); !strings.Contains(snap, "SP0;") {
+			t.Fatalf("RDY after SP0 missing SP0;: %q", snap)
+		}
+		if r.Stats().TxBlockedViolations != 0 || r.Stats().TxCatCommands != 0 {
+			t.Fatalf("SP commands must not count as TX violations or TX CAT: %+v", r.Stats())
+		}
+	})
+
+	t.Run("MomentaryPulseSP2AndExpiration", func(t *testing.T) {
+		r := NewRadio()
+		if rep, _ := r.HandleCAT("SP2;", 1.0); rep != "SP2;" {
+			t.Fatalf("SP2; reply = %q, want SP2;", rep)
+		}
+		if txCat := r.StepTx(1.25); strings.Contains(txCat, "SP0;") {
+			t.Fatalf("SP2 pulse expired too early at 0.25s: %q", txCat)
+		}
+		rxA, _, _, _, _, _, _ := r.Snapshot()
+		if !rxA.SpotPulseActive {
+			t.Fatalf("expected RxA.SpotPulseActive=true at 0.25s")
+		}
+		// At 0.50s (t=1.50), pulse finishes and emits SP0;.
+		if txCat := r.StepTx(1.50); !strings.Contains(txCat, "SP0;") {
+			t.Fatalf("expected SP0; after SP2 500ms pulse, got %q", txCat)
+		}
+		rxA, _, _, _, _, _, _ = r.Snapshot()
+		if rxA.SpotPulseActive || rxA.SpotToneActive {
+			t.Fatalf("expected spot inactive after pulse expiry, got %+v", rxA)
+		}
+	})
+
+	t.Run("AutoSpotZeroBeatCWAndCWR", func(t *testing.T) {
+		r := NewRadio()
+		// Main RX in ModeCW (MD3) near 20m CW beacon (14025000 Hz) with 500 Hz pitch -> snaps to 14024500 Hz.
+		r.HandleCAT("MD3;BW0050;IS0050;CW50;FA00014026200;", 0.0)
+		rep, _ := r.HandleCAT("SP3;", 1.0)
+		if rep != "SP3;FA00014024500;" {
+			t.Fatalf("SP3 CW reply = %q, want SP3;FA00014024500;", rep)
+		}
+		rxA, _, _, cwPitch, _, _, _ := r.Snapshot()
+		if af, ok := rxAudioFreqHz(rxA, 14025000); !ok || math.Abs(af-float64(cwPitch)) > 1e-6 {
+			t.Fatalf("CW recovered audio freq = %.1f Hz (ok=%v), want %d Hz", af, ok, cwPitch)
+		}
+
+		// Main RX in ModeCWR (MD7) near 40m CW beacon (7025000 Hz) with 700 Hz pitch -> snaps to 7025700 Hz.
+		r.HandleCAT("SP0;MD7;IS0070;CW70;FA00007024100;", 2.0)
+		repCwr, _ := r.HandleCAT("SP3;", 2.1)
+		if repCwr != "SP3;FA00007025700;" {
+			t.Fatalf("SP3 CW-R reply = %q, want SP3;FA00007025700;", repCwr)
+		}
+		rxA, _, _, cwPitch, _, _, _ = r.Snapshot()
+		if af, ok := rxAudioFreqHz(rxA, 7025000); !ok || math.Abs(af-float64(cwPitch)) > 1e-6 {
+			t.Fatalf("CW-R recovered audio freq = %.1f Hz (ok=%v), want %d Hz", af, ok, cwPitch)
+		}
+
+		// Sub RX Auto-Spot (SP$3;) snaps RxB cleanly in CW and CW-R without disturbing RxA.
+		r.HandleCAT("SP0;SB1;MD$3;BW$0050;IS$0070;FB00014023200;", 3.0)
+		repSubCW, _ := r.HandleCAT("SP$3;", 3.1)
+		if repSubCW != "SP$3;FB00014024300;" {
+			t.Fatalf("SP$3 CW reply = %q, want SP$3;FB00014024300;", repSubCW)
+		}
+		rxAAfter, rxB, _, _, _, _, _ := r.Snapshot()
+		if rxAAfter.FreqHz != 7025700 {
+			t.Fatalf("SP$3 disturbed RxA.FreqHz = %d, want 7025700", rxAAfter.FreqHz)
+		}
+		if af, ok := rxAudioFreqHz(rxB, 14025000); !ok || math.Abs(af-700.0) > 1e-6 {
+			t.Fatalf("Sub-RX CW recovered audio freq = %.1f Hz (ok=%v), want 700 Hz", af, ok)
+		}
+
+		r.HandleCAT("MD$7;FB00014026900;", 4.0)
+		repSubCWR, _ := r.HandleCAT("SP$3;", 4.1)
+		if repSubCWR != "SP$3;FB00014025700;" {
+			t.Fatalf("SP$3 CW-R reply = %q, want SP$3;FB00014025700;", repSubCWR)
+		}
+		_, rxB, _, _, _, _, _ = r.Snapshot()
+		if af, ok := rxAudioFreqHz(rxB, 14025000); !ok || math.Abs(af-700.0) > 1e-6 {
+			t.Fatalf("Sub-RX CW-R recovered audio freq = %.1f Hz (ok=%v), want 700 Hz", af, ok)
+		}
+
+		// Outside ±2500 Hz capture range leaves dial frequency unchanged without returning ?;
+		r.HandleCAT("MD3;FA00014029000;", 5.0)
+		repFar, _ := r.HandleCAT("SP3;", 5.1)
+		if repFar != "SP3;FA00014029000;" {
+			t.Fatalf("SP3 outside capture range = %q, want SP3;FA00014029000;", repFar)
+		}
+	})
+
+	t.Run("AudioMixNoClipAndStereoSeparation", func(t *testing.T) {
+		r := NewRadio()
+		// Tune away from signals so spot tone isolation is crystal clear, pitch = 650 Hz.
+		r.HandleCAT("FA00014100000;FB00014110000;MD3;MD$3;CW65;SB0;", 0.0)
+		synth := NewAudioSynth()
+
+		// 1. SB0 + SP1: Left channel has strong 650 Hz tone, Right channel is strictly 0.0.
+		r.HandleCAT("SP1;", 0.0)
+		rxA, rxB, subRx, cwPitch, _, _, _ := r.Snapshot()
+		pcm := synth.SynthAudioFloat(rxA, rxB, subRx, cwPitch, 1200, 0.0)
+		magL := goertzelMag(pcm, 2, 0, 650.0, AudioSampleRate)
+		magOff := goertzelMag(pcm, 2, 0, 1100.0, AudioSampleRate)
+		if magL < 0.0007 || magL < magOff*8.0 {
+			t.Fatalf("expected strong 650 Hz spot tone on Left channel: mag650=%.6f mag1100=%.6f", magL, magOff)
+		}
+		maxAbs := float32(K4AudioBasePeak / 32768.0)
+		for i := 0; i < len(pcm)/2; i++ {
+			if pcm[i*2+1] != 0 {
+				t.Fatalf("SB0 Right channel must be strictly 0.0, got %v at frame %d", pcm[i*2+1], i)
+			}
+			if pcm[i*2] > maxAbs+1e-6 || pcm[i*2] < -maxAbs-1e-6 {
+				t.Fatalf("Left channel clipped: %v > %v", pcm[i*2], maxAbs)
+			}
+		}
+
+		// 2. SB1 + SP0 + SP$3 pulse on Sub-RX (tuned to quiet 14.110 MHz so only spot tone is present):
+		// Right channel gets 650 Hz confirmation tone, Left channel has NO spot tone.
+		r.HandleCAT("SP0;SB1;FB00014110000;", 1.0)
+		r.HandleCAT("SP$3;", 1.0)
+		rxA, rxB, subRx, cwPitch, _, _, _ = r.Snapshot()
+		pcmSub := synth.SynthAudioFloat(rxA, rxB, subRx, cwPitch, 1200, 1.05)
+		magSubL := goertzelMag(pcmSub, 2, 0, 650.0, AudioSampleRate)
+		magSubR := goertzelMag(pcmSub, 2, 1, 650.0, AudioSampleRate)
+		if magSubR < 0.0007 || magSubL > magSubR*0.15 {
+			t.Fatalf("expected SP$3 spot tone isolated to Right channel: magL=%.6f magR=%.6f", magSubL, magSubR)
+		}
+
+		// 3. Even when Main RX has strongest -58 dBm CW beacon AND SP1 spot tone at same time, zero clipping occurs.
+		r.HandleCAT("FA00014024350;MD3;IS0065;SP1;", 2.0)
+		rxA, rxB, subRx, cwPitch, _, _, _ = r.Snapshot()
+		pcmMix := synth.SynthAudioFloat(rxA, rxB, subRx, cwPitch, 1200, 2.0)
+		for i := 0; i < len(pcmMix)/2; i++ {
+			if math.Abs(float64(pcmMix[i*2])) > float64(maxAbs)+1e-6 {
+				t.Fatalf("mixed CW + spot tone clipped at %d: %v > %v", i, pcmMix[i*2], maxAbs)
+			}
+		}
+		// Spot pulse stops after SpotPulseUntil even before StepTx runs.
+		r.HandleCAT("FA00014100000;SP0;SP2;", 3.0)
+		rxA, rxB, subRx, cwPitch, _, _, _ = r.Snapshot()
+		pcmActive := synth.SynthAudioFloat(rxA, rxB, subRx, cwPitch, 1200, 3.05)
+		magActiveL := goertzelMag(pcmActive, 2, 0, 650.0, AudioSampleRate)
+		pcmPost := synth.SynthAudioFloat(rxA, rxB, subRx, cwPitch, 1200, 3.6)
+		magPostL := goertzelMag(pcmPost, 2, 0, 650.0, AudioSampleRate)
+		if magActiveL < 0.0007 || magPostL > 0.00015 {
+			t.Fatalf("expected SP2 spot tone active at 3.05s and absent after 0.50s expiry: active=%.6f post=%.6f", magActiveL, magPostL)
+		}
+	})
+}
+
+func TestAbVfoCopyAndSwapComplete(t *testing.T) {
+	r := NewRadio()
+	for _, bad := range []string{"AB;", "AB6;", "AB9;", "AB$;", "AB01;", "ABX;"} {
+		if rep, _ := r.HandleCAT(bad, 0.0); rep != "?;" {
+			t.Fatalf("invalid %q returned %q, want ?;", bad, rep)
+		}
+	}
+
+	// Setup distinct A and B states (including non-slice fields AF gain & #SPN).
+	r.HandleCAT("FA00014074000;MD6;DT0;BW0270;IS0150;PA11;RA061;NB0041;NR051;NM09001;GT2;AP11;AG035;#SPN48000;", 0.0)
+	r.HandleCAT("FB00007025000;MD$3;DT$2;BW$0050;IS$0050;PA$00;RA$121;NB$0000;NRS$141;NM$05500;GT$0;AP$02;AG$018;#SPN$24000;", 0.0)
+
+	// AB0: copy A.Freq -> B.Freq ONLY (B's mode/bw/NR/etc. unchanged).
+	rep0, _ := r.HandleCAT("AB0;", 0.0)
+	if rep0 != "FB00014074000;" {
+		t.Fatalf("AB0 reply = %q, want FB00014074000;", rep0)
+	}
+	rxA, rxB, _, _, _, _, _ := r.Snapshot()
+	if rxB.FreqHz != 14074000 || rxB.Mode != ModeCW || rxB.BwHz != 500 || !rxB.NrsOn || rxB.NrsLevel != 14 {
+		t.Fatalf("AB0 modified non-freq B fields: %+v", rxB)
+	}
+
+	// AB1: copy B.Freq -> A.Freq ONLY (A's mode/bw/NR/etc. unchanged).
+	r.HandleCAT("FB00007025000;", 0.0)
+	rep1, _ := r.HandleCAT("AB1;", 0.0)
+	if rep1 != "FA00007025000;" {
+		t.Fatalf("AB1 reply = %q, want FA00007025000;", rep1)
+	}
+	rxA, rxB, _, _, _, _, _ = r.Snapshot()
+	if rxA.FreqHz != 7025000 || rxA.Mode != ModeDATA || rxA.BwHz != 2700 || !rxA.NrOn || rxA.NrLevel != 5 {
+		t.Fatalf("AB1 modified non-freq A fields: %+v", rxA)
+	}
+
+	// AB2: swap A.Freq <-> B.Freq ONLY.
+	r.HandleCAT("FA00014074000;FB00007025000;", 0.0)
+	rep2, _ := r.HandleCAT("AB2;", 0.0)
+	if rep2 != "FA00007025000;FB00014074000;" {
+		t.Fatalf("AB2 reply = %q, want FA00007025000;FB00014074000;", rep2)
+	}
+	rxA, rxB, _, _, _, _, _ = r.Snapshot()
+	if rxA.FreqHz != 7025000 || rxB.FreqHz != 14074000 || rxA.Mode != ModeDATA || rxB.Mode != ModeCW {
+		t.Fatalf("AB2 swap mismatch: A=%+v B=%+v", rxA, rxB)
+	}
+
+	// AB5: swap A <-> B full slice params while keeping per-VFO AF gain & PAN span intact.
+	r.HandleCAT("FA00014074000;FB00007025000;", 0.0)
+	rep5, _ := r.HandleCAT("AB5;", 0.0)
+	for _, tok := range []string{
+		"FA00007025000;", "MD3;", "BW0050;", "PA00;", "RA121;", "NRS141;", "GT0;", "AP02;",
+		"FB00014074000;", "MD$6;", "BW$0270;", "PA$11;", "RA$061;", "NB$0041;", "NR$051;", "NM$09001;", "GT$2;", "AP$11;",
+	} {
+		if !strings.Contains(rep5, tok) {
+			t.Fatalf("AB5 reply %q missing %q", rep5, tok)
+		}
+	}
+	rxA, rxB, _, _, _, _, _ = r.Snapshot()
+	if rxA.AfGain != 35 || rxA.PanSpanHz != 48000 || rxB.AfGain != 18 || rxB.PanSpanHz != 24000 {
+		t.Fatalf("AB5 disturbed local AF/Pan fields: A.af=%d A.spn=%d B.af=%d B.spn=%d", rxA.AfGain, rxA.PanSpanHz, rxB.AfGain, rxB.PanSpanHz)
+	}
+
+	// AB4: copy B full slice params -> A (preserving A's AF gain / PAN span).
+	rep4, _ := r.HandleCAT("AB4;", 0.0)
+	for _, tok := range []string{"FA00014074000;", "MD6;", "BW0270;", "PA11;", "RA061;", "NB0041;", "NR051;", "NM09001;", "GT2;", "AP11;"} {
+		if !strings.Contains(rep4, tok) {
+			t.Fatalf("AB4 reply %q missing %q", rep4, tok)
+		}
+	}
+	rxA, _, _, _, _, _, _ = r.Snapshot()
+	if rxA.FreqHz != 14074000 || rxA.Mode != ModeDATA || rxA.BwHz != 2700 || rxA.AfGain != 35 || rxA.PanSpanHz != 48000 {
+		t.Fatalf("AB4 state mismatch: %+v", rxA)
+	}
+
+	// AB3: copy A full slice params -> B without copying A's SpotToneActive onto B.
+	r.HandleCAT("SP1;FA00021074000;MD2;BW0240;IS0150;PA21;", 0.0)
+	rep3, _ := r.HandleCAT("AB3;", 0.0)
+	for _, tok := range []string{"FB00021074000;", "MD$2;", "BW$0240;", "IS$0150;", "PA$21;"} {
+		if !strings.Contains(rep3, tok) {
+			t.Fatalf("AB3 reply %q missing %q", rep3, tok)
+		}
+	}
+	_, rxB, _, _, _, _, _ = r.Snapshot()
+	if rxB.SpotToneActive {
+		t.Fatalf("AB3 must not copy SpotToneActive onto Sub-RX")
+	}
+}
+
+func TestPowerRangeTransitionsAtuAndAntennaFidelity(t *testing.T) {
+	r := NewRadio()
+
+	// Continuous PC transitions across L (0.1..10.0 W) and H (1..110 W) without manual switch.
+	pcCases := []struct {
+		cmd       string
+		wantEcho  string
+		wantRange string
+		wantWatts float64
+	}{
+		{"PC001L;", "PC001L;", "L", 0.1},
+		{"PC100L;", "PC100L;", "L", 10.0},
+		{"PC011H;", "PC011H;", "H", 11.0},
+		{"PC110H;", "PC110H;", "H", 110.0},
+		{"PC050L;", "PC050L;", "L", 5.0},
+		{"PC000L;", "PC001L;", "L", 0.1},
+		{"PC150L;", "PC100L;", "L", 10.0},
+		{"PC000H;", "PC001H;", "H", 1.0},
+		{"PC150H;", "PC110H;", "H", 110.0},
+		{"PC035;", "PC035L;", "L", 3.5},
+	}
+	for _, tc := range pcCases {
+		rep, _ := r.HandleCAT(tc.cmd, 0.0)
+		if rep != tc.wantEcho {
+			t.Fatalf("%s -> %q, want %q", tc.cmd, rep, tc.wantEcho)
+		}
+		st := r.Stats()
+		if st.PowerRange != tc.wantRange || math.Abs(st.PowerWatts-tc.wantWatts) > 1e-6 {
+			t.Fatalf("%s -> stats=%+v, want range=%s watts=%.1f", tc.cmd, st, tc.wantRange, tc.wantWatts)
+		}
+	}
+	for _, bad := range []string{"PCL;", "PCH;", "PC-05L;", "PC+05L;", "PC1234L;", "PC050Z;"} {
+		if rep, _ := r.HandleCAT(bad, 0.0); rep != "?;" {
+			t.Fatalf("invalid PC %q -> %q, want ?;", bad, rep)
+		}
+	}
+
+	// TU3 -> TU4 (double-tap full search) even starting from AT1 bypass mode.
+	r.HandleCAT("FA00014074000;AN1;AT1;", 0.0)
+	if rep3, _ := r.HandleCAT("TU3;", 1.0); !strings.HasPrefix(rep3, "AT2;TU3;TQ1;TQX1;") {
+		t.Fatalf("TU3 from AT1 = %q, want AT2;TU3;TQ1;TQX1;...", rep3)
+	}
+	if rep4, _ := r.HandleCAT("TU4;", 1.3); !strings.HasPrefix(rep4, "AT2;TU4;TQ1;TQX1;") {
+		t.Fatalf("TU4 re-trigger = %q, want AT2;TU4;TQ1;TQX1;...", rep4)
+	}
+	if st := r.Stats(); !st.AtuTuning || st.AtuMode != 2 {
+		t.Fatalf("expected tuning state during TU4: %+v", st)
+	}
+	if repGet, _ := r.HandleCAT("TU;", 1.5); repGet != "TU4;" {
+		t.Fatalf("TU; query during TU4 = %q, want TU4;", repGet)
+	}
+	// TU4 converges after 1.15s (started at 1.3 -> done by 2.45s).
+	if done := r.StepTx(2.50); !strings.Contains(done, "TU0;TQ0;TQX0;") {
+		t.Fatalf("expected TU4 completion at t=2.50, got %q", done)
+	}
+	if repBadTu, _ := r.HandleCAT("TU5;", 3.0); repBadTu != "?;" {
+		t.Fatalf("TU5; = %q, want ?;", repBadTu)
+	}
+
+	// AN1..3 and AN/ cycling 1 -> 2 -> 3 -> 1.
+	if rep, _ := r.HandleCAT("AN1;AN/;AN/;AN/;AN2;AN3;AN;", 3.0); rep != "AN1;AN2;AN3;AN1;AN2;AN3;AN3;" {
+		t.Fatalf("AN cycling reply = %q", rep)
+	}
+	for _, badAn := range []string{"AN0;", "AN4;", "AN$;"} {
+		if rep, _ := r.HandleCAT(badAn, 3.0); rep != "?;" {
+			t.Fatalf("invalid AN %q -> %q, want ?;", badAn, rep)
+		}
+	}
 }

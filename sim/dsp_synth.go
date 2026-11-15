@@ -15,13 +15,13 @@ const (
 )
 
 type synthSignal struct {
-	freqHz     float64
-	peakDbm    float64
-	sigmaHz    float64
-	kind       string // "cw", "ft8", "rtty", "ssb"
-	keyRateHz  float64
-	shiftHz    float64
-	phaseSeed  float64
+	freqHz    float64
+	peakDbm   float64
+	sigmaHz   float64
+	kind      string // "cw", "ft8", "rtty", "ssb"
+	keyRateHz float64
+	shiftHz   float64
+	phaseSeed float64
 }
 
 var simSignals = func() []synthSignal {
@@ -333,11 +333,53 @@ func NearBeacon(rxFreqHz int64) bool {
 	return false
 }
 
+// AutoSpotTargetHz searches simSignals for the strongest CW carrier within ±2500 Hz
+// of rx.FreqHz (or within the active passband) and returns the snapped dial frequency
+// so the recovered beat equals cwPitchHz in CW or CW-R mode.
+func AutoSpotTargetHz(rx RxState, cwPitchHz int) (int64, bool) {
+	if rx.Mode != ModeCW && rx.Mode != ModeCWR {
+		return rx.FreqHz, false
+	}
+	const captureHz = 2500.0
+	lowHz, highHz := PassbandRangeHz(rx, cwPitchHz)
+	dial := float64(rx.FreqHz)
+	found := false
+	var best synthSignal
+	bestDist := math.MaxFloat64
+
+	for _, s := range simSignals {
+		if s.kind != "cw" {
+			continue
+		}
+		dist := math.Abs(s.freqHz - dial)
+		inPassband := s.freqHz >= lowHz && s.freqHz <= highHz
+		if dist > captureHz && !inPassband {
+			continue
+		}
+		if !found || s.peakDbm > best.peakDbm || (s.peakDbm == best.peakDbm && dist < bestDist) {
+			best = s
+			bestDist = dist
+			found = true
+		}
+	}
+	if !found {
+		return rx.FreqHz, false
+	}
+
+	carrierHz := int64(math.Round(best.freqHz))
+	if rx.Mode == ModeCWR {
+		return clampInt64(carrierHz+int64(cwPitchHz), 100000, 54000000), true
+	}
+	return clampInt64(carrierHz-int64(cwPitchHz), 100000, 54000000), true
+}
+
 // AudioSynth maintains continuous oscillator phase across 12 kHz audio packets.
 type AudioSynth struct {
-	phasesA []float64
-	phasesB []float64
-	noise   uint64
+	phasesA    []float64
+	phasesB    []float64
+	spotPhaseA float64
+	spotPhaseB float64
+	noise      uint64
 }
 
 func NewAudioSynth() *AudioSynth {
@@ -386,6 +428,19 @@ func signalAudioGain(peakDbm float64) float64 {
 	return norm * 0.75
 }
 
+func mixSpotToneSample(rx RxState, phase *float64, sampleT, phaseStep, amp float64) float64 {
+	if !(rx.SpotToneActive || (rx.SpotPulseActive && sampleT < rx.SpotPulseUntil)) {
+		*phase = 0
+		return 0
+	}
+	tone := math.Cos(*phase) * amp
+	*phase += phaseStep
+	if *phase >= 2.0*math.Pi {
+		*phase -= 2.0 * math.Pi
+	}
+	return tone
+}
+
 // SynthAudioFloat synthesizes 12 kHz interleaved stereo float32 PCM at K4 1/32 scale.
 func (a *AudioSynth) SynthAudioFloat(rxA, rxB RxState, subRxEnabled bool, cwPitchHz int, samplesPerCh int, tSec float64) []float32 {
 	type activeTone struct {
@@ -427,8 +482,15 @@ func (a *AudioSynth) SynthAudioFloat(rxA, rxB RxState, subRxEnabled bool, cwPitc
 
 	out := make([]float32, samplesPerCh*2)
 	const scaleFloat = K4AudioBasePeak / 32768.0
+	const spotToneAmp = 0.16
+	pitchHz := float64(cwPitchHz)
+	if pitchHz <= 0 {
+		pitchHz = 500.0
+	}
+	spotPhaseStep := 2.0 * math.Pi * pitchHz / AudioSampleRate
 
 	for i := 0; i < samplesPerCh; i++ {
+		sampleT := tSec + float64(i)/AudioSampleRate
 		var sigA float64
 		for _, t := range tonesA {
 			sigA += math.Sin(a.phasesA[t.idx]) * t.amp
@@ -437,7 +499,7 @@ func (a *AudioSynth) SynthAudioFloat(rxA, rxB RxState, subRxEnabled bool, cwPitc
 				a.phasesA[t.idx] -= 2.0 * math.Pi
 			}
 		}
-		sampleA := a.nextNoise()*0.04 + sigA*scaleA
+		sampleA := a.nextNoise()*0.04 + sigA*scaleA + mixSpotToneSample(rxA, &a.spotPhaseA, sampleT, spotPhaseStep, spotToneAmp)
 
 		var sampleB float64
 		if subRxEnabled {
@@ -449,7 +511,9 @@ func (a *AudioSynth) SynthAudioFloat(rxA, rxB RxState, subRxEnabled bool, cwPitc
 					a.phasesB[t.idx] -= 2.0 * math.Pi
 				}
 			}
-			sampleB = a.nextNoise()*0.04 + sigB*scaleB
+			sampleB = a.nextNoise()*0.04 + sigB*scaleB + mixSpotToneSample(rxB, &a.spotPhaseB, sampleT, spotPhaseStep, spotToneAmp)
+		} else {
+			a.spotPhaseB = 0
 		}
 
 		out[i*2] = float32(clampFloat(sampleA, -1.0, 1.0) * scaleFloat)
