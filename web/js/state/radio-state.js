@@ -8,6 +8,65 @@
   const MAX_SENSOR_HISTORY = 240;
 
   /**
+   * Compute next independent LMS NR / SSNR per-RX state and derived nrMode/nrOn/nrLevel fields.
+   * @param {Object} rxTarget
+   * @param {'lms'|'ssnr'} kind
+   * @param {number} modeDigit
+   * @param {number|null} rawLevel
+   * @returns {Object}
+   */
+  function computeNrPatch(rxTarget, kind, modeDigit, rawLevel) {
+    const state = {
+      lmsNrOn: Boolean(rxTarget.lmsNrOn),
+      lmsNrLevel: Number.isFinite(rxTarget.lmsNrLevel) ? rxTarget.lmsNrLevel : 4,
+      lmsNrLastUsed: Boolean(rxTarget.lmsNrLastUsed),
+      ssnrOn: Boolean(rxTarget.ssnrOn),
+      ssnrLevel: Number.isFinite(rxTarget.ssnrLevel) ? rxTarget.ssnrLevel : 5,
+      ssnrLastUsed: Boolean(rxTarget.ssnrLastUsed),
+    };
+    const isSsnr = kind === 'ssnr';
+    const curPrefix = isSsnr ? 'ssnr' : 'lmsNr';
+    const otherPrefix = isSsnr ? 'lmsNr' : 'ssnr';
+    const prevLmsLastUsed = state.lmsNrLastUsed;
+    const prevSsnrLastUsed = state.ssnrLastUsed;
+
+    if (rawLevel !== null && rawLevel !== undefined) {
+      state[`${curPrefix}Level`] = rawLevel;
+    }
+    if (modeDigit === 1 && state[`${curPrefix}Level`] > 0) {
+      state[`${curPrefix}On`] = true;
+      state[`${curPrefix}LastUsed`] = false;
+      state[`${otherPrefix}On`] = false;
+      state[`${otherPrefix}LastUsed`] = false;
+    } else {
+      state[`${curPrefix}On`] = false;
+      state[`${curPrefix}LastUsed`] = modeDigit === 2;
+      if (modeDigit === 2) {
+        state[`${otherPrefix}LastUsed`] = false;
+      }
+    }
+
+    let nrMode = rxTarget.nrMode === 'ssnr' ? 'ssnr' : 'lms';
+    if (state.lmsNrOn) {
+      nrMode = 'lms';
+    } else if (state.ssnrOn) {
+      nrMode = 'ssnr';
+    } else if (state.ssnrLastUsed && !prevSsnrLastUsed) {
+      nrMode = 'ssnr';
+    } else if (state.lmsNrLastUsed && !prevLmsLastUsed) {
+      nrMode = 'lms';
+    } else if (state.ssnrLastUsed && !state.lmsNrLastUsed && rxTarget.nrMode !== 'lms') {
+      nrMode = 'ssnr';
+    } else if (state.lmsNrLastUsed && !state.ssnrLastUsed && rxTarget.nrMode !== 'ssnr') {
+      nrMode = 'lms';
+    }
+
+    const nrOn = state.lmsNrOn || state.ssnrOn;
+    const nrLevel = nrMode === 'ssnr' ? state.ssnrLevel : state.lmsNrLevel;
+    return Object.assign(state, { nrMode, nrOn, nrLevel });
+  }
+
+  /**
    * Look up the matching amateur band definition for `freqHz`, or null for general coverage.
    * @param {number} freqHz
    * @returns {Object|null}
@@ -45,6 +104,13 @@
       squelch: 0,
       nbOn: false,
       nbLevel: 5,
+      lmsNrOn: false,
+      lmsNrLevel: 4,
+      lmsNrLastUsed: false,
+      ssnrOn: false,
+      ssnrLevel: 5,
+      ssnrLastUsed: false,
+      nrMode: 'lms',
       nrOn: false,
       nrLevel: 4,
       notchOn: false,
@@ -635,11 +701,22 @@
         }
 
         case 'nr': {
-          const patch = { nrOn: parsed.nrOn };
-          if (parsed.nrLevel !== null && parsed.nrLevel !== undefined) {
-            patch.nrLevel = parsed.nrLevel;
-          }
-          this.updateRx(parsed.rx, patch, `${rxKey}.nr`);
+          const kind = parsed.nrKind === 'ssnr' ? 'ssnr' : 'lms';
+          const modeDigit =
+            parsed.modeDigit !== undefined && parsed.modeDigit !== null
+              ? parsed.modeDigit
+              : parsed.nrOn
+              ? 1
+              : parsed.lastUsed
+              ? 2
+              : 0;
+          const rawLevel =
+            parsed.level !== undefined
+              ? parsed.level
+              : parsed.nrLevel !== undefined
+              ? parsed.nrLevel
+              : null;
+          this.updateRx(parsed.rx, computeNrPatch(rxTarget, kind, modeDigit, rawLevel), `${rxKey}.nr`);
           return true;
         }
 

@@ -331,8 +331,10 @@
     }),
     makeRxParser('NB$', (arg, rx) => parseNoiseBlanker(arg, rx)),
     makeRxParser('NB', (arg, rx) => parseNoiseBlanker(arg, rx)),
-    makeRxParser('NR$', (arg, rx) => parseNoiseReduction(arg, rx)),
-    makeRxParser('NR', (arg, rx) => parseNoiseReduction(arg, rx)),
+    makeRxParser('NRS$', (arg, rx) => parseNoiseReduction(arg, rx, 'ssnr')),
+    makeRxParser('NRS', (arg, rx) => parseNoiseReduction(arg, rx, 'ssnr')),
+    makeRxParser('NR$', (arg, rx) => parseNoiseReduction(arg, rx, 'lms')),
+    makeRxParser('NR', (arg, rx) => parseNoiseReduction(arg, rx, 'lms')),
     makeRxParser('NM$', (arg, rx) => parseNotch(arg, rx)),
     makeRxParser('NM', (arg, rx) => parseNotch(arg, rx)),
     makeRxParser('GT$', (arg, rx) => {
@@ -812,17 +814,37 @@
     };
   }
 
-  function parseNoiseReduction(arg, rx) {
+  function parseNoiseReduction(arg, rx, nrKind = 'lms') {
     const t = arg.trim();
     if (!/^\d{1,3}$/.test(t)) return null;
+    const kind = nrKind === 'ssnr' ? 'ssnr' : 'lms';
+    const maxLevel = kind === 'ssnr' ? 25 : 10;
     if (t.length === 1) {
-      return { kind: 'nr', rx, nrLevel: null, nrOn: t === '1' };
+      const modeDigit = parseInt(t, 10);
+      if (modeDigit < 0 || modeDigit > 2) return null;
+      return {
+        kind: 'nr',
+        rx,
+        nrKind: kind,
+        modeDigit,
+        level: null,
+        nrLevel: null,
+        nrOn: modeDigit === 1,
+        lastUsed: modeDigit === 2,
+      };
     }
+    const modeDigit = parseInt(t[t.length - 1], 10);
+    if (modeDigit < 0 || modeDigit > 2) return null;
+    const level = clamp(parseInt(t.slice(0, -1), 10), 0, maxLevel);
     return {
       kind: 'nr',
       rx,
-      nrLevel: parseInt(t.slice(0, -1), 10),
-      nrOn: t[t.length - 1] === '1',
+      nrKind: kind,
+      modeDigit,
+      level,
+      nrLevel: level,
+      nrOn: modeDigit === 1 && level > 0,
+      lastUsed: modeDigit === 2,
     };
   }
 
@@ -934,6 +956,20 @@
     return rx === 'B' ? '$' : '';
   }
 
+  function buildNrCmd(prefix, rx, level, on, maxLevel, defaultLevel) {
+    const isOn = Boolean(on);
+    const hasLevel = level !== undefined && level !== null && level !== '';
+    const num = hasLevel ? Number(level) : NaN;
+    let lvl;
+    if (isOn) {
+      const rounded = Number.isFinite(num) ? Math.round(num) : 0;
+      lvl = rounded <= 0 ? defaultLevel : clamp(rounded, 1, maxLevel);
+    } else {
+      lvl = Number.isFinite(num) ? clamp(Math.round(num), 0, maxLevel) : 0;
+    }
+    return prefix + rxDollar(rx) + String(lvl).padStart(2, '0') + (isOn ? '1' : '0') + ';';
+  }
+
   const builders = {
     freq(rx, hz) {
       const vfo = rx === 'B' ? 'B' : 'A';
@@ -998,8 +1034,16 @@
       return 'NB' + rxDollar(rx) + String(lvl).padStart(2, '0') + (on ? '1' : '0') + ';';
     },
     nr(rx, level, on) {
-      const lvl = clamp(Math.round(Number(level)), 0, 10);
-      return 'NR' + rxDollar(rx) + String(lvl).padStart(2, '0') + (on ? '1' : '0') + ';';
+      return buildNrCmd('NR', rx, level, on, 10, 4);
+    },
+    ssnr(rx, level, on) {
+      return buildNrCmd('NRS', rx, level, on, 25, 5);
+    },
+    nrToggle(rx) {
+      return 'NR' + rxDollar(rx) + '/;';
+    },
+    ssnrToggle(rx) {
+      return 'NRS' + rxDollar(rx) + '/;';
     },
     notch(rx, hz, on) {
       const f = clamp(Math.round(Number(hz)), 150, 5000);

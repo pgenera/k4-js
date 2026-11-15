@@ -297,6 +297,7 @@
         'FA;FB;MD;MD$;DT;DT$;BW;BW$;IS;IS$;CW;VT;VT$;LK;LK$;SB;FT;SMH;SMH$;' +
         '#SPN;#SPN$;#REF;#REF$;#SCL;#AVG;#WBS;#AR;#DPM;#MP;#MP$;#FXT;TD;TD$;MX;' +
         'SQ;SQ$;AP;AP$;RT;RT$;RO;RO$;DV;OV;OV$;#FRZ;#FPS;#NB;#NB$;#NBL;#NBL$;#DSM;#WFH;' +
+        'NR;NR$;NRS;NRS$;NB;NB$;NM;NM$;PA;PA$;RA;RA$;AG;AG$;RG;RG$;GT;GT$;' +
         'SIFP1;SIRF1;SIDA1;TM1;PO1;SIDU1;SIRC1;';
       this.sendCat(bootstrapCat);
       this._syncTbPolling();
@@ -1107,13 +1108,15 @@
     }
 
     /**
-     * Toggle Sub-RX on/off (SB0/SB1).
+     * Toggle Sub-RX on/off (SB0/SB1). When enabling, immediately queries Sub-RX meter,
+     * OVF, Mini-Pan, NR/SSNR, and VFO B frequency so UI populates without waiting.
      * @param {boolean} on
      */
     setSubRx(on) {
       const enabled = Boolean(on);
       this.state.update({ subRxEnabled: enabled }, 'subRxEnabled');
-      return this.sendCat(K4.CatCodec.builders.subRx(enabled));
+      const cmd = K4.CatCodec.builders.subRx(enabled);
+      return this.sendCat(enabled ? `${cmd}SMH;SMH$;OV;OV$;#MP$;NR$;NRS$;FB;` : cmd);
     }
 
     /**
@@ -1165,6 +1168,83 @@
      */
     clearRit(rx) {
       return this.setRit(rx, { clear: true });
+    }
+
+    /**
+     * Configure Noise Reduction (LMS NR or SSNR) on receiver 'A' or 'B'.
+     * Never emits NR...001 or NRS...001; automatically substitutes 4 (LMS) or 5 (SSNR)
+     * when turning ON or switching to a mode whose stored level is 0.
+     * @param {'A'|'B'} rx
+     * @param {{ on?: boolean, level?: number, mode?: 'lms'|'ssnr' }} [patch]
+     */
+    setNr(rx, patch = {}) {
+      const target = rx === 'B' ? 'B' : 'A';
+      const p = patch && typeof patch === 'object' ? patch : {};
+      const cur = this.state.getRx(target);
+      const next = {
+        lmsNrOn: Boolean(cur.lmsNrOn),
+        lmsNrLevel: Number.isFinite(cur.lmsNrLevel) ? cur.lmsNrLevel : 4,
+        lmsNrLastUsed: Boolean(cur.lmsNrLastUsed),
+        ssnrOn: Boolean(cur.ssnrOn),
+        ssnrLevel: Number.isFinite(cur.ssnrLevel) ? cur.ssnrLevel : 5,
+        ssnrLastUsed: Boolean(cur.ssnrLastUsed),
+      };
+      const curMode = cur.nrMode === 'ssnr' ? 'ssnr' : 'lms';
+      const curOn = Boolean(next.lmsNrOn || next.ssnrOn || cur.nrOn);
+
+      const reqModeRaw = typeof p.mode === 'string' ? p.mode.trim().toLowerCase() : null;
+      const reqMode = reqModeRaw === 'ssnr' || reqModeRaw === 'lms' ? reqModeRaw : null;
+      const targetMode = reqMode
+        ? reqMode
+        : p.on === false
+        ? (next.ssnrOn ? 'ssnr' : next.lmsNrOn ? 'lms' : curMode)
+        : curMode;
+      const targetOn = p.on !== undefined ? Boolean(p.on) : curOn;
+
+      const isSsnr = targetMode === 'ssnr';
+      const curPrefix = isSsnr ? 'ssnr' : 'lmsNr';
+      const otherPrefix = isSsnr ? 'lmsNr' : 'ssnr';
+      const maxLevel = isSsnr ? 25 : 10;
+      const defaultLevel = isSsnr ? 5 : 4;
+
+      const hasExplicitLevel =
+        p.level !== undefined && p.level !== null && p.level !== '' && Number.isFinite(Number(p.level));
+      const rawInput = hasExplicitLevel ? Number(p.level) : next[`${curPrefix}Level`];
+      const rounded = Number.isFinite(rawInput) ? Math.round(rawInput) : defaultLevel;
+      const forcePositive = targetOn || (!hasExplicitLevel && reqMode !== null && rounded <= 0);
+      const targetLevel = forcePositive
+        ? (rounded <= 0 ? defaultLevel : clamp(rounded, 1, maxLevel))
+        : clamp(rounded, 0, maxLevel);
+
+      next[`${curPrefix}Level`] = targetLevel;
+      if (targetOn) {
+        next[`${curPrefix}On`] = true;
+        next[`${curPrefix}LastUsed`] = false;
+        next[`${otherPrefix}On`] = false;
+        next[`${otherPrefix}LastUsed`] = false;
+      } else {
+        const wasOn = Boolean(cur[`${curPrefix}On`]);
+        next[`${curPrefix}On`] = false;
+        if (wasOn) {
+          next[`${curPrefix}LastUsed`] = true;
+          next[`${otherPrefix}LastUsed`] = false;
+        }
+      }
+
+      const nrMode = next.lmsNrOn ? 'lms' : next.ssnrOn ? 'ssnr' : targetMode;
+      const nrOn = next.lmsNrOn || next.ssnrOn;
+      const nrLevel = nrMode === 'ssnr' ? next.ssnrLevel : next.lmsNrLevel;
+
+      this.state.updateRx(
+        target,
+        Object.assign(next, { nrMode, nrOn, nrLevel }),
+        target === 'B' ? 'rxB.nr' : 'rxA.nr'
+      );
+
+      const cmd = isSsnr
+        ? K4.CatCodec.builders.ssnr(target, targetLevel, targetOn)
+        : K4.CatCodec.builders.nr(target, targetLevel, targetOn);
+      return this.sendCat(`${cmd}NR;NR$;NRS;NRS$;`);
     }
 
     /**
