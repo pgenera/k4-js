@@ -258,11 +258,16 @@
       });
       this.onLoadTxWav = opts.onLoadTxWav || null;
       this.onOpenDrawer = opts.onOpenDrawer || (() => {});
+      this.isDrawerOpen =
+        opts.isDrawerOpen ||
+        (() => (this.drawerEl ? this.drawerEl.dataset.open !== 'false' : true));
 
       this._activeDesktopTab = 'band-mode';
       this._activeMobileTab = null;
       this._panes = {};
       this._refs = {};
+      this._dirtyTabs = new Set(['band-mode', 'dsp', 'display', 'audio', 'tune', 'tx']);
+      this._atuCueTimer = null;
       this._keypadBuffer = '';
       this._localAudio = { gainA: 0.85, gainB: 0.85, balance: 0 };
       const hasSecureMic = Boolean(
@@ -313,6 +318,7 @@
         const t = DESKTOP_TABS[i];
         const btn = el('button', 'k4-tab-btn', t.label);
         btn.type = 'button';
+        btn.dataset.tab = t.id;
         btn.addEventListener('click', () => this.selectDesktopTab(t.id));
         this._desktopTabBtns[t.id] = btn;
         this.drawerTabBar.appendChild(btn);
@@ -959,6 +965,45 @@
         this._refs.apfBwBtns.push(b);
       }
       ritApfCard.appendChild(apfSeg);
+
+      ritApfCard.appendChild(el('span', 'k4-slider-label', 'CW Zero-Beat & Spot'));
+      const spotGrid = el('div', 'k4-btn-grid k4-btn-grid--2');
+      const autoSpotBtn = el('button', 'k4-btn k4-btn--amber', 'Auto Spot');
+      autoSpotBtn.type = 'button';
+      autoSpotBtn.dataset.testid = 'auto-spot-btn';
+      autoSpotBtn.title = 'Zero-beat CW signal on active VFO';
+      autoSpotBtn.addEventListener('click', () => {
+        const rx = this.getTargetRx();
+        if (typeof this.client.autoSpot === 'function') {
+          this.client.autoSpot(rx);
+        } else {
+          this._sendCat(`SP${rx === 'B' ? '$' : ''}3;`);
+        }
+      });
+
+      const cwSpotBtn = el('button', 'k4-btn', 'Spot Tone');
+      cwSpotBtn.type = 'button';
+      cwSpotBtn.dataset.testid = 'cw-spot-btn';
+      cwSpotBtn.setAttribute('aria-pressed', 'false');
+      cwSpotBtn.title = 'Toggle CW Spot sidetone pitch reference';
+      cwSpotBtn.addEventListener('click', () => {
+        const snap = this._snap();
+        const rx = this.getTargetRx();
+        const rxS = (rx === 'B' ? snap.rxB : snap.rxA) || {};
+        const nextOn = !(snap.spotTone || snap.cwSpotOn || rxS.spotMode === 1 || rxS.spotMode === 2);
+        if (typeof this.client.setSpotTone === 'function') {
+          this.client.setSpotTone(nextOn ? 1 : 0, 'A');
+        } else {
+          this._sendCat(`SP${nextOn ? '1' : '0'};`);
+        }
+      });
+
+      spotGrid.appendChild(autoSpotBtn);
+      spotGrid.appendChild(cwSpotBtn);
+      ritApfCard.appendChild(spotGrid);
+      this._refs.autoSpotBtn = autoSpotBtn;
+      this._refs.cwSpotBtn = cwSpotBtn;
+
       pane.appendChild(ritApfCard);
 
       const tdCard = makeCard('CW / Data Text Decode');
@@ -1378,7 +1423,7 @@
       this._refs.wavStatus = wavStatus;
       this._refs.wavLink = wavLink;
       pane.appendChild(scopeCard);
-      this._startAfScopeLoop();
+      this._syncAfScopeLoop();
 
       const audioCard = makeCard('Audio Mixer & Stream');
       const muteBtn = el('button', 'k4-btn-primary', 'Start & Unmute Audio');
@@ -1492,6 +1537,7 @@
         ['frames', 'Frames'],
         ['panTier', 'Pan Tier'],
         ['rtt', 'RTT'],
+        ['e2eLatency', 'E2E Latency'],
         ['sink', 'Audio Sink'],
         ['bufferMs', 'Jitter Buf'],
         ['packets', 'Audio Pkts'],
@@ -1513,13 +1559,6 @@
       }
       diagCard.appendChild(kvGrid);
       pane.appendChild(diagCard);
-
-      // Transmit Lock Card
-      const safeCard = makeCard('Transmit Lock');
-      const safeBox = el('div', 'k4-safety-note');
-      this._refs.safetyNote = safeBox;
-      safeCard.appendChild(safeBox);
-      pane.appendChild(safeCard);
 
       return pane;
     }
@@ -1716,12 +1755,63 @@
       }
     }
 
+    _uiPerf() {
+      if (typeof window === 'undefined') return null;
+      return (window.__k4UiPerf = window.__k4UiPerf || {
+        fullRenders: 0,
+        meterFastRenders: 0,
+        inspectorUpdates: 0,
+        inspectorTabSkips: 0,
+        afScopeSkips: 0,
+      });
+    }
+
+    _getVisibleTabId() {
+      if (typeof window !== 'undefined' && window.innerWidth < 960) {
+        return this._activeMobileTab || null;
+      }
+      if (!this.isDrawerOpen()) {
+        return null;
+      }
+      return this._activeDesktopTab || 'band-mode';
+    }
+
+    _shouldRunAfScope() {
+      if (typeof document !== 'undefined' && document.hidden) return false;
+      if (this._getVisibleTabId() !== 'audio') return false;
+      const canvas = this._refs.afScopeCanvas;
+      if (!canvas || !canvas.isConnected) return false;
+      const aDiag = this.audio && this.audio.getDiagnostics ? this.audio.getDiagnostics() : {};
+      const isRec = Boolean(this.audio && typeof this.audio.isRecording === 'function' && this.audio.isRecording());
+      return Boolean((aDiag.started && !aDiag.muted) || isRec);
+    }
+
+    _syncAfScopeLoop() {
+      if (this._shouldRunAfScope()) {
+        this._startAfScopeLoop();
+      } else {
+        if (this._afScopeTimer) {
+          clearInterval(this._afScopeTimer);
+          this._afScopeTimer = null;
+        }
+        const perf = this._uiPerf();
+        if (perf) perf.afScopeSkips += 1;
+      }
+    }
+
     _startAfScopeLoop() {
       if (this._afScopeTimer) return;
+      if (!this._shouldRunAfScope()) {
+        const perf = this._uiPerf();
+        if (perf) perf.afScopeSkips += 1;
+        return;
+      }
       this._afScopeTimer = setInterval(() => {
-        if (this._refs.afScopeCanvas && this._refs.afScopeCanvas.isConnected) {
-          this._drawAfScope(this._snap());
+        if (!this._shouldRunAfScope()) {
+          this._syncAfScopeLoop();
+          return;
         }
+        this._drawAfScope(this._snap());
       }, 120);
     }
 
@@ -1836,35 +1926,20 @@
     _buildTxPane() {
       const pane = el('div', 'k4-panel-pane');
 
-      // (a) TX Status, Posture, TOT, Split & XIT
-      const statusBadge = el('span', 'k4-card-badge', 'RX ONLY');
-      const statusCard = makeCard('TX Status & Lock', statusBadge);
+      // (a) TX & Split card
+      const statusBadge = el('span', 'k4-card-badge', 'READY');
+      const statusCard = makeCard('TX & Split', statusBadge);
 
-      const postureGroup = el('div', 'k4-seg-group');
-      const postureBtns = {};
-      const postureSpecs = [
-        { id: 'rx-only', label: 'RX ONLY' },
-        { id: 'tx-armed', label: 'TX RDY' },
-      ];
-      for (let i = 0; i < postureSpecs.length; i++) {
-        const p = postureSpecs[i];
-        const b = el('button', `k4-seg-btn${p.id === 'tx-armed' ? ' is-amber' : ''}`, p.label);
-        b.type = 'button';
-        b.addEventListener('click', () => this.onSetTxPosture(p.id));
-        postureGroup.appendChild(b);
-        postureBtns[p.id] = b;
-      }
       const testToggleBtn = el('button', 'k4-seg-btn k4-test-switch', 'TEST');
       testToggleBtn.type = 'button';
-      testToggleBtn.title = 'K4 TEST mode: toggle off-air TX Test without altering RF power setting';
+      testToggleBtn.style.width = '100%';
+      testToggleBtn.title = 'K4 TEST switch: toggle off-air TX Test without altering RF power setting';
       testToggleBtn.addEventListener('click', () => this.onToggleTxTest());
-      postureGroup.appendChild(testToggleBtn);
-      statusCard.appendChild(postureGroup);
-      this._refs.txPostureBtns = postureBtns;
+      statusCard.appendChild(testToggleBtn);
       this._refs.txTestToggleBtn = testToggleBtn;
 
-      const txBanner = el('div', 'k4-tx-banner', 'Transmit Lock active');
-      txBanner.dataset.state = 'idle';
+      const txBanner = el('div', 'k4-tx-banner', 'Ready — Hold PTT or Spacebar to transmit');
+      txBanner.dataset.state = 'matched';
       statusCard.appendChild(txBanner);
       this._refs.txStatusBanner = txBanner;
       this._refs.txStatusBadge = statusBadge;
@@ -1911,7 +1986,7 @@
       const panicBtn = el('button', 'k4-btn k4-btn--danger', 'STOP TX · RX (Esc)');
       panicBtn.type = 'button';
       panicBtn.dataset.testid = 'stop-tx-btn';
-      panicBtn.title = 'Stop transmission, cancel tune/playback, and return to RX ONLY (Esc)';
+      panicBtn.title = 'Stop transmission, cancel tune/playback, and return to receive (Esc)';
       panicBtn.addEventListener('click', () => this.onPanicAbort());
       splitMacroRow.appendChild(quickSplitBtn);
       splitMacroRow.appendChild(panicBtn);
@@ -1967,35 +2042,36 @@
 
       pane.appendChild(statusCard);
 
-      // (b) KAT4 ATU & Antenna card
+      // (b) ATU & Antenna card
       const atuBadge = el('span', 'k4-card-badge', 'KAT4');
-      const atuCard = makeCard('KAT4 ATU & Antenna', atuBadge);
+      const atuCard = makeCard('ATU & Antenna', atuBadge);
       this._refs.atuModuleBadge = atuBadge;
 
       const antRow = el('div', 'k4-slider-row');
       const antHead = el('div', 'k4-slider-head');
       antHead.appendChild(el('span', 'k4-slider-label', 'TX Antenna'));
       antRow.appendChild(antHead);
-      const antSelect = document.createElement('select');
-      antSelect.className = 'k4-select';
-      antSelect.dataset.testid = 'tx-antenna-select';
-      for (let i = 1; i <= 3; i++) {
-        const opt = document.createElement('option');
-        opt.value = String(i);
-        opt.textContent = `ANT${i}`;
-        antSelect.appendChild(opt);
-      }
-      antSelect.addEventListener('change', () => {
-        const port = Number(antSelect.value) || 1;
-        if (typeof this.client.setTxAntenna === 'function') {
-          this.client.setTxAntenna(port);
+      const antBtn = el('button', 'k4-btn k4-ant-cycle-btn', 'ANT 1');
+      antBtn.type = 'button';
+      antBtn.dataset.testid = 'tx-antenna-btn';
+      antBtn.title = 'Cycle TX Antenna (ANT 1 → 2 → 3 → 1)';
+      antBtn.addEventListener('click', () => {
+        if (typeof this.client.cycleTxAntenna === 'function') {
+          this.client.cycleTxAntenna();
         } else {
-          this._sendCat(`AN${port};`);
+          const snap = this._snap();
+          const cur = Number(snap.txAntenna) || 1;
+          const next = (cur % 3) + 1;
+          if (typeof this.client.setTxAntenna === 'function') {
+            this.client.setTxAntenna(next);
+          } else {
+            this._sendCat(`AN${next};`);
+          }
         }
       });
-      antRow.appendChild(antSelect);
+      antRow.appendChild(antBtn);
       atuCard.appendChild(antRow);
-      this._refs.txAntennaSelect = antSelect;
+      this._refs.txAntennaBtn = antBtn;
 
       const atuModeSeg = el('div', 'k4-seg-group');
       const bypassBtn = el('button', 'k4-seg-btn', 'BYPASS');
@@ -2015,23 +2091,21 @@
       atuCard.appendChild(atuModeSeg);
       this._refs.atuModeBtns = { 1: bypassBtn, 2: autoBtn };
 
-      const atuGrid = el('div', 'k4-btn-grid k4-btn-grid--2');
-      const atuTuneBtn = el('button', 'k4-btn k4-btn--amber', 'ATU TUNE');
+      const atuTuneBtn = el('button', 'k4-btn k4-btn--amber k4-btn--full', 'ATU TUNE');
       atuTuneBtn.type = 'button';
       atuTuneBtn.dataset.testid = 'atu-tune-btn';
+      atuTuneBtn.title = 'Start KAT4 ATU Tune (tap again within 5s for Full Search)';
       atuTuneBtn.addEventListener('click', () => {
-        if (typeof this.client.startAtuTune === 'function') this.client.startAtuTune(3);
-        else this._sendCat('TU3;');
+        if (typeof this.client.startAtuTune === 'function') {
+          this.client.startAtuTune();
+        } else {
+          const hot = Number(this._snap().atuSearchWindowUntil) > Date.now();
+          this._sendCat(hot ? 'TU4;' : 'TU3;');
+        }
       });
+      atuCard.appendChild(atuTuneBtn);
 
-      const atuFullBtn = el('button', 'k4-btn', 'FULL SEARCH');
-      atuFullBtn.type = 'button';
-      atuFullBtn.dataset.testid = 'atu-full-btn';
-      atuFullBtn.addEventListener('click', () => {
-        if (typeof this.client.startAtuTune === 'function') this.client.startAtuTune(4);
-        else this._sendCat('TU4;');
-      });
-
+      const atuGrid = el('div', 'k4-btn-grid k4-btn-grid--2');
       const atuLpBtn = el('button', 'k4-btn', 'TUNE LP');
       atuLpBtn.type = 'button';
       atuLpBtn.addEventListener('click', () => {
@@ -2047,12 +2121,10 @@
         else this._sendCat('TU0;');
       });
 
-      atuGrid.appendChild(atuTuneBtn);
-      atuGrid.appendChild(atuFullBtn);
       atuGrid.appendChild(atuLpBtn);
       atuGrid.appendChild(atuStopBtn);
       atuCard.appendChild(atuGrid);
-      this._refs.atuBtns = { tune: atuTuneBtn, full: atuFullBtn, lp: atuLpBtn, stop: atuStopBtn };
+      this._refs.atuBtns = { tune: atuTuneBtn, lp: atuLpBtn, stop: atuStopBtn };
 
       const atuStatus = el('div', 'k4-tx-banner', 'KAT4 Standby');
       atuStatus.dataset.testid = 'atu-status';
@@ -2065,49 +2137,33 @@
       // (c) RF Power & Audio TX card
       const pwrCard = makeCard('RF Power & TX Audio');
 
-      const rangeGroup = el('div', 'k4-seg-group');
-      const rangeLBtn = el('button', 'k4-seg-btn', 'L · QRP (0.1–10W)');
-      rangeLBtn.type = 'button';
-      rangeLBtn.addEventListener('click', () => {
-        const curW = Number(this._snap().powerWatts) || 5;
-        const clamped = Math.max(0.1, Math.min(10.0, curW));
+      const quantizePower = (raw) => {
+        const clamped = Math.max(0.1, Math.min(110, Number(raw) || 0.1));
+        return clamped <= 10 ? Math.round(clamped * 10) / 10 : Math.round(clamped);
+      };
+      const sendPowerWatts = (raw) => {
+        const watts = quantizePower(raw);
         if (typeof this.client.setPowerWatts === 'function') {
-          this.client.setPowerWatts(clamped, 'L');
+          this.client.setPowerWatts(watts);
+        } else if (watts <= 10) {
+          this._sendCat(`PC${String(Math.round(watts * 10)).padStart(3, '0')}L;`);
         } else {
-          this._sendCat(`PC${String(Math.round(clamped * 10)).padStart(3, '0')}L;`);
+          this._sendCat(`PC${String(watts).padStart(3, '0')}H;`);
         }
-      });
-      const rangeHBtn = el('button', 'k4-seg-btn is-amber', 'H · QRO (1–110W)');
-      rangeHBtn.type = 'button';
-      rangeHBtn.addEventListener('click', () => {
-        const curW = Math.round(Number(this._snap().powerWatts) || 25);
-        const clamped = Math.max(1, Math.min(110, curW));
-        if (typeof this.client.setPowerWatts === 'function') {
-          this.client.setPowerWatts(clamped, 'H');
-        } else {
-          this._sendCat(`PC${String(clamped).padStart(3, '0')}H;`);
-        }
-      });
-      rangeGroup.appendChild(rangeLBtn);
-      rangeGroup.appendChild(rangeHBtn);
-      pwrCard.appendChild(rangeGroup);
-      this._refs.pwrRangeBtns = { L: rangeLBtn, H: rangeHBtn };
+      };
 
       const pwrSlider = makeSliderRow({
         label: 'RF Power',
         min: 0.1,
-        max: 10,
+        max: 110,
         step: 0.1,
         value: 10,
-        formatValue: (v) => (this._snap().powerRange === 'H' ? `${Math.round(v)} W` : `${v.toFixed(1)} W`),
-        onInput: (v) => {
-          const range = this._snap().powerRange === 'H' ? 'H' : 'L';
-          if (typeof this.client.setPowerWatts === 'function') this.client.setPowerWatts(v, range);
+        formatValue: (v) => {
+          const w = quantizePower(v);
+          return w <= 10 ? `${w.toFixed(1)} W` : `${Math.round(w)} W`;
         },
-        onChange: (v) => {
-          const range = this._snap().powerRange === 'H' ? 'H' : 'L';
-          if (typeof this.client.setPowerWatts === 'function') this.client.setPowerWatts(v, range);
-        },
+        onInput: sendPowerWatts,
+        onChange: sendPowerWatts,
       });
       pwrSlider.input.dataset.testid = 'tx-power-slider';
       pwrCard.appendChild(pwrSlider.row);
@@ -2158,26 +2214,6 @@
       });
       pwrCard.appendChild(mlSlider.row);
       this._refs.txMlSlider = mlSlider;
-
-      const miRow = el('div', 'k4-slider-row');
-      miRow.appendChild(el('div', 'k4-slider-head')).appendChild(el('span', 'k4-slider-label', 'Mic Input'));
-      const miSelect = document.createElement('select');
-      miSelect.className = 'k4-select';
-      const miLabels = ['0 · Front Mic', '1 · Rear Mic', '2 · Line In', '3 · Front + Line', '4 · USB Audio'];
-      for (let i = 0; i < miLabels.length; i++) {
-        const opt = document.createElement('option');
-        opt.value = String(i);
-        opt.textContent = miLabels[i];
-        miSelect.appendChild(opt);
-      }
-      miSelect.addEventListener('change', () => {
-        const v = Number(miSelect.value) || 0;
-        if (typeof this.client.setMicInput === 'function') this.client.setMicInput(v);
-        else this._sendCat(`MI${v};`);
-      });
-      miRow.appendChild(miSelect);
-      pwrCard.appendChild(miRow);
-      this._refs.txMiSelect = miSelect;
 
       const voxSwitch = makeSwitchRow('VOX', () => {
         const snap = this._snap();
@@ -2378,7 +2414,7 @@
       this._refs.cwKyInput = kyInput;
 
       const kyActions = el('div', 'k4-btn-grid k4-btn-grid--2');
-      const kySendBtn = el('button', 'k4-btn k4-btn--amber', 'Send KY');
+      const kySendBtn = el('button', 'k4-btn k4-btn--amber', 'Send');
       kySendBtn.type = 'button';
       kySendBtn.dataset.testid = 'cw-ky-send';
       kySendBtn.addEventListener('click', () => {
@@ -2391,7 +2427,7 @@
         }
       });
 
-      const kyAbortBtn = el('button', 'k4-btn k4-btn--danger', 'Abort KY @');
+      const kyAbortBtn = el('button', 'k4-btn k4-btn--danger', 'Stop');
       kyAbortBtn.type = 'button';
       kyAbortBtn.dataset.testid = 'cw-ky-abort';
       kyAbortBtn.addEventListener('click', () => {
@@ -2694,7 +2730,7 @@
         this._activeDesktopTab = tabId;
       }
       this.syncHost();
-      this.update(this._snap());
+      this.syncVisibleTab();
       if (scrollTargetEl && typeof scrollTargetEl.scrollIntoView === 'function') {
         requestAnimationFrame(() => {
           scrollTargetEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
@@ -2706,6 +2742,10 @@
       if (this._afScopeTimer) {
         clearInterval(this._afScopeTimer);
         this._afScopeTimer = null;
+      }
+      if (this._atuCueTimer) {
+        clearTimeout(this._atuCueTimer);
+        this._atuCueTimer = null;
       }
       if (typeof this._unsubBookmarks === 'function') {
         this._unsubBookmarks();
@@ -2721,7 +2761,7 @@
       if (!this._panes[tabId] || tabId === 'tune') return;
       this._activeDesktopTab = tabId;
       this.syncHost();
-      this.update(this._snap());
+      this.syncVisibleTab();
     }
 
     toggleMobileSheet(tabId) {
@@ -2731,16 +2771,34 @@
       }
       this._activeMobileTab = tabId;
       this.syncHost();
-      this.update(this._snap());
+      this.syncVisibleTab();
     }
 
     closeMobileSheet() {
       this._activeMobileTab = null;
       this.syncHost();
+      this._syncAfScopeLoop();
     }
 
     isMobileSheetOpen() {
       return Boolean(this._activeMobileTab);
+    }
+
+    onDrawerVisibilityChange() {
+      this.syncVisibleTab();
+    }
+
+    syncVisibleTab() {
+      const visibleTab = this._getVisibleTabId();
+      const snap = this._snap();
+      if (this.isDrawerOpen()) {
+        this._updateSensorStrip(snap);
+      }
+      if (visibleTab && this._dirtyTabs.has(visibleTab)) {
+        this._updateTab(visibleTab, snap);
+        this._dirtyTabs.delete(visibleTab);
+      }
+      this._syncAfScopeLoop();
     }
 
     syncHost() {
@@ -2779,11 +2837,123 @@
       }
     }
 
-    update(snapshot) {
+    _tabsForChangedKeys(changedKeys) {
+      if (!changedKeys) {
+        return ['band-mode', 'dsp', 'display', 'audio', 'tune', 'tx'];
+      }
+      const list = Array.isArray(changedKeys) ? changedKeys : Array.from(changedKeys);
+      if (list.length === 0) {
+        return ['band-mode', 'dsp', 'display', 'audio', 'tune', 'tx'];
+      }
+      const out = new Set();
+      for (let i = 0; i < list.length; i++) {
+        const k = String(list[i] || '');
+        if (
+          k.endsWith('.freqHz') ||
+          k.endsWith('.mode') ||
+          k.endsWith('.dataSubMode') ||
+          k.endsWith('.stepHz') ||
+          k.endsWith('.locked') ||
+          k.endsWith('.band') ||
+          k === 'band' ||
+          k === 'subRxEnabled' ||
+          k === 'vfoLinked' ||
+          k === 'diversityEnabled' ||
+          k === 'optionModules'
+        ) {
+          out.add('band-mode');
+          out.add('tune');
+          if (k.endsWith('.mode') || k.endsWith('.freqHz')) out.add('dsp');
+          if (k.endsWith('.mode') || k === 'optionModules' || k === 'subRxEnabled') out.add('tx');
+          if (k === 'subRxEnabled') out.add('display');
+        } else if (
+          k.endsWith('.filter') ||
+          k.endsWith('.bwHz') ||
+          k.endsWith('.ifShiftHz') ||
+          k.endsWith('.preamp') ||
+          k.endsWith('.attenDb') ||
+          k.endsWith('.rfGainDb') ||
+          k.endsWith('.squelch') ||
+          k.endsWith('.agc') ||
+          k.endsWith('.nb') ||
+          k.endsWith('.nr') ||
+          k.endsWith('.notch') ||
+          k.endsWith('.rit') ||
+          k.endsWith('.ritOn') ||
+          k.endsWith('.ritOffsetHz') ||
+          k.endsWith('.apf') ||
+          k.endsWith('.textDecode') ||
+          k === 'cwPitchHz' ||
+          k === 'spotTone' ||
+          k === 'cwSpotOn' ||
+          k.endsWith('.spotMode')
+        ) {
+          out.add('dsp');
+          if (k.endsWith('.rit') || k.endsWith('.ritOn') || k.endsWith('.ritOffsetHz')) {
+            out.add('tx');
+          }
+        } else if (
+          k === 'display' ||
+          k.endsWith('.display') ||
+          k.endsWith('.miniPan') ||
+          k.endsWith('.panNbMode') ||
+          k.endsWith('.panNbLevel') ||
+          k.endsWith('.panMeta') ||
+          k === 'dualPanMode' ||
+          k === 'panAvg' ||
+          k === 'panFrozen' ||
+          k === 'panFps' ||
+          k === 'displayMode' ||
+          k === 'waterfallHeightPct' ||
+          k === 'fixedTune' ||
+          k === 'panScaleDb' ||
+          k === 'wfBlack' ||
+          k === 'autoRef'
+        ) {
+          out.add('display');
+          if (k.endsWith('.panMeta')) out.add('audio');
+        } else if (
+          k === 'audioMix' ||
+          k === 'encodeMode' ||
+          k === 'streamingLatency' ||
+          k === 'audio' ||
+          k === 'connection'
+        ) {
+          out.add('audio');
+          if (k === 'connection') out.add('tx');
+        } else if (
+          k === 'telemetry' ||
+          k === 'txMeters' ||
+          k.startsWith('tx') ||
+          k.startsWith('atu') ||
+          k.startsWith('power') ||
+          k === 'splitEnabled' ||
+          k === 'xitEnabled' ||
+          k === 'activeTxVfo' ||
+          k === 'antennaNames' ||
+          k === 'micGain' ||
+          k === 'compDbSet' ||
+          k.startsWith('mon') ||
+          k === 'vox' ||
+          k === 'cwSpeedWpm' ||
+          k.startsWith('keyer') ||
+          k === 'dvrPlayback'
+        ) {
+          out.add('tx');
+          if (k === 'telemetry') out.add('audio');
+        } else if (!k.endsWith('.sMeterDbm') && !k.endsWith('.adcOverflow') && k !== 'decodedText') {
+          return ['band-mode', 'dsp', 'display', 'audio', 'tune', 'tx'];
+        }
+      }
+      return Array.from(out);
+    }
+
+    update(snapshot, changedKeys = null) {
       if (!snapshot) return;
+      const perf = this._uiPerf();
+      if (perf) perf.inspectorUpdates += 1;
+
       const targetRx = this.getTargetRx();
-      const rxS = (targetRx === 'B' ? snapshot.rxB : snapshot.rxA) || {};
-      const isAmber = targetRx === 'B';
 
       // Target buttons
       if (this._refs.targetBtns) {
@@ -2795,6 +2965,57 @@
         this._refs.mobileTargetBtns.B.classList.toggle('is-active', targetRx === 'B');
       }
 
+      const affected = this._tabsForChangedKeys(changedKeys);
+      for (let i = 0; i < affected.length; i++) {
+        this._dirtyTabs.add(affected[i]);
+      }
+
+      if (this.isDrawerOpen()) {
+        this._updateSensorStrip(snapshot);
+      }
+
+      const visibleTab = this._getVisibleTabId();
+      for (let i = 0; i < affected.length; i++) {
+        const tabId = affected[i];
+        if (tabId === visibleTab) {
+          this._updateTab(tabId, snapshot);
+          this._dirtyTabs.delete(tabId);
+        } else if (perf) {
+          perf.inspectorTabSkips += 1;
+        }
+      }
+
+      if (visibleTab !== 'audio') {
+        if (this._afScopeTimer) {
+          this._syncAfScopeLoop();
+        } else if (perf) {
+          perf.afScopeSkips += 1;
+        }
+      }
+    }
+
+    _updateTab(tabId, snapshot) {
+      const targetRx = this.getTargetRx();
+      const rxS = (targetRx === 'B' ? snapshot.rxB : snapshot.rxA) || {};
+      const isAmber = targetRx === 'B';
+      if (tabId === 'band-mode') {
+        this._updateBandModeTab(snapshot, rxS, isAmber);
+      } else if (tabId === 'dsp') {
+        this._updateDspTab(snapshot, rxS);
+      } else if (tabId === 'display') {
+        this._updateDisplayTab(snapshot);
+      } else if (tabId === 'audio') {
+        const aDiag = this.audio && this.audio.getDiagnostics ? this.audio.getDiagnostics() : {};
+        this._updateAudioTab(snapshot, rxS, aDiag);
+      } else if (tabId === 'tx') {
+        const aDiag = this.audio && this.audio.getDiagnostics ? this.audio.getDiagnostics() : {};
+        this._updateTxTab(snapshot, aDiag);
+      } else if (tabId === 'tune') {
+        this._updateBandModeTab(snapshot, rxS, isAmber);
+      }
+    }
+
+    _updateBandModeTab(snapshot, rxS, isAmber) {
       if (this._refs.subSwitch) this._refs.subSwitch.sync(snapshot.subRxEnabled);
       if (this._refs.linkSwitch) this._refs.linkSwitch.sync(snapshot.vfoLinked);
       if (this._refs.divSwitch) {
@@ -2841,6 +3062,9 @@
       if (this._refs.mobileLockBtn) {
         this._refs.mobileLockBtn.textContent = rxS.locked ? 'Unlock VFO' : 'Lock VFO';
       }
+    }
+
+    _updateDspTab(snapshot, rxS) {
 
       // DSP sliders & toggles
       if (this._refs.bwSlider) this._refs.bwSlider.sync(rxS.bwHz ?? 2700);
@@ -2909,6 +3133,22 @@
           b.disabled = !isCwMode;
         }
       }
+      if (this._refs.autoSpotBtn) {
+        this._refs.autoSpotBtn.disabled = !isCwMode;
+        this._refs.autoSpotBtn.classList.toggle('is-cw-ready', isCwMode);
+        this._refs.autoSpotBtn.title = isCwMode
+          ? 'Zero-beat CW signal on active VFO'
+          : 'Available in CW / CW-R mode';
+      }
+      if (this._refs.cwSpotBtn) {
+        const spotOn = Boolean(snapshot.spotTone || snapshot.cwSpotOn || rxS.spotMode === 1 || rxS.spotMode === 2);
+        this._refs.cwSpotBtn.disabled = !isCwMode;
+        this._refs.cwSpotBtn.classList.toggle('is-active', isCwMode && spotOn);
+        this._refs.cwSpotBtn.setAttribute('aria-pressed', isCwMode && spotOn ? 'true' : 'false');
+        this._refs.cwSpotBtn.title = isCwMode
+          ? 'Toggle CW Spot sidetone pitch reference'
+          : 'Available in CW / CW-R mode';
+      }
 
       if (this._refs.tdSelect) {
         const desc = syncDecodeSelect(this._refs.tdSelect, rxS);
@@ -2930,8 +3170,9 @@
             : desc.reason;
         }
       }
+    }
 
-      // Display controls (routed to the visible display RX when Single-Pan)
+    _updateDisplayTab(snapshot) {
       const dispRx = this._dispRx(snapshot);
       const dispS = (dispRx === 'B' ? snapshot.rxB : snapshot.rxA) || {};
       if (this._refs.dispBadge) {
@@ -3013,9 +3254,9 @@
           b.classList.toggle('is-active', b.dataset.qsyMode === qsyMode);
         }
       }
+    }
 
-      // Audio & Diagnostics
-      const aDiag = this.audio && this.audio.getDiagnostics ? this.audio.getDiagnostics() : {};
+    _updateAudioTab(snapshot, rxS, aDiag) {
       if (this._refs.panelAudioBtn) {
         if (!aDiag.started) {
           this._refs.panelAudioBtn.textContent = 'Start & Unmute Audio';
@@ -3044,6 +3285,34 @@
         this._refs.diag.frames.textContent = String(pMet.framesRendered ?? 0);
         this._refs.diag.panTier.textContent = pMet.tierKHz ? `${pMet.tierKHz} kHz` : `${rxS.panTierKHz || 48} kHz`;
         this._refs.diag.rtt.textContent = conn.rttMs !== null && conn.rttMs !== undefined ? `${conn.rttMs} ms` : '—';
+        if (this._refs.diag.e2eLatency) {
+          const lb =
+            aDiag.e2eRxMs !== undefined || aDiag.localPipelineMs !== undefined
+              ? aDiag
+              : this.audio && typeof this.audio.getLatencyBreakdown === 'function'
+              ? this.audio.getLatencyBreakdown(conn.rttMs)
+              : null;
+          let latText = '—';
+          if (lb) {
+            if (lb.e2eRxMs != null) {
+              const parts = [];
+              if (lb.rxNetHalfRttMs != null) parts.push(`½${lb.rxNetHalfRttMs}`);
+              if (lb.rxFrameMs != null) parts.push(`${lb.rxFrameMs}`);
+              if (lb.rxJitterMs != null) parts.push(`J${lb.rxJitterMs}`);
+              if (lb.rxAudioOutMs != null) parts.push(`O${lb.rxAudioOutMs}`);
+              const txPart = lb.e2eTxMs != null ? ` · TX ${lb.e2eTxMs}ms` : '';
+              latText = `RX ${lb.e2eRxMs}ms (${parts.join('+')})${txPart}`;
+            } else if (aDiag.started && !aDiag.muted && lb.localPipelineMs != null) {
+              const txPart = lb.e2eTxMs != null ? ` · TX ${lb.e2eTxMs}ms` : '';
+              latText = `RX local ${lb.localPipelineMs}ms${txPart}`;
+            } else if (lb.e2eTxMs != null) {
+              latText = `RX off · TX ${lb.e2eTxMs}ms`;
+            } else {
+              latText = 'RX off';
+            }
+          }
+          this._refs.diag.e2eLatency.textContent = latText;
+        }
         this._refs.diag.sink.textContent = aDiag.sinkType || 'none';
         this._refs.diag.bufferMs.textContent = aDiag.started ? `${Math.round(aDiag.bufferMs || 0)} / ${aDiag.targetMs || 75} ms` : 'stopped';
         this._refs.diag.packets.textContent = String(aDiag.packetsIn ?? 0);
@@ -3063,29 +3332,62 @@
         this._refs.diag.paTemp.textContent = paParts.length ? paParts.join(' · ') : '—';
       }
 
-      this._drawAfScope(snapshot);
-      this._updateTxAndSensors(snapshot, aDiag);
-
-      if (this._refs.safetyNote) {
-        const gStats = this.gate && this.gate.getStats ? this.gate.getStats() : { blockedCatCount: 0, blockedBinaryCount: 0 };
-        const totalBlocked = (gStats.blockedCatCount || 0) + (gStats.blockedBinaryCount || 0);
-        const policy = this.gate && this.gate.getPolicy ? this.gate.getPolicy() : 'rx-only';
-        const posture = snapshot.txPosture || (policy === 'tx-enabled' ? 'tx-armed' : 'rx-only');
-        const postureLabel =
-          posture === 'rx-only' ? 'RX-ONLY' : (posture === 'tx-test' ? 'TX-TEST' : 'TX READY');
-        this._refs.safetyNote.textContent =
-          posture === 'rx-only'
-            ? `Blocked in RX-Only: ${totalBlocked} TX attempt${totalBlocked === 1 ? '' : 's'}. All transmit, tune, keyer, DVR, power commands, and outbound audio (0x01) are blocked while Transmit Lock is active.`
-            : `TX Mode: ${postureLabel} · Blocked TX attempts: ${totalBlocked}. Calibration and factory-service commands remain blocked in all modes.`;
+      this._syncAfScopeLoop();
+      if (this._shouldRunAfScope()) {
+        this._drawAfScope(snapshot);
       }
+    }
+
+    _updateSensorStrip(snapshot) {
+      if (!this._strip) return;
+      const tel = snapshot.telemetry || {};
+      const tm = snapshot.txMeters || {};
+      const vs = tel.supplyVolts != null ? Number(tel.supplyVolts) : null;
+      const isAmps = tel.supplyAmps != null ? Number(tel.supplyAmps) : null;
+      const peakIs = tel.peakSupplyAmps != null ? Number(tel.peakSupplyAmps) : isAmps;
+      const pt = tel.paTempC != null ? Number(tel.paTempC) : null;
+      const tf = tel.fpTempC != null ? Number(tel.fpTempC) : null;
+      const swr = Number(tm.swr) >= 1.0 ? Number(tm.swr) : (snapshot.atuMatchedSwr || 1.0);
+
+      const tempLevel = (t) => (t == null ? 'ok' : (t >= 75 ? 'crit' : (t >= 60 ? 'warn' : 'ok')));
+      const tfLevel = (t) => (t == null ? 'ok' : (t >= 70 ? 'crit' : (t >= 55 ? 'warn' : 'ok')));
+      const voltLevel = (v) => (v == null ? 'ok' : (v < 11.2 ? 'crit' : (v < 11.8 ? 'warn' : 'ok')));
+      const swrLevel = (s) => (s > 2.5 ? 'crit' : (s > 1.5 ? 'warn' : 'ok'));
+
+      this._strip.vs.val.textContent = vs != null ? `${vs.toFixed(1)}V` : '—';
+      this._strip.vs.pill.dataset.level = voltLevel(vs);
+      this._strip.vs.pill.classList.toggle('is-selected', this._selectedSensorKey === 'vs');
+
+      this._strip.is.val.textContent = isAmps != null
+        ? (peakIs != null && peakIs > isAmps + 0.3 ? `${isAmps.toFixed(1)}/${peakIs.toFixed(0)}A` : `${isAmps.toFixed(1)}A`)
+        : '—';
+      this._strip.is.pill.dataset.level = isAmps != null && isAmps > 21 ? 'warn' : 'ok';
+      this._strip.is.pill.classList.toggle('is-selected', this._selectedSensorKey === 'is');
+
+      const stripTempKey = pt == null && tf != null ? 'tf' : 'pt';
+      const stripTempVal = pt != null ? pt : tf;
+      const stripTempLbl = stripTempKey === 'tf' ? 'FP TEMP' : 'PA TEMP';
+      this._strip.pt.lbl.textContent = stripTempLbl;
+      this._strip.pt.pill.dataset.sensorKey = stripTempKey;
+      this._strip.pt.pill.title = `Open ${stripTempLbl} graph in TX / ATU`;
+      this._strip.pt.val.textContent = stripTempVal != null ? `${stripTempVal.toFixed(0)}°C` : '—';
+      this._strip.pt.pill.dataset.level = stripTempKey === 'tf' ? tfLevel(stripTempVal) : tempLevel(stripTempVal);
+      this._strip.pt.pill.classList.toggle('is-selected', this._selectedSensorKey === stripTempKey);
+
+      this._strip.swr.val.textContent = `${swr.toFixed(2)}:1`;
+      this._strip.swr.pill.dataset.level = swrLevel(swr);
+      this._strip.swr.pill.classList.toggle('is-selected', this._selectedSensorKey === 'swr');
+    }
+
+    _updateTxTab(snapshot, aDiag) {
+      this._updateTxAndSensors(snapshot, aDiag);
     }
 
     _updateTxAndSensors(snapshot, aDiag) {
       const tel = snapshot.telemetry || {};
       const tm = snapshot.txMeters || {};
-      const posture = snapshot.txPosture || 'rx-only';
       const txActive = Boolean(snapshot.txActive);
-      const isTest = Boolean(snapshot.txTestMode || posture === 'tx-test');
+      const isTest = Boolean(snapshot.txTestMode || snapshot.txPosture === 'tx-test');
       const atuTuning = Boolean(snapshot.atuTuning);
 
       const vs = tel.supplyVolts != null ? Number(tel.supplyVolts) : null;
@@ -3100,43 +3402,10 @@
       const swr = Number(tm.swr) >= 1.0 ? Number(tm.swr) : (snapshot.atuMatchedSwr || 1.0);
 
       const tempLevel = (t) => (t == null ? 'ok' : (t >= 75 ? 'crit' : (t >= 60 ? 'warn' : 'ok')));
-      const tfLevel = (t) => (t == null ? 'ok' : (t >= 70 ? 'crit' : (t >= 55 ? 'warn' : 'ok')));
       const voltLevel = (v) => (v == null ? 'ok' : (v < 11.2 ? 'crit' : (v < 11.8 ? 'warn' : 'ok')));
       const swrLevel = (s) => (s > 2.5 ? 'crit' : (s > 1.5 ? 'warn' : 'ok'));
 
-      // Compact always-visible sensor strip
-      if (this._strip) {
-        this._strip.vs.val.textContent = vs != null ? `${vs.toFixed(1)}V` : '—';
-        this._strip.vs.pill.dataset.level = voltLevel(vs);
-        this._strip.vs.pill.classList.toggle('is-selected', this._selectedSensorKey === 'vs');
-
-        this._strip.is.val.textContent = isAmps != null
-          ? (peakIs != null && peakIs > isAmps + 0.3 ? `${isAmps.toFixed(1)}/${peakIs.toFixed(0)}A` : `${isAmps.toFixed(1)}A`)
-          : '—';
-        this._strip.is.pill.dataset.level = isAmps != null && isAmps > 21 ? 'warn' : 'ok';
-        this._strip.is.pill.classList.toggle('is-selected', this._selectedSensorKey === 'is');
-
-        const stripTempKey = pt == null && tf != null ? 'tf' : 'pt';
-        const stripTempVal = pt != null ? pt : tf;
-        const stripTempLbl = stripTempKey === 'tf' ? 'FP TEMP' : 'PA TEMP';
-        this._strip.pt.lbl.textContent = stripTempLbl;
-        this._strip.pt.pill.dataset.sensorKey = stripTempKey;
-        this._strip.pt.pill.title = `Open ${stripTempLbl} graph in TX / ATU`;
-        this._strip.pt.val.textContent = stripTempVal != null ? `${stripTempVal.toFixed(0)}°C` : '—';
-        this._strip.pt.pill.dataset.level = stripTempKey === 'tf' ? tfLevel(stripTempVal) : tempLevel(stripTempVal);
-        this._strip.pt.pill.classList.toggle('is-selected', this._selectedSensorKey === stripTempKey);
-
-        this._strip.swr.val.textContent = `${swr.toFixed(2)}:1`;
-        this._strip.swr.pill.dataset.level = swrLevel(swr);
-        this._strip.swr.pill.classList.toggle('is-selected', this._selectedSensorKey === 'swr');
-      }
-
-      // (a) TX Status, Posture, TOT, Split, XIT
-      if (this._refs.txPostureBtns) {
-        for (const id of Object.keys(this._refs.txPostureBtns)) {
-          this._refs.txPostureBtns[id].classList.toggle('is-active', id === posture);
-        }
-      }
+      // (a) TX & Split
       if (this._refs.txTestToggleBtn) {
         this._refs.txTestToggleBtn.classList.toggle('is-active', isTest);
         this._refs.txTestToggleBtn.setAttribute('aria-pressed', isTest ? 'true' : 'false');
@@ -3145,7 +3414,7 @@
       if (this._refs.txStatusBanner) {
         const b = this._refs.txStatusBanner;
         if (snapshot.txInhibit) {
-          b.textContent = 'TX INHIBIT ACTIVE (Hardware/CAT Lock)';
+          b.textContent = 'TX INHIBIT ACTIVE (Hardware Lock)';
           b.dataset.state = 'warn';
           this._refs.txStatusBadge.textContent = 'INHIBIT';
         } else if (atuTuning) {
@@ -3160,22 +3429,14 @@
           b.textContent = 'TX ON — Press Esc to return to RX';
           b.dataset.state = 'warn';
           this._refs.txStatusBadge.textContent = 'TX ON';
-        } else if (posture === 'tx-armed' && isTest) {
-          b.textContent = 'TX Test active while TX Ready — RF output inhibited';
-          b.dataset.state = 'tuning';
-          this._refs.txStatusBadge.textContent = 'TX Test';
-        } else if (posture === 'tx-armed') {
-          b.textContent = 'TX READY — Hold PTT or Spacebar to transmit';
-          b.dataset.state = 'matched';
-          this._refs.txStatusBadge.textContent = 'TX READY';
-        } else if (posture === 'tx-test' || isTest) {
+        } else if (isTest) {
           b.textContent = 'K4 TX Test — Off-air audio, ALC & keyer check (RF power unchanged)';
           b.dataset.state = 'tuning';
           this._refs.txStatusBadge.textContent = 'TX Test';
         } else {
-          b.textContent = 'Transmit Lock Active — TX / ATU / Power locked';
-          b.dataset.state = 'idle';
-          this._refs.txStatusBadge.textContent = 'RX ONLY';
+          b.textContent = 'Ready — Hold PTT or Spacebar to transmit';
+          b.dataset.state = 'matched';
+          this._refs.txStatusBadge.textContent = 'READY';
         }
       }
       if (this._refs.txVfoVal) {
@@ -3200,21 +3461,14 @@
         this._refs.txXitZeroBtn.textContent = off === 0 ? 'XIT 0 Hz' : `${off > 0 ? '+' : ''}${off} Hz`;
       }
 
-      // (b) KAT4 ATU & Antenna
-      if (this._refs.txAntennaSelect) {
-        const sel = this._refs.txAntennaSelect;
+      // (b) ATU & Antenna
+      if (this._refs.txAntennaBtn) {
+        const port = Number(snapshot.txAntenna) || 1;
         const names = snapshot.antennaNames || {};
-        const mask = Array.isArray(snapshot.txAntennaMask) ? snapshot.txAntennaMask : [true, true, true];
-        for (let i = 0; i < sel.options.length; i++) {
-          const port = i + 1;
-          const label = names[port] ? `ANT${port} · ${names[port]}` : `ANT${port}`;
-          if (sel.options[i].textContent !== label) sel.options[i].textContent = label;
-          sel.options[i].disabled = mask[i] === false;
-        }
-        const curAnt = String(snapshot.txAntenna || 1);
-        if (document.activeElement !== sel && sel.value !== curAnt) {
-          sel.value = curAnt;
-        }
+        const rawName = names[port] ? String(names[port]).trim() : '';
+        const hasCustom = rawName && rawName.replace(/\s+/g, '').toUpperCase() !== `ANT${port}`;
+        this._refs.txAntennaBtn.textContent = hasCustom ? `ANT ${port} · ${rawName}` : `ANT ${port}`;
+        this._refs.txAntennaBtn.dataset.port = String(port);
       }
       if (this._refs.atuModuleBadge) {
         this._refs.atuModuleBadge.textContent = snapshot.hasAtu === false ? 'NO ATU' : (atuTuning ? 'TUNING' : 'KAT4');
@@ -3224,16 +3478,30 @@
         this._refs.atuModeBtns[1].classList.toggle('is-active', am === 1);
         this._refs.atuModeBtns[2].classList.toggle('is-active', am === 2);
       }
+      const searchWindowRemMs = (Number(snapshot.atuSearchWindowUntil) || 0) - Date.now();
+      const searchHot = !atuTuning && searchWindowRemMs > 0;
+      if (this._atuCueTimer) {
+        clearTimeout(this._atuCueTimer);
+        this._atuCueTimer = null;
+      }
+      if (searchHot) {
+        this._atuCueTimer = setTimeout(() => {
+          this._atuCueTimer = null;
+          if (this._getVisibleTabId() === 'tx') {
+            this._updateTxTab(this._snap(), this.audio && this.audio.getDiagnostics ? this.audio.getDiagnostics() : {});
+          } else {
+            this._dirtyTabs.add('tx');
+          }
+        }, searchWindowRemMs + 30);
+      }
       if (this._refs.atuBtns) {
-        const searchHot = Number(snapshot.atuSearchWindowUntil) > Date.now();
-        this._refs.atuBtns.full.classList.toggle('k4-btn--search-hot', searchHot);
+        this._refs.atuBtns.tune.classList.toggle('k4-btn--search-hot', searchHot);
+        this._refs.atuBtns.tune.textContent = searchHot ? '2nd TAP: FULL' : 'ATU TUNE';
         this._refs.atuBtns.tune.disabled = snapshot.hasAtu === false;
-        this._refs.atuBtns.full.disabled = snapshot.hasAtu === false;
       }
       if (this._refs.atuStatus) {
         const st = this._refs.atuStatus;
         const am = Number(snapshot.atuMode);
-        const searchHot = Number(snapshot.atuSearchWindowUntil) > Date.now();
         if (snapshot.hasAtu === false || am === 0) {
           st.textContent = 'KAT4 internal ATU not detected';
           st.dataset.state = 'idle';
@@ -3241,7 +3509,7 @@
           st.textContent = `KAT4 ${snapshot.atuTuneKind === 4 ? 'Full Search' : 'Tuning'}... SWR ${swr.toFixed(2)}:1`;
           st.dataset.state = 'tuning';
         } else if (searchHot) {
-          st.textContent = 'Press FULL SEARCH within 5s for wide L/C search';
+          st.textContent = 'Tap ATU TUNE again within 5s for Full Search';
           st.dataset.state = 'warn';
         } else if (am === 1) {
           st.textContent = 'KAT4 Bypassed';
@@ -3257,20 +3525,8 @@
       }
 
       // (c) RF Power & Audio TX
-      const pRange = snapshot.powerRange === 'H' ? 'H' : 'L';
-      if (this._refs.pwrRangeBtns) {
-        this._refs.pwrRangeBtns.L.classList.toggle('is-active', pRange === 'L');
-        this._refs.pwrRangeBtns.H.classList.toggle('is-active', pRange === 'H');
-      }
       if (this._refs.txPowerSlider) {
-        const inp = this._refs.txPowerSlider.input;
-        const targetMin = pRange === 'H' ? '1' : '0.1';
-        const targetMax = pRange === 'H' ? '110' : '10';
-        const targetStep = pRange === 'H' ? '1' : '0.1';
-        if (inp.min !== targetMin) inp.min = targetMin;
-        if (inp.max !== targetMax) inp.max = targetMax;
-        if (inp.step !== targetStep) inp.step = targetStep;
-        this._refs.txPowerSlider.sync(snapshot.powerWatts ?? (pRange === 'H' ? 25 : 10));
+        this._refs.txPowerSlider.sync(snapshot.powerWatts ?? 10);
       }
       if (this._refs.txMgSlider) this._refs.txMgSlider.sync(snapshot.micGain ?? 15);
       if (this._refs.txCpSlider) this._refs.txCpSlider.sync(snapshot.compDbSet ?? 0);
@@ -3278,10 +3534,6 @@
         const ch = this._txMonitorChannel();
         const mlVal = ch === 0 ? snapshot.monCw : (ch === 1 ? snapshot.monData : snapshot.monVoice);
         this._refs.txMlSlider.sync(mlVal ?? 5);
-      }
-      if (this._refs.txMiSelect && document.activeElement !== this._refs.txMiSelect) {
-        const mi = String(snapshot.micInput ?? 4);
-        if (this._refs.txMiSelect.value !== mi) this._refs.txMiSelect.value = mi;
       }
       if (this._refs.txVoxSwitch) {
         const rx = snapshot.activeTxVfo === 'B' ? (snapshot.rxB || {}) : (snapshot.rxA || {});

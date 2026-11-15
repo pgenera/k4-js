@@ -220,7 +220,7 @@
         this.subBtn.type = 'button';
         this.subBtn.className = 'k4-mini-pill k4-vfo-sub-btn is-amber';
         this.subBtn.textContent = 'SUB';
-        this.subBtn.title = 'Toggle Sub Receiver (SB)';
+        this.subBtn.title = 'Toggle Sub Receiver';
         this.subBtn.addEventListener('click', () => {
           const next = !this._subRxEnabled;
           if (typeof this.client.setSubRx === 'function') {
@@ -345,7 +345,8 @@
         }
         const split = Boolean(snapshot.splitEnabled);
         if (this.splitBadge && this._lastCache.split !== split) {
-          this.splitBadge.hidden = !split;
+          // Keep single crisp TX pill (txBadge) instead of redundant SPLIT + SPLIT TX badges
+          this.splitBadge.hidden = true;
           this._lastCache.split = split;
         }
       }
@@ -356,11 +357,13 @@
         const isTxTarget = txVfo === this.rx;
         const txActive = Boolean(snapshot.txActive);
         const atuTuning = Boolean(snapshot.atuTuning);
-        const posture = snapshot.txPosture || 'rx-only';
-        const isTest = Boolean(snapshot.txTestMode || posture === 'tx-test');
+        const isTest = Boolean(snapshot.txTestMode || snapshot.txPosture === 'tx-test');
 
-        const showTxBadge = isTxTarget && (txActive || atuTuning || isTest || split || posture !== 'rx-only');
-        let badgeText = split && this.rx === 'B' ? 'SPLIT TX' : 'TX';
+        this.container.dataset.txTarget = isTxTarget ? 'true' : 'false';
+        this.container.dataset.split = split ? 'true' : 'false';
+
+        const showTxBadge = isTxTarget && (txActive || atuTuning || isTest || split);
+        let badgeText = 'TX';
         let badgeClass = 'k4-tx-target-tag';
         if (isTxTarget && atuTuning) {
           badgeText = 'ATU';
@@ -371,6 +374,9 @@
         } else if (isTxTarget && txActive) {
           badgeText = 'TX';
           badgeClass = 'k4-tx-target-tag is-tx-live';
+        } else if (isTxTarget && split) {
+          badgeText = 'TX';
+          badgeClass = 'k4-tx-target-tag is-split-tx';
         }
 
         this.txBadge.hidden = !showTxBadge;

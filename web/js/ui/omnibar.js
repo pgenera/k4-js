@@ -25,8 +25,9 @@
     { id: 'cw-20', title: '14.025 MHz — 20m CW Beacon', sub: 'Tune active VFO to 14,025,000 Hz', tag: '14.025', query: '14.025' },
     { id: 'ft8-40', title: '7.074 MHz — 40m FT8', sub: 'Tune active VFO to 7,074,000 Hz', tag: '7.074', query: '7.074' },
     { id: 'cw-40', title: '7.025 MHz — 40m CW', sub: 'Tune active VFO to 7,025,000 Hz', tag: '7.025', query: '7.025' },
-    { id: 'span-48', title: 'Span 48 kHz', sub: 'Set panadapter span to 48 kHz', tag: '#SPN', query: 'span 48k' },
-    { id: 'sub-toggle', title: 'Toggle Sub Receiver', sub: 'Enable or disable VFO B Sub RX', tag: 'SB', query: 'sub' },
+    { id: 'auto-spot', title: 'Auto Spot CW', sub: 'Zero-beat active VFO on CW signal', tag: 'SPOT', query: 'auto spot' },
+    { id: 'span-48', title: 'Span 48 kHz', sub: 'Set panadapter span to 48 kHz', tag: 'SPAN', query: 'span 48k' },
+    { id: 'sub-toggle', title: 'Toggle Sub Receiver', sub: 'Enable or disable VFO B Sub RX', tag: 'SUB', query: 'sub' },
   ];
 
   function formatHz(hz) {
@@ -203,19 +204,6 @@
       }
 
       const items = [];
-      const blockedMatch = trimmed.match(/^(tx|tu|tune|key|ky|mox|vox|pc|pb|sw)\b/i);
-      if (blockedMatch) {
-        items.push({
-          blocked: true,
-          title: `Blocked in RX-Only: "${blockedMatch[1].toUpperCase()}"`,
-          sub: 'Blocked while Transmit Lock is active (enforces zero transmit, keyer, or tuner activity).',
-          tag: 'RX ONLY',
-          run: () => {
-            this.onNotify(`Blocked TX command "${trimmed}" (RX-Only mode)`, 'blocked');
-          },
-        });
-        return items;
-      }
 
       const parsed = this._buildAction(trimmed);
       if (parsed) {
@@ -411,7 +399,7 @@
         const next = dualMatch[1] ? (dualMatch[1] === 'on' ? 2 : 0) : (snap.dualPanMode === 2 ? 0 : 2);
         return {
           title: `Dual Panadapter ${next === 2 ? 'ON (2x)' : 'OFF (1x)'}`,
-          sub: `Send #DPM${next};`,
+          sub: `Toggle Dual Panadapter ${next === 2 ? 'ON' : 'OFF'}`,
           tag: next === 2 ? '2x PAN' : '1x PAN',
           run: () => {
             this.client.setDisplay(targetRx, { dualPanMode: next });
@@ -419,18 +407,143 @@
         };
       }
 
-      const loupeMatch = lower.match(/^(?:mini-?pan|loupe)(?:\s+(on|off))?$/);
-      if (loupeMatch) {
+      const miniPanMatch = lower.match(/^mini-?pan(?:\s+(on|off))?$/);
+      if (miniPanMatch) {
         const snap = this.state.getSnapshot ? this.state.getSnapshot() : this.state;
         const rxS = targetRx === 'B' ? snap.rxB : snap.rxA;
-        const next = loupeMatch[1] ? loupeMatch[1] === 'on' : !(rxS && rxS.miniPan);
+        const next = miniPanMatch[1] ? miniPanMatch[1] === 'on' : !(rxS && rxS.miniPan);
         return {
-          title: `Mini-Pan ${next ? 'ON' : 'OFF'} (VFO ${targetRx})`,
-          sub: `Send #MP${targetRx === 'B' ? '$' : ''}${next ? '1' : '0'};`,
-          tag: next ? 'MINI-PAN ON' : 'MINI-PAN OFF',
+          title: `Mini-Pan ${targetRx} ${next ? 'ON' : 'OFF'}`,
+          sub: `Toggle Mini-Pan ${targetRx}`,
+          tag: next ? `MINI-PAN ${targetRx} ON` : `MINI-PAN ${targetRx} OFF`,
           run: () => {
             this.client.setDisplay(targetRx, { miniPan: next });
           },
+        };
+      }
+
+      // CW Auto Spot & Spot Tone
+      const autoSpotMatch = lower.match(/^(?:auto[\s-]?spot|zero[\s-]?beat)(?:\s+cw)?$/);
+      if (autoSpotMatch) {
+        return {
+          title: `Auto Spot CW (VFO ${targetRx})`,
+          sub: `Zero-beat CW carrier on VFO ${targetRx}`,
+          tag: 'SPOT',
+          run: () => {
+            if (typeof this.client.autoSpot === 'function') {
+              this.client.autoSpot(targetRx);
+            } else {
+              this.client.sendCat(`SP${targetRx === 'B' ? '$' : ''}3;`);
+            }
+          },
+        };
+      }
+
+      const spotMatch = lower.match(/^spot(?:\s+(on|off|auto))?$/);
+      if (spotMatch) {
+        const arg = spotMatch[1] || 'auto';
+        if (arg === 'on' || arg === 'off') {
+          const on = arg === 'on';
+          return {
+            title: `CW Spot Tone ${on ? 'ON' : 'OFF'}`,
+            sub: `${on ? 'Enable' : 'Disable'} CW sidetone pitch spotting`,
+            tag: 'SPOT',
+            run: () => {
+              if (typeof this.client.setSpotTone === 'function') {
+                this.client.setSpotTone(on ? 1 : 0, 'A');
+              } else {
+                this.client.sendCat(`SP${on ? '1' : '0'};`);
+              }
+            },
+          };
+        }
+        return {
+          title: `Auto Spot CW (VFO ${targetRx})`,
+          sub: `Zero-beat CW carrier on VFO ${targetRx}`,
+          tag: 'SPOT',
+          run: () => {
+            if (typeof this.client.autoSpot === 'function') {
+              this.client.autoSpot(targetRx);
+            } else {
+              this.client.sendCat(`SP${targetRx === 'B' ? '$' : ''}3;`);
+            }
+          },
+        };
+      }
+
+      // VFO Copy / Swap / Split / ATU / Antenna / Power
+      if (lower === 'a/b' || lower === 'swap') {
+        return {
+          title: 'Swap VFO A / B Frequencies',
+          sub: 'Exchange VFO A and VFO B frequencies',
+          tag: 'A/B',
+          run: () => (typeof this.client.vfoCopy === 'function' ? this.client.vfoCopy(2) : this.client.sendCat('AB2;')),
+        };
+      }
+      if (lower === 'a>b' || lower === 'a->b' || lower === 'a2b') {
+        return {
+          title: 'Copy VFO A → VFO B',
+          sub: 'Copy VFO A frequency to VFO B',
+          tag: 'A►B',
+          run: () => (typeof this.client.vfoCopy === 'function' ? this.client.vfoCopy(0) : this.client.sendCat('AB0;')),
+        };
+      }
+      const splitMatch = lower.match(/^(split|quick\s*split)(?:\s+(on|off))?$/);
+      if (splitMatch) {
+        const snap = this.state.getSnapshot ? this.state.getSnapshot() : this.state;
+        const isQuick = splitMatch[1].includes('quick');
+        if (isQuick && typeof this.client.setupQuickSplit === 'function') {
+          return {
+            title: 'Quick Split (+1 kHz)',
+            sub: 'Copy VFO A to B (+1 kHz) and enable Split TX',
+            tag: 'SPLIT',
+            run: () => this.client.setupQuickSplit(1000),
+          };
+        }
+        const next = splitMatch[2] ? splitMatch[2] === 'on' : !snap.splitEnabled;
+        return {
+          title: `Split TX ${next ? 'ON' : 'OFF'}`,
+          sub: `${next ? 'Transmit on VFO B' : 'Transmit on VFO A'}`,
+          tag: 'SPLIT',
+          run: () => this.client.setSplit(next),
+        };
+      }
+      if (lower === 'atu' || lower === 'atu tune' || lower === 'tune') {
+        return {
+          title: 'ATU Tune',
+          sub: 'Start KAT4 ATU matching cycle (2nd tap: Full Search)',
+          tag: 'ATU',
+          run: () => this.client.startAtuTune(),
+        };
+      }
+      const antMatch = lower.match(/^ant(?:\s+([1-3]|cycle))?$/);
+      if (antMatch) {
+        const arg = antMatch[1];
+        if (arg && arg !== 'cycle') {
+          const port = parseInt(arg, 10);
+          return {
+            title: `TX Antenna ANT ${port}`,
+            sub: `Select TX antenna port ${port}`,
+            tag: `ANT ${port}`,
+            run: () => this.client.setTxAntenna(port),
+          };
+        }
+        return {
+          title: 'Cycle TX Antenna (ANT 1 → 2 → 3)',
+          sub: 'Advance to next TX antenna port',
+          tag: 'ANT',
+          run: () => (typeof this.client.cycleTxAntenna === 'function' ? this.client.cycleTxAntenna() : this.client.setTxAntenna(1)),
+        };
+      }
+      const pwrMatch = lower.match(/^(?:pwr|power)\s+(\d+(?:\.\d+)?)\s*w?$/);
+      if (pwrMatch) {
+        const rawW = Math.max(0.1, Math.min(110, parseFloat(pwrMatch[1])));
+        const w = rawW <= 10 ? Math.round(rawW * 10) / 10 : Math.round(rawW);
+        return {
+          title: `Set RF Power ${w <= 10 ? w.toFixed(1) : w} W`,
+          sub: 'Adjust transmitter power output',
+          tag: 'PWR',
+          run: () => this.client.setPowerWatts(w),
         };
       }
 
@@ -544,7 +657,7 @@
           const next = dspToggle[2] ? dspToggle[2] === 'on' : !(rxS && rxS.locked);
           return {
             title: `VFO ${targetRx} ${next ? 'Lock' : 'Unlock'}`,
-            sub: `Send LK${targetRx === 'B' ? '$' : ''}${next ? '1' : '0'};`,
+            sub: `${next ? 'Lock' : 'Unlock'} main tuning dial on VFO ${targetRx}`,
             tag: 'LOCK',
             run: () => {
               if (typeof this.client.setLock === 'function') {

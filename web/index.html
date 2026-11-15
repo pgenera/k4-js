@@ -42,10 +42,17 @@
         <button type="button" id="conn-btn" class="k4-conn-pill" data-testid="conn-btn" data-status="disconnected" title="Connection settings">
           <span class="k4-status-dot" aria-hidden="true"></span>
           <span class="k4-conn-label">Disconnected</span>
-          <span class="k4-conn-rtt" aria-label="Round trip time"></span>
+          <span class="k4-conn-rtt" aria-label="Latency"></span>
         </button>
 
         <div id="vfo-a-mount" class="k4-vfo-slot" data-testid="vfo-a"></div>
+      </div>
+
+      <div id="vfo-cluster" class="k4-vfo-cluster" data-testid="vfo-cluster" role="group" aria-label="VFO Operations">
+        <button type="button" id="vfo-ab-btn" class="k4-cluster-btn" data-testid="vfo-ab-btn" title="Swap VFO A &amp; B frequency (Shift+Click or hold: swap all)">A/B</button>
+        <button type="button" id="vfo-a2b-btn" class="k4-cluster-btn" data-testid="vfo-a2b-btn" title="Copy VFO A to B frequency (2nd tap within 3s or Shift+Click: copy all)">A►B</button>
+        <button type="button" id="vfo-split-btn" class="k4-cluster-btn" data-testid="vfo-split-btn" aria-pressed="false" title="Toggle Split TX on VFO B (Shift+Click: Quick Split +1 kHz)">SPLIT</button>
+        <button type="button" id="vfo-sub-btn" class="k4-cluster-btn" data-testid="vfo-sub-btn" aria-pressed="false" title="Toggle Sub Receiver">SUB</button>
       </div>
 
       <div class="k4-topbar-center">
@@ -72,22 +79,13 @@
           <span class="k4-audio-label">Audio Off</span>
         </button>
 
-        <div id="tx-posture-bar" class="k4-tx-posture-bar" data-testid="tx-posture-bar" data-posture="rx-only" role="group" aria-label="Transmit Mode &amp; Hold PTT">
-          <span id="rx-only-badge" class="k4-rx-badge" data-testid="rx-only-badge" data-blocked="false" title="Transmit Lock status &amp; blocked TX attempt count.">
-            <svg class="k4-icon" viewBox="0 0 16 16" width="12" height="12" aria-hidden="true">
-              <rect x="3.5" y="7" width="9" height="6.5" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.4"/>
-              <path d="M5.5 7V5.2A2.5 2.5 0 0 1 10.5 5.2V7" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
-            </svg>
-            <span class="k4-rx-badge-text">RX ONLY</span>
-            <span class="k4-rx-blocked-count" hidden>0</span>
-          </span>
+        <div class="k4-top-rf-status" role="group" aria-label="Antenna and ATU Status">
+          <button type="button" id="top-ant-btn" class="k4-top-pill-btn" data-testid="top-ant-btn" title="Active TX Antenna (click to cycle ANT 1 → 2 → 3)">ANT 1</button>
+          <button type="button" id="top-atu-btn" class="k4-top-pill-btn" data-testid="top-atu-btn" data-state="auto" title="ATU Mode (click: AUTO/BYPASS · Shift+Click: ATU Tune · 2nd tap: Full Search)">ATU AUTO</button>
+        </div>
 
-          <div class="k4-tx-posture-seg">
-            <button type="button" id="tx-mode-rx" class="k4-posture-btn is-active" data-testid="tx-mode-rx" data-posture-target="rx-only" aria-pressed="true" title="Transmit Lock active: block all RF &amp; TX commands">RX ONLY</button>
-            <button type="button" id="tx-mode-armed" class="k4-posture-btn" data-testid="tx-mode-armed" data-posture-target="tx-armed" aria-pressed="false" title="Enable transmitter (requires confirmation)">TX RDY</button>
-          </div>
-
-          <button type="button" id="tx-mode-test" class="k4-posture-btn k4-test-switch" data-testid="tx-mode-test" aria-pressed="false" title="K4 [TEST] switch (TS1/TS0): toggle TX Test mode (zero RF output)">TEST</button>
+        <div id="tx-posture-bar" class="k4-tx-posture-bar" data-testid="tx-posture-bar" data-posture="tx-armed" role="group" aria-label="Transmit Mode &amp; Hold PTT">
+          <button type="button" id="tx-mode-test" class="k4-posture-btn k4-test-switch" data-testid="tx-mode-test" aria-pressed="false" title="K4 TEST switch: toggle off-air TX Test mode (zero RF output)">TEST</button>
 
           <button type="button" id="tx-mic-btn" class="k4-mic-pill" data-testid="tx-mic-btn" data-mic-state="idle" hidden title="TX microphone / audio input status (click to configure or retry)">
             <span class="k4-mic-dot" aria-hidden="true"></span>
@@ -117,25 +115,6 @@
   <section id="mobile-sheet" class="k4-mobile-sheet" data-testid="mobile-sheet" data-open="false" aria-hidden="true" aria-label="Receiver Control Sheet"></section>
   <div id="omnibar-modal" class="k4-modal-backdrop" data-testid="omnibar-modal" data-open="false" hidden></div>
   <div id="connection-dialog" class="k4-modal-backdrop" data-testid="conn-dialog" data-open="false" hidden></div>
-  <div id="tx-arm-confirm" class="k4-tx-arm-popover" data-testid="tx-arm-confirm" role="dialog" aria-modal="false" aria-label="Confirm Enable TX" hidden>
-    <div class="k4-tx-arm-header">
-      <span class="k4-tx-arm-title">Enable Live Transmit?</span>
-      <span class="k4-tx-arm-warn-pill">TX ON</span>
-    </div>
-    <p class="k4-tx-arm-sub">Verify TX settings before enabling transmit, ATU tune, and RF power controls.</p>
-    <dl class="k4-tx-arm-summary" id="tx-arm-summary">
-      <div class="k4-tx-arm-row"><dt>TX VFO</dt><dd id="tx-arm-vfo">VFO A</dd></div>
-      <div class="k4-tx-arm-row"><dt>Frequency</dt><dd id="tx-arm-freq">14.074.000 MHz</dd></div>
-      <div class="k4-tx-arm-row"><dt>Mode</dt><dd id="tx-arm-mode">DATA-A</dd></div>
-      <div class="k4-tx-arm-row"><dt>RF Power</dt><dd id="tx-arm-power">10.0 W (L)</dd></div>
-      <div class="k4-tx-arm-row"><dt>TX Antenna</dt><dd id="tx-arm-ant">ANT1</dd></div>
-      <div class="k4-tx-arm-row"><dt>Audio Input</dt><dd id="tx-arm-mic">Microphone (will request browser permission)</dd></div>
-    </dl>
-    <div class="k4-tx-arm-actions">
-      <button type="button" id="tx-arm-cancel-btn" class="k4-btn" data-testid="tx-arm-cancel-btn">Cancel</button>
-      <button type="button" id="tx-arm-confirm-btn" class="k4-btn k4-btn--danger" data-testid="tx-arm-confirm-btn">Enable TX</button>
-    </div>
-  </div>
   <div id="toast-stack" class="k4-toast-stack" aria-live="polite" aria-atomic="true"></div>
 </body>
 </html>

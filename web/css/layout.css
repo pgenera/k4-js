@@ -120,7 +120,7 @@ select option:disabled {
 }
 
 .k4-topbar-center {
-  flex: 1 0 auto;
+  flex: 1 1 auto;
   justify-content: center;
 }
 
@@ -218,8 +218,7 @@ select option:disabled {
 
   .k4-omnibar-trigger .k4-btn-label,
   .k4-omnibar-trigger .k4-kbd-hint,
-  .k4-audio-btn .k4-audio-label,
-  .k4-rx-badge .k4-rx-badge-text {
+  .k4-audio-btn .k4-audio-label {
     display: none;
   }
 
@@ -255,13 +254,26 @@ select option:disabled {
     min-width: 0;
   }
 
+  #top-bar .k4-vfo-cluster {
+    gap: 1px;
+    padding: 1px;
+  }
+
+  #top-bar .k4-cluster-btn {
+    height: 24px;
+    padding: 0 5px;
+    font-size: 10px;
+  }
+
+  #top-bar .k4-top-pill-btn {
+    height: 26px;
+    padding: 0 6px;
+    font-size: 10px;
+  }
+
   #top-bar .k4-tx-posture-bar {
     gap: 3px;
     padding: 2px 4px;
-  }
-
-  #top-bar .k4-tx-posture-seg {
-    gap: 1px;
   }
 
   #top-bar .k4-posture-btn {
@@ -280,7 +292,6 @@ select option:disabled {
 }
 
 @media (min-width: 960px) and (max-width: 1379px) {
-  .k4-conn-pill .k4-conn-rtt,
   .k4-vfo-slot[data-rx="A"] .k4-vfo-bw,
   .k4-vfo-slot .k4-vfo-lock:not(.is-locked) {
     display: none;
@@ -321,6 +332,18 @@ select option:disabled {
     min-width: 0;
   }
 
+  #top-bar .k4-cluster-btn {
+    height: 22px;
+    padding: 0 4px;
+    font-size: 9.5px;
+  }
+
+  #top-bar .k4-top-pill-btn {
+    height: 24px;
+    padding: 0 5px;
+    font-size: 9.5px;
+  }
+
   #top-bar .k4-tx-posture-bar {
     gap: 2px;
     padding: 2px 3px;
@@ -359,9 +382,22 @@ select option:disabled {
     padding: 4px 8px;
     row-gap: 4px;
   }
+
+  .k4-topbar-left {
+    flex: 1 1 auto;
+  }
+
+  .k4-topbar-center {
+    flex: 0 0 auto;
+  }
+
+  .k4-topbar-right {
+    flex: 1 1 auto;
+    justify-content: flex-end;
+  }
 }
 
-/* Mobile Layout (< 960px): 2-row top-bar prevents any overlap at 390px */
+/* Mobile Layout (< 960px): clean wrapping without horizontal overflow */
 @media (max-width: 959px) {
   #app-shell {
     grid-template-rows: auto minmax(0, 1fr) calc(var(--mobilenav-h) + env(safe-area-inset-bottom, 0px));
@@ -376,21 +412,31 @@ select option:disabled {
   }
 
   .k4-topbar-left {
-    flex: 1 1 auto;
-    min-width: 0;
-    gap: 4px;
+    display: contents;
+  }
+
+  #top-bar .k4-conn-pill,
+  #top-bar .k4-vfo-slot {
+    order: 1;
   }
 
   .k4-topbar-center {
+    order: 2;
     flex: 0 0 auto;
+    margin-left: auto;
     justify-content: flex-end;
     gap: 4px;
   }
 
-  .k4-topbar-right {
-    flex: 0 0 100%;
-    width: 100%;
+  #top-bar .k4-vfo-cluster {
     order: 3;
+    flex: 0 0 auto;
+  }
+
+  .k4-topbar-right {
+    flex: 1 1 260px;
+    max-width: 100%;
+    order: 4;
     justify-content: space-between;
     gap: 4px;
   }
@@ -414,8 +460,7 @@ select option:disabled {
 
   .k4-omnibar-trigger .k4-btn-label,
   .k4-omnibar-trigger .k4-kbd-hint,
-  .k4-audio-btn .k4-audio-label,
-  .k4-rx-badge .k4-rx-badge-text {
+  .k4-audio-btn .k4-audio-label {
     display: none;
   }
 
@@ -425,12 +470,6 @@ select option:disabled {
     min-width: 30px;
     height: 30px;
     justify-content: center;
-  }
-
-  .k4-rx-badge {
-    padding: 0 5px !important;
-    height: 26px;
-    gap: 3px;
   }
 
   /* On mobile, show the active target VFO in the compact header */
@@ -508,6 +547,13 @@ select option:disabled {
     gap: 3px;
   }
 
+  .k4-topbar-right {
+    flex: 0 0 100%;
+    width: 100%;
+    flex-wrap: wrap;
+    justify-content: space-between;
+  }
+
   .k4-conn-pill {
     min-width: 24px;
     height: 28px;
@@ -518,10 +564,5 @@ select option:disabled {
     width: 28px;
     min-width: 28px;
     height: 28px;
-  }
-
-  .k4-rx-badge {
-    height: 26px;
-    padding: 0 4px !important;
   }
 }
