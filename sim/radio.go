@@ -955,7 +955,7 @@ func isRxOnlyBlockedCommand(upper string) bool {
 		return true
 	case strings.HasPrefix(upper, "TU"):
 		return upper != "TU" && upper != "TU0"
-	case strings.HasPrefix(upper, "KY"), strings.HasPrefix(upper, "KZ"), strings.HasPrefix(upper, "AB"), strings.HasPrefix(upper, "DR"):
+	case strings.HasPrefix(upper, "KY"), strings.HasPrefix(upper, "KZ"), strings.HasPrefix(upper, "DR"):
 		return true
 	case strings.HasPrefix(upper, "PB"):
 		return upper != "PB" && upper != "PB0"
@@ -1864,7 +1864,6 @@ func (r *Radio) execSingleLocked(orig, upper string, tSec float64) string {
 		if len(arg) != 1 || arg[0] < '0' || arg[0] > '5' {
 			return "?;"
 		}
-		r.TxCatCommands++
 		switch arg[0] {
 		case '0': // Copy VFO A frequency -> VFO B frequency
 			r.setRxFreqLocked('B', r.RxA.FreqHz)

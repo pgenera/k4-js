@@ -2821,7 +2821,31 @@
       return { sent: true, allowed: inspected.allowed, blocked: inspected.blocked, sanitized: inspected.sanitized };
     };
 
-    // Auto Spot & Spot Tone
+    // Auto Spot & Spot Tone + K4 Rev D4 SP$ parity
+    assertEqual(K4.CatCodec.parseCommand('SP$0;'), null, 'SP$0 invalid on Sub-RX');
+    assertEqual(K4.CatCodec.parseCommand('SP$1;'), null, 'SP$1 invalid on Sub-RX');
+    assertEqual(K4.CatCodec.parseCommand('SP$2;'), null, 'SP$2 invalid on Sub-RX');
+    const spSub = K4.CatCodec.parseCommand('SP$3;');
+    assert(spSub && spSub.kind === 'spot' && spSub.rx === 'B' && spSub.mode === 3, 'SP$3 parses on Sub-RX');
+    assertEqual(K4.CatCodec.builders.spot(0, 'B'), 'SP$3;', 'builders.spot enforces SP$3 on Sub-RX');
+    assertEqual(K4.CatCodec.builders.spot(1, 'B'), 'SP$3;', 'builders.spot(1, B) enforces SP$3');
+    assertEqual(K4.CatCodec.builders.spot(2, 'B'), 'SP$3;', 'builders.spot(2, B) enforces SP$3');
+    assertEqual(K4.CatCodec.builders.spot(1, 'A'), 'SP1;', 'builders.spot(1, A) builds SP1');
+
+    // Shared K4 formatting & mix weight helpers
+    assertEqual(K4.formatFreqMHz(14074000), '14.074.000', 'shared formatFreqMHz');
+    assertEqual(K4.quantizePowerWatts(5.54), 5.5, 'quantizePowerWatts L step 0.1');
+    assertEqual(K4.quantizePowerWatts(44.6), 45, 'quantizePowerWatts H step 1');
+    assertEqual(
+      K4.formatTxAntenna({ txAntenna: 2, antennaNames: { 2: 'Hexbeam' } }).label,
+      'ANT 2 · Hexbeam',
+      'shared formatTxAntenna custom label'
+    );
+    const mixW = new Float64Array(4);
+    K4.computeLinearMixWeights(1.0, 0.5, true, 0.0, 'A.B', mixW);
+    assertApprox(mixW[0], 1.0, 0.001, 'shared computeLinearMixWeights wLA');
+    assertApprox(mixW[3], 0.5, 0.001, 'shared computeLinearMixWeights wRB');
+
     client.setTargetRx('A');
     client.autoSpot();
     assertEqual(sent[sent.length - 1], 'SP3;FA;', 'autoSpot A sends SP3;FA;');

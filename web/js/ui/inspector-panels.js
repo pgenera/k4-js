@@ -60,6 +60,44 @@
     return v < min ? min : v > max ? max : v;
   }
 
+  function sensorTempLevel(t) {
+    return t == null ? 'ok' : (t >= 75 ? 'crit' : (t >= 60 ? 'warn' : 'ok'));
+  }
+
+  function sensorTfLevel(t) {
+    return t == null ? 'ok' : (t >= 70 ? 'crit' : (t >= 55 ? 'warn' : 'ok'));
+  }
+
+  function sensorVoltLevel(v) {
+    return v == null ? 'ok' : (v < 11.2 ? 'crit' : (v < 11.8 ? 'warn' : 'ok'));
+  }
+
+  function sensorSwrLevel(s) {
+    return s > 2.5 ? 'crit' : (s > 1.5 ? 'warn' : 'ok');
+  }
+
+  function extractSensorReadings(snapshot) {
+    const s = snapshot || {};
+    const tel = s.telemetry || {};
+    const tm = s.txMeters || {};
+    const isAmps = tel.supplyAmps != null ? Number(tel.supplyAmps) : null;
+    const fwdWatts = Number(tm.fwdWatts) || 0;
+    return {
+      tel,
+      tm,
+      vs: tel.supplyVolts != null ? Number(tel.supplyVolts) : null,
+      sag: tel.txVoltDrop != null ? Number(tel.txVoltDrop) : 0,
+      isAmps,
+      peakIs: tel.peakSupplyAmps != null ? Number(tel.peakSupplyAmps) : isAmps,
+      pt: tel.paTempC != null ? Number(tel.paTempC) : null,
+      lt: tel.lpaTempC != null ? Number(tel.lpaTempC) : null,
+      tf: tel.fpTempC != null ? Number(tel.fpTempC) : null,
+      fwdWatts,
+      peakFwd: Number(tm.peakFwdWatts) || fwdWatts,
+      swr: Number(tm.swr) >= 1.0 ? Number(tm.swr) : (s.atuMatchedSwr || 1.0),
+    };
+  }
+
   function el(tag, className, text) {
     const node = document.createElement(tag);
     if (className) node.className = className;
@@ -2137,12 +2175,8 @@
       // (c) RF Power & Audio TX card
       const pwrCard = makeCard('RF Power & TX Audio');
 
-      const quantizePower = (raw) => {
-        const clamped = Math.max(0.1, Math.min(110, Number(raw) || 0.1));
-        return clamped <= 10 ? Math.round(clamped * 10) / 10 : Math.round(clamped);
-      };
       const sendPowerWatts = (raw) => {
-        const watts = quantizePower(raw);
+        const watts = K4.quantizePowerWatts(raw);
         if (typeof this.client.setPowerWatts === 'function') {
           this.client.setPowerWatts(watts);
         } else if (watts <= 10) {
@@ -2159,7 +2193,7 @@
         step: 0.1,
         value: 10,
         formatValue: (v) => {
-          const w = quantizePower(v);
+          const w = K4.quantizePowerWatts(v);
           return w <= 10 ? `${w.toFixed(1)} W` : `${Math.round(w)} W`;
         },
         onInput: sendPowerWatts,
@@ -3340,22 +3374,10 @@
 
     _updateSensorStrip(snapshot) {
       if (!this._strip) return;
-      const tel = snapshot.telemetry || {};
-      const tm = snapshot.txMeters || {};
-      const vs = tel.supplyVolts != null ? Number(tel.supplyVolts) : null;
-      const isAmps = tel.supplyAmps != null ? Number(tel.supplyAmps) : null;
-      const peakIs = tel.peakSupplyAmps != null ? Number(tel.peakSupplyAmps) : isAmps;
-      const pt = tel.paTempC != null ? Number(tel.paTempC) : null;
-      const tf = tel.fpTempC != null ? Number(tel.fpTempC) : null;
-      const swr = Number(tm.swr) >= 1.0 ? Number(tm.swr) : (snapshot.atuMatchedSwr || 1.0);
-
-      const tempLevel = (t) => (t == null ? 'ok' : (t >= 75 ? 'crit' : (t >= 60 ? 'warn' : 'ok')));
-      const tfLevel = (t) => (t == null ? 'ok' : (t >= 70 ? 'crit' : (t >= 55 ? 'warn' : 'ok')));
-      const voltLevel = (v) => (v == null ? 'ok' : (v < 11.2 ? 'crit' : (v < 11.8 ? 'warn' : 'ok')));
-      const swrLevel = (s) => (s > 2.5 ? 'crit' : (s > 1.5 ? 'warn' : 'ok'));
+      const { vs, isAmps, peakIs, pt, tf, swr } = extractSensorReadings(snapshot);
 
       this._strip.vs.val.textContent = vs != null ? `${vs.toFixed(1)}V` : '—';
-      this._strip.vs.pill.dataset.level = voltLevel(vs);
+      this._strip.vs.pill.dataset.level = sensorVoltLevel(vs);
       this._strip.vs.pill.classList.toggle('is-selected', this._selectedSensorKey === 'vs');
 
       this._strip.is.val.textContent = isAmps != null
@@ -3371,11 +3393,11 @@
       this._strip.pt.pill.dataset.sensorKey = stripTempKey;
       this._strip.pt.pill.title = `Open ${stripTempLbl} graph in TX / ATU`;
       this._strip.pt.val.textContent = stripTempVal != null ? `${stripTempVal.toFixed(0)}°C` : '—';
-      this._strip.pt.pill.dataset.level = stripTempKey === 'tf' ? tfLevel(stripTempVal) : tempLevel(stripTempVal);
+      this._strip.pt.pill.dataset.level = stripTempKey === 'tf' ? sensorTfLevel(stripTempVal) : sensorTempLevel(stripTempVal);
       this._strip.pt.pill.classList.toggle('is-selected', this._selectedSensorKey === stripTempKey);
 
       this._strip.swr.val.textContent = `${swr.toFixed(2)}:1`;
-      this._strip.swr.pill.dataset.level = swrLevel(swr);
+      this._strip.swr.pill.dataset.level = sensorSwrLevel(swr);
       this._strip.swr.pill.classList.toggle('is-selected', this._selectedSensorKey === 'swr');
     }
 
@@ -3384,26 +3406,10 @@
     }
 
     _updateTxAndSensors(snapshot, aDiag) {
-      const tel = snapshot.telemetry || {};
-      const tm = snapshot.txMeters || {};
+      const { tel, vs, sag, isAmps, peakIs, pt, lt, tf, fwdWatts, peakFwd, swr } = extractSensorReadings(snapshot);
       const txActive = Boolean(snapshot.txActive);
       const isTest = Boolean(snapshot.txTestMode || snapshot.txPosture === 'tx-test');
       const atuTuning = Boolean(snapshot.atuTuning);
-
-      const vs = tel.supplyVolts != null ? Number(tel.supplyVolts) : null;
-      const sag = tel.txVoltDrop != null ? Number(tel.txVoltDrop) : 0;
-      const isAmps = tel.supplyAmps != null ? Number(tel.supplyAmps) : null;
-      const peakIs = tel.peakSupplyAmps != null ? Number(tel.peakSupplyAmps) : isAmps;
-      const pt = tel.paTempC != null ? Number(tel.paTempC) : null;
-      const lt = tel.lpaTempC != null ? Number(tel.lpaTempC) : null;
-      const tf = tel.fpTempC != null ? Number(tel.fpTempC) : null;
-      const fwdWatts = Number(tm.fwdWatts) || 0;
-      const peakFwd = Number(tm.peakFwdWatts) || fwdWatts;
-      const swr = Number(tm.swr) >= 1.0 ? Number(tm.swr) : (snapshot.atuMatchedSwr || 1.0);
-
-      const tempLevel = (t) => (t == null ? 'ok' : (t >= 75 ? 'crit' : (t >= 60 ? 'warn' : 'ok')));
-      const voltLevel = (v) => (v == null ? 'ok' : (v < 11.2 ? 'crit' : (v < 11.8 ? 'warn' : 'ok')));
-      const swrLevel = (s) => (s > 2.5 ? 'crit' : (s > 1.5 ? 'warn' : 'ok'));
 
       // (a) TX & Split
       if (this._refs.txTestToggleBtn) {
@@ -3463,12 +3469,9 @@
 
       // (b) ATU & Antenna
       if (this._refs.txAntennaBtn) {
-        const port = Number(snapshot.txAntenna) || 1;
-        const names = snapshot.antennaNames || {};
-        const rawName = names[port] ? String(names[port]).trim() : '';
-        const hasCustom = rawName && rawName.replace(/\s+/g, '').toUpperCase() !== `ANT${port}`;
-        this._refs.txAntennaBtn.textContent = hasCustom ? `ANT ${port} · ${rawName}` : `ANT ${port}`;
-        this._refs.txAntennaBtn.dataset.port = String(port);
+        const ant = K4.formatTxAntenna(snapshot);
+        this._refs.txAntennaBtn.textContent = ant.label;
+        this._refs.txAntennaBtn.dataset.port = String(ant.port);
       }
       if (this._refs.atuModuleBadge) {
         this._refs.atuModuleBadge.textContent = snapshot.hasAtu === false ? 'NO ATU' : (atuTuning ? 'TUNING' : 'KAT4');
@@ -3612,7 +3615,7 @@
       if (this._refs.sensors) {
         const s = this._refs.sensors;
         s.vs.val.textContent = vs != null ? `${vs.toFixed(2)} V (ΔV ${sag.toFixed(2)} V)` : '—';
-        s.vs.tile.dataset.level = voltLevel(vs);
+        s.vs.tile.dataset.level = sensorVoltLevel(vs);
 
         const paA = tel.paAmps != null ? ` · PA ${Number(tel.paAmps).toFixed(1)}A` : '';
         s.is.val.textContent = isAmps != null
@@ -3623,13 +3626,13 @@
         const isConnected = Boolean(snapshot.connection && snapshot.connection.status === 'connected');
         const paIdleLabel = isConnected ? 'Idle (on TX)' : '—';
         s.pt.val.textContent = pt != null ? `${pt.toFixed(1)} °C` : paIdleLabel;
-        s.pt.tile.dataset.level = tempLevel(pt);
+        s.pt.tile.dataset.level = sensorTempLevel(pt);
 
         s.lt.val.textContent = lt != null ? `${lt.toFixed(1)} °C` : paIdleLabel;
-        s.lt.tile.dataset.level = tempLevel(lt);
+        s.lt.tile.dataset.level = sensorTempLevel(lt);
 
         s.tf.val.textContent = tf != null ? `${tf.toFixed(1)} °C` : '—';
-        s.tf.tile.dataset.level = tempLevel(tf);
+        s.tf.tile.dataset.level = sensorTfLevel(tf);
 
         const sysParts = [];
         if (tel.cpuTempC != null) sysParts.push(`C:${Number(tel.cpuTempC).toFixed(0)}°`);
@@ -3637,7 +3640,7 @@
         if (tel.ducTempC != null) sysParts.push(`U:${Number(tel.ducTempC).toFixed(0)}°`);
         if (tel.ducDrive != null) sysParts.push(`DV:${Number(tel.ducDrive).toFixed(0)}`);
         s.sys.val.textContent = sysParts.length ? sysParts.join(' ') : '—';
-        s.sys.tile.dataset.level = tempLevel(tel.cpuTempC != null ? Number(tel.cpuTempC) : null);
+        s.sys.tile.dataset.level = sensorTempLevel(tel.cpuTempC != null ? Number(tel.cpuTempC) : null);
 
         if (s.fwd) {
           const activeTxOrTune = txActive || atuTuning;
@@ -3648,7 +3651,7 @@
         }
         if (s.swr) {
           s.swr.val.textContent = `${swr.toFixed(2)}:1`;
-          s.swr.tile.dataset.level = swrLevel(swr);
+          s.swr.tile.dataset.level = sensorSwrLevel(swr);
         }
 
         for (const k of Object.keys(s)) {

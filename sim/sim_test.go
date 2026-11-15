@@ -95,13 +95,13 @@ func TestRadioCATAndTxGateTracking(t *testing.T) {
 		t.Fatalf("SL query = %q, want SL4;", slReply)
 	}
 
-	// Verify TX/tune/keyer/PC/SW blocked & tracked, while RX; and SP0..3;/SP$3; pass (zero RF emitted)
-	okReply, _ := r.HandleCAT("RX;SP0;SP1;SP2;SP3;SP$3;SP0;", 1.0)
+	// Verify TX/tune/keyer/PC/SW blocked & tracked, while RX;, SP0..3;/SP$3;, and AB0..5; pass (zero RF emitted)
+	okReply, _ := r.HandleCAT("RX;SP0;SP1;SP2;SP3;SP$3;SP0;AB0;AB1;AB2;AB3;AB4;AB5;", 1.0)
 	if strings.Contains(okReply, "?") {
-		t.Fatalf("RX;/SP0..3;/SP$3; should be allowed in RX-only, got %q", okReply)
+		t.Fatalf("RX;/SP0..3;/SP$3;/AB0..5; should be allowed in RX-only, got %q", okReply)
 	}
-	if r.Stats().TxBlockedViolations != 0 {
-		t.Fatalf("expected 0 violations, got %d", r.Stats().TxBlockedViolations)
+	if stOk := r.Stats(); stOk.TxBlockedViolations != 0 || stOk.TxCatCommands != 0 {
+		t.Fatalf("expected 0 violations and 0 TxCatCommands, got %+v", stOk)
 	}
 
 	txCmds := []string{"TX;", "TU1;", "KY CQ;", "PC050;", "SW11;"}

@@ -223,21 +223,6 @@ void main() {
     return v < min ? min : v > max ? max : v;
   }
 
-  function formatFreqMHz(hz) {
-    const absHz = Math.round(Math.abs(hz));
-    const mhz = Math.floor(absHz / 1000000);
-    const khz = Math.floor((absHz % 1000000) / 1000);
-    const sub = absHz % 1000;
-    return (
-      (hz < 0 ? '-' : '') +
-      mhz +
-      '.' +
-      String(khz).padStart(3, '0') +
-      '.' +
-      String(sub).padStart(3, '0')
-    );
-  }
-
   function formatAxisKHz(hz) {
     const khz = hz / 1000;
     if (Math.abs(khz - Math.round(khz)) < 0.05) {
@@ -1060,7 +1045,7 @@ void main() {
 
           const pillText =
             (specRect.w >= 460
-              ? vfo.key + ' ' + formatFreqMHz(vfo.state.freqHz)
+              ? vfo.key + ' ' + K4.formatFreqMHz(vfo.state.freqHz)
               : vfo.key) + lockSuffix;
           ctx.font = 'bold 10px ' + monoFont;
           const textW = ctx.measureText(pillText).width;
@@ -1419,7 +1404,7 @@ void main() {
         const seg = K4.BandPlan ? K4.BandPlan.findSegmentAt(rfHz) : null;
 
         const line1 =
-          formatFreqMHz(rfHz) +
+          K4.formatFreqMHz(rfHz) +
           ' MHz' +
           (displayDbm !== null ? '  |  ' + displayDbm.toFixed(1) + ' dBm' : '') +
           '  |  Δ ' +
@@ -1789,7 +1774,7 @@ void main() {
     ctx.fillStyle = '#94A3B8';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'bottom';
-    ctx.fillText(formatFreqMHz(centerHz) + ' MHz', cssW / 2, cssH - 2);
+    ctx.fillText(K4.formatFreqMHz(centerHz) + ' MHz', cssW / 2, cssH - 2);
   }
 
   class MiniPanBoxController {

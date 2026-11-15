@@ -537,8 +537,7 @@
       }
       const pwrMatch = lower.match(/^(?:pwr|power)\s+(\d+(?:\.\d+)?)\s*w?$/);
       if (pwrMatch) {
-        const rawW = Math.max(0.1, Math.min(110, parseFloat(pwrMatch[1])));
-        const w = rawW <= 10 ? Math.round(rawW * 10) / 10 : Math.round(rawW);
+        const w = K4.quantizePowerWatts(pwrMatch[1]);
         return {
           title: `Set RF Power ${w <= 10 ? w.toFixed(1) : w} W`,
           sub: 'Adjust transmitter power output',

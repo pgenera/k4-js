@@ -1607,13 +1607,10 @@
 
     _syncTopRfStatus(snap) {
       if (this._dom.topAntBtn) {
-        const port = Number(snap.txAntenna) || 1;
-        const names = snap.antennaNames || {};
-        const rawName = names[port] ? String(names[port]).trim() : '';
-        const hasCustom = rawName && rawName.replace(/\s+/g, '').toUpperCase() !== `ANT${port}`;
-        this._dom.topAntBtn.textContent = hasCustom ? `ANT ${port} · ${rawName}` : `ANT ${port}`;
-        this._dom.topAntBtn.dataset.port = String(port);
-        this._dom.topAntBtn.title = `Active TX Antenna ANT ${port}${hasCustom ? ` (${rawName})` : ''} — click to cycle ANT 1 → 2 → 3`;
+        const ant = K4.formatTxAntenna(snap);
+        this._dom.topAntBtn.textContent = ant.label;
+        this._dom.topAntBtn.dataset.port = String(ant.port);
+        this._dom.topAntBtn.title = `Active TX Antenna ANT ${ant.port}${ant.hasCustom ? ` (${ant.rawName})` : ''} — click to cycle ANT 1 → 2 → 3`;
       }
 
       if (this._dom.topAtuBtn) {

@@ -878,6 +878,7 @@
   function parseSpot(arg, rx) {
     const v = parseIntStrict(arg);
     if (v === null || v < 0 || v > 3) return null;
+    if (rx === 'B' && v !== 3) return null;
     return { kind: 'spot', rx, mode: v, value: v };
   }
 
@@ -1239,7 +1240,9 @@
      * @param {'A'|'B'} [rx='A']
      */
     spot(mode = 3, rx = 'A') {
-      const m = Number.isFinite(Number(mode)) ? clamp(Math.round(Number(mode)), 0, 3) : 3;
+      const m = rx === 'B'
+        ? 3
+        : (Number.isFinite(Number(mode)) ? clamp(Math.round(Number(mode)), 0, 3) : 3);
       return 'SP' + (rx === 'B' ? '$' : '') + m + ';';
     },
     split(on) {
@@ -1388,6 +1391,44 @@
       options: [{ mode: 0, label: 'Decode: N/A' }],
     };
   }
+
+  function formatFreqMHz(hz) {
+    const absHz = Math.round(Math.abs(hz));
+    const mhz = Math.floor(absHz / 1000000);
+    const khz = Math.floor((absHz % 1000000) / 1000);
+    const sub = absHz % 1000;
+    return (
+      (hz < 0 ? '-' : '') +
+      mhz +
+      '.' +
+      String(khz).padStart(3, '0') +
+      '.' +
+      String(sub).padStart(3, '0')
+    );
+  }
+
+  function formatTxAntenna(snapshot) {
+    const s = snapshot || {};
+    const port = Number(s.txAntenna) || 1;
+    const names = s.antennaNames || {};
+    const rawName = names[port] ? String(names[port]).trim() : '';
+    const hasCustom = Boolean(rawName && rawName.replace(/\s+/g, '').toUpperCase() !== `ANT${port}`);
+    return {
+      port,
+      rawName,
+      hasCustom,
+      label: hasCustom ? `ANT ${port} · ${rawName}` : `ANT ${port}`,
+    };
+  }
+
+  function quantizePowerWatts(raw) {
+    const clamped = clamp(Number(raw) || 0.1, 0.1, 110);
+    return clamped <= 10 ? Math.round(clamped * 10) / 10 : Math.round(clamped);
+  }
+
+  K4.formatFreqMHz = formatFreqMHz;
+  K4.formatTxAntenna = formatTxAntenna;
+  K4.quantizePowerWatts = quantizePowerWatts;
 
   K4.CatCodec = {
     splitFrames,

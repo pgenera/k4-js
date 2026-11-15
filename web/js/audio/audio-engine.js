@@ -297,35 +297,20 @@
     return null;
   }
 
-  function formatFreqMHz(hz) {
-    const absHz = Math.round(Math.abs(hz));
-    const mhz = Math.floor(absHz / 1000000);
-    const khz = Math.floor((absHz % 1000000) / 1000);
-    const sub = absHz % 1000;
-    return (
-      (hz < 0 ? '-' : '') +
-      mhz +
-      '.' +
-      String(khz).padStart(3, '0') +
-      '.' +
-      String(sub).padStart(3, '0')
-    );
-  }
-
   function resolveFreqDisplay(val) {
     if (val === null || val === undefined) return '';
     if (typeof val === 'object') {
       return resolveFreqDisplay(val.freqHz);
     }
     if (typeof val === 'number' && Number.isFinite(val)) {
-      return formatFreqMHz(val) + ' MHz';
+      return K4.formatFreqMHz(val) + ' MHz';
     }
     if (typeof val === 'string') {
       const s = val.trim();
       if (!s) return '';
       if (/^\d+$/.test(s)) {
         const n = Number(s);
-        if (Number.isFinite(n)) return formatFreqMHz(n) + ' MHz';
+        if (Number.isFinite(n)) return K4.formatFreqMHz(n) + ' MHz';
       }
       return s.endsWith('MHz') || s.endsWith('kHz') ? s : s + ' MHz';
     }
@@ -372,70 +357,6 @@
       }
     }
     return '';
-  }
-
-  function computeLinearMixWeights(gainA, gainB, subRxEnabled, balance, mixMode, outWeights) {
-    const gA = clamp(gainA, 0, 1);
-    const gB = subRxEnabled ? clamp(gainB, 0, 1) : 0;
-    const bal = clamp(balance, -1, 1);
-    const balL = bal > 0 ? 1.0 - bal : 1.0;
-    const balR = bal < 0 ? 1.0 + bal : 1.0;
-    const abA = subRxEnabled ? 0.5 * gA : gA;
-    const abB = subRxEnabled ? 0.5 * gB : 0;
-
-    let wLA = gA;
-    let wLB = 0;
-    let wRA = gA;
-    let wRB = 0;
-
-    switch (mixMode) {
-      case 'A.B':
-        wLA = gA; wLB = 0;
-        wRA = subRxEnabled ? 0 : gA; wRB = subRxEnabled ? gB : 0;
-        break;
-      case 'AB.AB':
-        wLA = abA; wLB = abB;
-        wRA = abA; wRB = abB;
-        break;
-      case 'A.-A':
-        wLA = gA; wLB = 0;
-        wRA = -gA; wRB = 0;
-        break;
-      case 'A.AB':
-        wLA = gA; wLB = 0;
-        wRA = abA; wRB = abB;
-        break;
-      case 'AB.B':
-        wLA = abA; wLB = abB;
-        wRA = 0; wRB = gB;
-        break;
-      case 'AB.A':
-        wLA = abA; wLB = abB;
-        wRA = gA; wRB = 0;
-        break;
-      case 'B.AB':
-        wLA = 0; wLB = gB;
-        wRA = abA; wRB = abB;
-        break;
-      case 'B.B':
-        wLA = 0; wLB = gB;
-        wRA = 0; wRB = gB;
-        break;
-      case 'B.A':
-        wLA = 0; wLB = gB;
-        wRA = gA; wRB = 0;
-        break;
-      case 'A.A':
-      default:
-        wLA = gA; wLB = 0;
-        wRA = gA; wRB = 0;
-        break;
-    }
-
-    outWeights[0] = wLA * balL;
-    outWeights[1] = wLB * balL;
-    outWeights[2] = wRA * balR;
-    outWeights[3] = wRB * balR;
   }
 
   /**
@@ -2459,7 +2380,7 @@
       const stride = Math.max(1, Math.round((srcRate || AF_TAP_SAMPLE_RATE) / AF_TAP_SAMPLE_RATE));
 
       const weights = this._tapMixWeights;
-      computeLinearMixWeights(
+      K4.computeLinearMixWeights(
         this._gainA,
         this._gainB,
         this._subRxEnabled,

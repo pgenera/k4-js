@@ -35,6 +35,75 @@
     }
   }
 
+  const MIX_WEIGHT_SCRATCH = new Float64Array(4);
+
+  /**
+   * Compute linear stereo mixing weights [wLA, wLB, wRA, wRB] for Elecraft K4 MX modes.
+   */
+  function computeLinearMixWeights(gainA, gainB, subRxEnabled, balance, mixMode, outWeights) {
+    const gA = clamp(gainA, 0, 1);
+    const gB = subRxEnabled ? clamp(gainB, 0, 1) : 0;
+    const bal = clamp(balance, -1, 1);
+    const balL = bal > 0 ? 1.0 - bal : 1.0;
+    const balR = bal < 0 ? 1.0 + bal : 1.0;
+    const abA = subRxEnabled ? 0.5 * gA : gA;
+    const abB = subRxEnabled ? 0.5 * gB : 0;
+
+    let wLA = gA;
+    let wLB = 0;
+    let wRA = gA;
+    let wRB = 0;
+
+    switch (mixMode) {
+      case 'A.B':
+        wLA = gA; wLB = 0;
+        wRA = subRxEnabled ? 0 : gA; wRB = subRxEnabled ? gB : 0;
+        break;
+      case 'AB.AB':
+        wLA = abA; wLB = abB;
+        wRA = abA; wRB = abB;
+        break;
+      case 'A.-A':
+        wLA = gA; wLB = 0;
+        wRA = -gA; wRB = 0;
+        break;
+      case 'A.AB':
+        wLA = gA; wLB = 0;
+        wRA = abA; wRB = abB;
+        break;
+      case 'AB.B':
+        wLA = abA; wLB = abB;
+        wRA = 0; wRB = gB;
+        break;
+      case 'AB.A':
+        wLA = abA; wLB = abB;
+        wRA = gA; wRB = 0;
+        break;
+      case 'B.AB':
+        wLA = 0; wLB = gB;
+        wRA = abA; wRB = abB;
+        break;
+      case 'B.B':
+        wLA = 0; wLB = gB;
+        wRA = 0; wRB = gB;
+        break;
+      case 'B.A':
+        wLA = 0; wLB = gB;
+        wRA = gA; wRB = 0;
+        break;
+      case 'A.A':
+      default:
+        wLA = gA; wLB = 0;
+        wRA = gA; wRB = 0;
+        break;
+    }
+
+    outWeights[0] = wLA * balL;
+    outWeights[1] = wLB * balL;
+    outWeights[2] = wRA * balR;
+    outWeights[3] = wRB * balR;
+  }
+
   /**
    * Mix one stereo [Main, Sub] frame according to Elecraft K4 MX presets,
    * Sub-RX gating, per-receiver gains, stereo balance (-1..+1), and mute.
@@ -51,79 +120,17 @@
       return new StereoSample(0, 0);
     }
 
-    const gainA = cfg.gainA !== undefined && Number.isFinite(cfg.gainA)
-      ? clamp(cfg.gainA, 0, 1)
-      : 1.0;
-    const gainB = cfg.gainB !== undefined && Number.isFinite(cfg.gainB)
-      ? clamp(cfg.gainB, 0, 1)
-      : 1.0;
+    const gainA = cfg.gainA !== undefined && Number.isFinite(cfg.gainA) ? cfg.gainA : 1.0;
+    const gainB = cfg.gainB !== undefined && Number.isFinite(cfg.gainB) ? cfg.gainB : 1.0;
     const subRxEnabled = Boolean(cfg.subRxEnabled);
-    const balance = cfg.balance !== undefined && Number.isFinite(cfg.balance)
-      ? clamp(cfg.balance, -1, 1)
-      : 0.0;
-    const mixMode = typeof cfg.mixMode === 'string' && cfg.mixMode.length > 0
-      ? cfg.mixMode
-      : 'A.B';
+    const balance = cfg.balance !== undefined && Number.isFinite(cfg.balance) ? cfg.balance : 0.0;
+    const mixMode = typeof cfg.mixMode === 'string' && cfg.mixMode.length > 0 ? cfg.mixMode : 'A.B';
 
-    const a = (Number.isFinite(main) ? main : 0) * gainA;
-    const b = subRxEnabled ? (Number.isFinite(sub) ? sub : 0) * gainB : 0;
-    const ab = subRxEnabled ? 0.5 * (a + b) : a;
-
-    let left = a;
-    let right = a;
-
-    switch (mixMode) {
-      case 'A.B':
-        left = a;
-        right = subRxEnabled ? b : a;
-        break;
-      case 'AB.AB':
-        left = ab;
-        right = ab;
-        break;
-      case 'A.-A':
-        left = a;
-        right = -a;
-        break;
-      case 'A.AB':
-        left = a;
-        right = ab;
-        break;
-      case 'AB.B':
-        left = ab;
-        right = b;
-        break;
-      case 'AB.A':
-        left = ab;
-        right = a;
-        break;
-      case 'B.AB':
-        left = b;
-        right = ab;
-        break;
-      case 'B.B':
-        left = b;
-        right = b;
-        break;
-      case 'B.A':
-        left = b;
-        right = a;
-        break;
-      case 'A.A':
-      default:
-        left = a;
-        right = a;
-        break;
-    }
-
-    if (balance < 0) {
-      right *= 1.0 + balance;
-    } else if (balance > 0) {
-      left *= 1.0 - balance;
-    }
-
-    left = clamp(left, -1, 1);
-    right = clamp(right, -1, 1);
+    computeLinearMixWeights(gainA, gainB, subRxEnabled, balance, mixMode, MIX_WEIGHT_SCRATCH);
+    const m = Number.isFinite(main) ? main : 0;
+    const s = Number.isFinite(sub) ? sub : 0;
+    const left = clamp(MIX_WEIGHT_SCRATCH[0] * m + MIX_WEIGHT_SCRATCH[1] * s, -1, 1);
+    const right = clamp(MIX_WEIGHT_SCRATCH[2] * m + MIX_WEIGHT_SCRATCH[3] * s, -1, 1);
 
     if (out) {
       out.left = left;
@@ -332,5 +339,6 @@
 
   K4.WORKLET_PROCESSOR_SOURCE = WORKLET_PROCESSOR_SOURCE;
   K4.createWorkletDataUrl = createWorkletDataUrl;
+  K4.computeLinearMixWeights = computeLinearMixWeights;
   K4.mixStereoSample = mixStereoSample;
 })();
