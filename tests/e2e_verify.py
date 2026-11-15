@@ -1523,10 +1523,19 @@ def run_http_origin_and_screenshots(
         """
         const hdr = document.querySelector('[data-testid="minipan-drag-a"]');
         const r0 = document.querySelector('[data-testid="minipan-box-a"]').getBoundingClientRect();
+        const rB0 = document.querySelector('[data-testid="minipan-box-b"]').getBoundingClientRect();
         const hr = hdr.getBoundingClientRect();
-        return { hx: Math.round(hr.left + hr.width / 2), hy: Math.round(hr.top + hr.height / 2), r0: { left: r0.left, top: r0.top } };
+        return {
+            hx: Math.round(hr.left + hr.width / 2),
+            hy: Math.round(hr.top + hr.height / 2),
+            r0: { left: r0.left, top: r0.top },
+            rB0: { left: rB0.left, top: rB0.top },
+            innerW: window.innerWidth,
+        };
         """
     )
+    assert mp_drag["r0"]["left"] < mp_drag["innerW"] * 0.35, f"Expected Mini-Pan A docked on left near VFO A, got {mp_drag}"
+    assert mp_drag["rB0"]["left"] > mp_drag["innerW"] * 0.60 and mp_drag["r0"]["left"] < mp_drag["rB0"]["left"], f"Expected Mini-Pan B docked on right near VFO B, got {mp_drag}"
     client.perform_actions(
         [
             {
@@ -1536,7 +1545,7 @@ def run_http_origin_and_screenshots(
                 "actions": [
                     {"type": "pointerMove", "duration": 0, "x": mp_drag["hx"], "y": mp_drag["hy"], "origin": "viewport"},
                     {"type": "pointerDown", "button": 0},
-                    {"type": "pointerMove", "duration": 40, "x": mp_drag["hx"] - 65, "y": mp_drag["hy"] + 50, "origin": "viewport"},
+                    {"type": "pointerMove", "duration": 40, "x": mp_drag["hx"] + 80, "y": mp_drag["hy"] + 50, "origin": "viewport"},
                     {"type": "pointerUp", "button": 0},
                 ],
             }
@@ -1572,19 +1581,20 @@ def run_http_origin_and_screenshots(
     client.set_window_rect(1440, 900)
     wait_until(lambda: client.execute_script("return window.innerWidth >= 1400;"), "Restore 1440x900 after Mini-Pan clamp test")
 
-    # dblclick header resets position back to docked
+    # dblclick header resets position back to left docked side
     client.execute_script(
         "document.querySelector('[data-testid=\"minipan-drag-a\"]').dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true }));"
     )
     wait_until(
         lambda: client.execute_script(
-            """
+            f"""
             const box = document.querySelector('[data-testid="minipan-box-a"]');
+            const r = box.getBoundingClientRect();
             const stored = K4.storage ? K4.storage.get('k4.minipan.pos.a', null) : null;
-            return box && box.dataset.docked === 'true' && stored === null;
+            return box && box.dataset.docked === 'true' && stored === null && Math.abs(r.left - {mp_drag["r0"]["left"]}) <= 2;
             """
         ),
-        "Double-click Mini-Pan A header snaps back to docked",
+        "Double-click Mini-Pan A header snaps back to left docked position",
     )
     client.click_element(client.find_element('[data-testid="minipan-close-a"]'))
     wait_until(

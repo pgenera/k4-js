@@ -3162,6 +3162,11 @@
 
       assertEqual(boxA.style.display, 'flex', 'minipan-box-a visible after #MP1 + packet');
       assertEqual(boxB.style.display, 'flex', 'minipan-box-b visible after #MP$1 + SB1 + packet');
+      const leftA = parseFloat(boxA.style.left);
+      const leftB = parseFloat(boxB.style.left);
+      assert(leftA < leftB, 'Mini-Pan A docks left of Mini-Pan B');
+      assert(leftA < 800 * 0.35, 'Mini-Pan A starts on left side nearest VFO A (got left=' + leftA + ')');
+      assert(leftB > 800 * 0.55, 'Mini-Pan B starts on right side nearest VFO B (got left=' + leftB + ')');
 
       // Perf counters: __k4Perf initialized with hudMeasures & overlaySkips
       const panPerf = view.getPerf ? view.getPerf() : (globalThis.__k4Perf || {});

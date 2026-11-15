@@ -1876,12 +1876,14 @@ void main() {
 
       const isCompact = cssW < 640 || paneRect.w < 440;
       const twoVfosInPane = dualPanMode !== 2 && subRxEnabled;
+      const leftClear = isCompact ? 42 : 56;
       const rightClear = isCompact ? 34 : 42;
+      const sideClear = this.rx === 'B' ? rightClear : leftClear;
       const vfoClear = dualPanMode === 2 ? 22 : twoVfosInPane ? 40 : 24;
 
       const maxBoxW = Math.max(
         136,
-        Math.min(212, Math.floor(paneRect.w - rightClear - 16))
+        Math.min(212, Math.floor(paneRect.w - sideClear - 16))
       );
       const boxW = isCompact
         ? clamp(maxBoxW, 136, 178)
@@ -1894,9 +1896,15 @@ void main() {
         Math.min(134, availH)
       );
 
-      let defaultLeft = Math.round(
-        Math.max(paneRect.x + 6, paneRect.x + paneRect.w - rightClear - boxW)
-      );
+      let defaultLeft =
+        this.rx === 'B'
+          ? Math.round(Math.max(paneRect.x + 6, paneRect.x + paneRect.w - rightClear - boxW))
+          : Math.round(
+              Math.min(
+                paneRect.x + leftClear,
+                Math.max(paneRect.x + 6, paneRect.x + paneRect.w - boxW - 6)
+              )
+            );
       let defaultTop = Math.round(specRect.y + vfoClear);
 
       if (avoidRect && avoidRect.w > 0 && avoidRect.h > 0) {
@@ -1910,6 +1918,11 @@ void main() {
           const belowTop = avoidRect.top + avoidRect.h + 8;
           if (belowTop + boxH <= specRect.y + specRect.h - 4) {
             defaultTop = belowTop;
+          } else if (this.rx === 'B') {
+            defaultLeft = Math.min(
+              paneRect.x + paneRect.w - boxW - 6,
+              avoidRect.left + avoidRect.w + 8
+            );
           } else {
             defaultLeft = Math.max(paneRect.x + 6, avoidRect.left - boxW - 8);
           }
