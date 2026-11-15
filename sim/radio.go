@@ -58,8 +58,9 @@ var blockedTxPrefixes = []string{
 }
 
 const (
-	omOptionModuleStr = "OM AP-S----4---;"
-	rvModulesStr      = "RV.DDC0-00.65 (0:35);RV.DUC-00.45 (1:18);RV.FP-03.57;RV.DSP-01.69;RV.RFB-00.78;RV.REF-00.20;RV.DAP-00.29;RV.KSRV-2016;RV.KUI-1801;RV.KUP-646;RV.KCFG-78;RV.R-R40.B1;"
+	omOptionModuleStr    = "OM AP-S----4---;"
+	autoRefNoiseFloorDbm = -115
+	rvModulesStr         = "RV.DDC0-00.65 (0:35);RV.DUC-00.45 (1:18);RV.FP-03.57;RV.DSP-01.69;RV.RFB-00.78;RV.REF-00.20;RV.DAP-00.29;RV.KSRV-2016;RV.KUI-1801;RV.KUP-646;RV.KCFG-78;RV.R-R40.B1;"
 	medfSampleStr     = "MEDF0001,Speaker%2C Internal,AUDIO,BIN,0,0,1,1,0,1,OFF,ON;" +
 		"MEDF0002,TX ALC,TX,BIN,1,0,1,1,1,1,OFF,ON;" +
 		"MEDF0004,KAT4 ATU Option,TX,DEC,1,0,3,2,2,1,NOT_INST,BYPASS,AUTO,TEST;" +
@@ -100,13 +101,16 @@ type RxState struct {
 	PanTierKHz        int
 	PanRefDbm         int
 	PanScaleDb        int
-	WfBlack           int
-	AutoRef           bool
-	FixedTune         bool
-	MiniPan           bool
-	RitOn             bool
-	RitOffsetHz       int
-	PanCenterOffsetHz int64
+	WfBlack             int
+	AutoRef             bool
+	FixedTune           bool
+	MiniPan             bool
+	RitOn               bool
+	RitOffsetHz         int
+	PanCenterOffsetHz   int64
+	TextDecodeMode      int
+	TextDecodeThreshold int
+	TextDecodeLines     int
 }
 
 type DebugStats struct {
@@ -166,13 +170,16 @@ func NewRadio() *Radio {
 		NrLevel:     4,
 		NotchHz:     750,
 		Agc:         1,
-		PanSpanHz:   48000,
-		PanTierKHz:  SpectrumTierKHzWithHysteresis(48000, 0),
-		PanRefDbm:   -50,
-		PanScaleDb:  80,
-		WfBlack:     14,
-		AutoRef:     true,
-		FixedTune:   false,
+		PanSpanHz:           48000,
+		PanTierKHz:          SpectrumTierKHzWithHysteresis(48000, 0),
+		PanRefDbm:           autoRefNoiseFloorDbm,
+		PanScaleDb:          80,
+		WfBlack:             14,
+		AutoRef:             true,
+		FixedTune:           false,
+		TextDecodeMode:      2,
+		TextDecodeThreshold: 0,
+		TextDecodeLines:     1,
 	}
 	baseB := baseA
 	baseB.FreqHz = 14025000
@@ -180,6 +187,9 @@ func NewRadio() *Radio {
 	baseB.BwHz = 500
 	baseB.IfShiftHz = 500
 	baseB.StepMode = 3
+	baseB.TextDecodeMode = 0
+	baseB.TextDecodeThreshold = 2
+	baseB.TextDecodeLines = 0
 
 	return &Radio{
 		RxA:              baseA,
@@ -345,9 +355,15 @@ func (r *Radio) fullSnapshotLocked(tSec float64) string {
 	sb.WriteString(fmt.Sprintf("#WBS%d;", r.RxA.WfBlack))
 	sb.WriteString(fmt.Sprintf("#AR1206-02%d;", bool01(r.RxA.AutoRef)))
 	sb.WriteString(fmt.Sprintf("#FXT%d;", bool01(r.RxA.FixedTune)))
+	sb.WriteString(fmt.Sprintf("TD%d%d%d;", r.RxA.TextDecodeMode, r.RxA.TextDecodeThreshold, r.RxA.TextDecodeLines))
+	sb.WriteString(fmt.Sprintf("TD$%d%d%d;", r.RxB.TextDecodeMode, r.RxB.TextDecodeThreshold, r.RxB.TextDecodeLines))
 	sb.WriteString(fmt.Sprintf("#DPM%d;", r.DualPanMode))
 	sb.WriteString(fmt.Sprintf("#MP%d;", bool01(r.RxA.MiniPan)))
-	sb.WriteString(fmt.Sprintf("#MP$%d;", bool01(r.RxB.MiniPan)))
+	if !r.SubRxEnabled {
+		sb.WriteString("#MP$-1;")
+	} else {
+		sb.WriteString(fmt.Sprintf("#MP$%d;", bool01(r.RxB.MiniPan)))
+	}
 	sb.WriteString(fmt.Sprintf("#FRZ%d;", bool01(r.PanFrozen)))
 	sb.WriteString(fmt.Sprintf("MX%s;", r.AudioMix))
 	sb.WriteString(fmt.Sprintf("EM%d;", r.EncodeMode))
@@ -375,6 +391,48 @@ func (r *Radio) execSingleLocked(orig, upper string, tSec float64) string {
 		return rvModulesStr
 	case upper == "TQ":
 		return "TQ0;"
+	case upper == "TB":
+		return "TB000;"
+	case upper == "TB$":
+		return "TB$000;"
+	case strings.HasPrefix(upper, "TD"):
+		rx, prefix, arg := splitSubRx(upper, "TD")
+		target := r.rxPtr(rx)
+		if arg != "" {
+			if arg == "/" {
+				if target.TextDecodeMode > 0 {
+					target.TextDecodeMode = 0
+					isSet = true
+				} else {
+					if !isTextDecodeCompatible(*target) {
+						return "ER12:SET command incompatible with target VFO's mode.;"
+					}
+					target.TextDecodeMode = 2
+					isSet = true
+				}
+			} else {
+				m, err := strconv.Atoi(arg[:1])
+				if err != nil {
+					return "?;"
+				}
+				if m > 0 && !isTextDecodeCompatible(*target) {
+					return "ER12:SET command incompatible with target VFO's mode.;"
+				}
+				target.TextDecodeMode = clampInt(m, 0, 4)
+				if len(arg) >= 2 {
+					if th, err := strconv.Atoi(arg[1:2]); err == nil {
+						target.TextDecodeThreshold = clampInt(th, 0, 9)
+					}
+				}
+				if len(arg) >= 3 {
+					if ln, err := strconv.Atoi(arg[2:3]); err == nil {
+						target.TextDecodeLines = clampInt(ln, 0, 1)
+					}
+				}
+				isSet = true
+			}
+		}
+		resp = fmt.Sprintf("%s%d%d%d;", prefix, target.TextDecodeMode, target.TextDecodeThreshold, target.TextDecodeLines)
 	case upper == "AN":
 		return "AN1;"
 	case upper == "OV":
@@ -518,6 +576,9 @@ func (r *Radio) execSingleLocked(orig, upper string, tSec float64) string {
 		if arg == "0" || arg == "1" {
 			isSet = true
 			r.SubRxEnabled = arg == "1"
+			if !r.SubRxEnabled {
+				r.RxB.MiniPan = false
+			}
 		}
 		resp = fmt.Sprintf("SB%d;", bool01(r.SubRxEnabled))
 	case upper == "SP0":
@@ -800,9 +861,13 @@ func (r *Radio) execSingleLocked(orig, upper string, tSec float64) string {
 		target := r.rxPtr(rx)
 		if arg != "" {
 			isSet = true
-			if v, err := strconv.Atoi(arg); err == nil {
+			if r.RxA.AutoRef {
+				target.PanRefDbm = autoRefNoiseFloorDbm
+			} else if v, err := strconv.Atoi(arg); err == nil {
 				target.PanRefDbm = clampInt(v, -200, 60)
 			}
+		} else if r.RxA.AutoRef {
+			target.PanRefDbm = autoRefNoiseFloorDbm
 		}
 		resp = fmt.Sprintf("%s%d;", prefix, target.PanRefDbm)
 	case strings.HasPrefix(upper, "#SCL$"):
@@ -842,14 +907,31 @@ func (r *Radio) execSingleLocked(orig, upper string, tSec float64) string {
 		arg := strings.TrimPrefix(upper, "#AR")
 		if arg != "" {
 			isSet = true
-			last := arg[len(arg)-1]
-			switch last {
-			case 'A', '1':
+			switch {
+			case arg == "A" || arg == "9":
 				r.RxA.AutoRef = true
-			case 'M', '0':
+				r.RxA.PanRefDbm = autoRefNoiseFloorDbm
+				r.RxB.PanRefDbm = autoRefNoiseFloorDbm
+			case arg == "1":
+				r.RxA.PanRefDbm = autoRefNoiseFloorDbm
+				r.RxB.PanRefDbm = autoRefNoiseFloorDbm
+			case arg == "M" || arg == "0":
 				r.RxA.AutoRef = false
-			case '/':
+			case arg == "/":
 				r.RxA.AutoRef = !r.RxA.AutoRef
+				if r.RxA.AutoRef {
+					r.RxA.PanRefDbm = autoRefNoiseFloorDbm
+					r.RxB.PanRefDbm = autoRefNoiseFloorDbm
+				}
+			default:
+				last := arg[len(arg)-1]
+				if last == 'A' || last == '1' {
+					r.RxA.AutoRef = true
+					r.RxA.PanRefDbm = autoRefNoiseFloorDbm
+					r.RxB.PanRefDbm = autoRefNoiseFloorDbm
+				} else if last == 'M' || last == '0' {
+					r.RxA.AutoRef = false
+				}
 			}
 		}
 		resp = fmt.Sprintf("#AR1206-02%d;", bool01(r.RxA.AutoRef))
@@ -876,11 +958,18 @@ func (r *Radio) execSingleLocked(orig, upper string, tSec float64) string {
 	case strings.HasPrefix(upper, "#MP"):
 		rx, prefix, arg := splitSubRx(upper, "#MP")
 		target := r.rxPtr(rx)
-		if arg == "0" || arg == "1" {
-			isSet = true
-			target.MiniPan = arg == "1"
+		if rx == 'B' && !r.SubRxEnabled {
+			if arg == "0" || arg == "1" {
+				isSet = true
+			}
+			resp = "#MP$-1;"
+		} else {
+			if arg == "0" || arg == "1" {
+				isSet = true
+				target.MiniPan = arg == "1"
+			}
+			resp = fmt.Sprintf("%s%d;", prefix, bool01(target.MiniPan))
 		}
-		resp = fmt.Sprintf("%s%d;", prefix, bool01(target.MiniPan))
 	case strings.HasPrefix(upper, "#FRZ"):
 		arg := strings.TrimPrefix(upper, "#FRZ")
 		if arg != "" {
@@ -993,6 +1082,16 @@ func formatRA(prefix string, s RxState) string {
 
 func validMode(m int) bool {
 	return (m >= 1 && m <= 7) || m == 9
+}
+
+func isTextDecodeCompatible(rx RxState) bool {
+	if rx.Mode == ModeCW || rx.Mode == ModeCWR {
+		return true
+	}
+	if rx.Mode == ModeDATA || rx.Mode == ModeDATAR {
+		return rx.DataSubMode == 2 || rx.DataSubMode == 3
+	}
+	return false
 }
 
 func bool01(b bool) int {

@@ -652,3 +652,51 @@ func TestOpusAudioEncodingAndMultiFrameTOCs(t *testing.T) {
 		}
 	}
 }
+
+func TestWave2RefAutoRefTextDecodeAndDpmMp(t *testing.T) {
+	r := NewRadio()
+
+	// 1. Default PanRefDbm is -115 on RxA & RxB
+	if rep, _ := r.HandleCAT("#REF;#REF$;", 0.0); rep != "#REF-115;#REF$-115;" {
+		t.Fatalf("default #REF = %q, want #REF-115;#REF$-115;", rep)
+	}
+
+	// 2. While AutoRef is ON (#ARA), #REF stays anchored at -115; #ARM allows manual #REF; #AR1 snaps once without toggling AutoRef
+	if rep, _ := r.HandleCAT("#ARA;#REF-95;#REF;#AR;", 0.0); rep != "#AR1206-021;#REF-115;#REF-115;#AR1206-021;" {
+		t.Fatalf("auto-ref lock #REF = %q", rep)
+	}
+	if rep, _ := r.HandleCAT("#ARM;#REF-108;#REF;#AR;", 0.0); rep != "#AR1206-020;#REF-108;#REF-108;#AR1206-020;" {
+		t.Fatalf("manual #ARM+#REF = %q", rep)
+	}
+	if rep, _ := r.HandleCAT("#AR1;#REF;#AR;", 0.0); rep != "#AR1206-020;#REF-115;#AR1206-020;" {
+		t.Fatalf("one-shot #AR1 = %q", rep)
+	}
+
+	// 3. TD / TD$ defaults, ER12 on incompatible modes, CW/FSK-D/PSK-D support, TB/TB$ empty polling
+	if rep, _ := r.HandleCAT("TD;TD$;TB;TB$;", 0.0); rep != "TD201;TD$020;TB000;TB$000;" {
+		t.Fatalf("default TD/TB = %q, want TD201;TD$020;TB000;TB$000;", rep)
+	}
+	// Turning TD OFF in DATA-A works, enabling TD>0 in DATA-A or LSB returns ER12
+	if rep, _ := r.HandleCAT("MD6;DT0;TD000;TD101;TD/;MD1;TD201;", 0.0); !strings.Contains(rep, "TD000;") || strings.Count(rep, "ER12:SET command incompatible with target VFO's mode.;") != 3 {
+		t.Fatalf("DATA-A/LSB TD gate = %q", rep)
+	}
+	// Enabling TD in CW, CW-R, FSK-D, PSK-D works and clamps lines 0..1
+	if rep, _ := r.HandleCAT("MD3;TD301;TD432;TD/;TD/;MD6;DT2;TD101;MD6;DT3;TD211;TD$101;", 0.0); rep != "MD3;TD301;TD431;TD031;TD231;MD6;DT2;TD101;MD6;DT3;TD211;TD$101;" {
+		t.Fatalf("CW/DATA TD transitions = %q", rep)
+	}
+	// TB under AI4 must still reply with TB000; / TB$000;
+	if rep, _ := r.HandleCAT("AI4;TB;TB$;AI5;", 0.0); rep != "TB000;TB$000;AI5;" {
+		t.Fatalf("AI4 TB GET = %q, want TB000;TB$000;AI5;", rep)
+	}
+
+	// 4. #MP$ returns #MP$-1 when SB0, unlocks when SB1, resets on SB0; #DPM0/1/2 round-trip
+	if rep, _ := r.HandleCAT("#MP$;#MP$1;#MP1;", 0.0); rep != "#MP$-1;#MP$-1;#MP1;" {
+		t.Fatalf("SB0 #MP/#MP$ = %q, want #MP$-1;#MP$-1;#MP1;", rep)
+	}
+	if rep, _ := r.HandleCAT("SB1;#MP$;#MP$1;SB0;#MP$;", 0.0); rep != "SB1;#MP$0;#MP$1;SB0;#MP$-1;" {
+		t.Fatalf("SB1/SB0 #MP$ lifecycle = %q", rep)
+	}
+	if rep, _ := r.HandleCAT("#DPM1;#DPM;#DPM2;#DPM0;", 0.0); rep != "#DPM1;#DPM1;#DPM2;#DPM0;" {
+		t.Fatalf("#DPM transitions = %q", rep)
+	}
+}
