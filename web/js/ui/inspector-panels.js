@@ -329,15 +329,16 @@
         pill.dataset.sensorKey = key;
         pill.dataset.testid = `strip-sensor-${key}`;
         pill.title = `Open ${lbl} graph in TX / ATU`;
-        pill.appendChild(el('span', 'k4-sensor-pill-lbl', lbl));
+        const lblEl = el('span', 'k4-sensor-pill-lbl', lbl);
+        pill.appendChild(lblEl);
         const val = el('span', 'k4-sensor-pill-val', '--');
         pill.appendChild(val);
         pill.addEventListener('click', () => {
-          this._selectedSensorKey = key;
+          this._selectedSensorKey = pill.dataset.sensorKey || key;
           this.openTab('tx', this._refs.txSensorsCard);
         });
         this.sensorStrip.appendChild(pill);
-        return { pill, val };
+        return { pill, lbl: lblEl, val };
       };
       this._strip = {
         vs: makeStripPill('vs', 'VS'),
@@ -1075,6 +1076,7 @@
       spanCard.appendChild(actRow);
 
       this._refs.fixedTuneSwitch = makeSwitchRow('Fixed Tune (#FXT)', () => {
+        if (this.panadapter) this.panadapter._autoFixedTuneFromDrag = false;
         const s = this._snap();
         this.client.setDisplay(this._dispRx(), { fixedTune: !s.fixedTune });
       });
@@ -3002,6 +3004,7 @@
       const swr = Number(tm.swr) >= 1.0 ? Number(tm.swr) : (snapshot.atuMatchedSwr || 1.0);
 
       const tempLevel = (t) => (t == null ? 'ok' : (t >= 75 ? 'crit' : (t >= 60 ? 'warn' : 'ok')));
+      const tfLevel = (t) => (t == null ? 'ok' : (t >= 70 ? 'crit' : (t >= 55 ? 'warn' : 'ok')));
       const voltLevel = (v) => (v == null ? 'ok' : (v < 11.2 ? 'crit' : (v < 11.8 ? 'warn' : 'ok')));
       const swrLevel = (s) => (s > 2.5 ? 'crit' : (s > 1.5 ? 'warn' : 'ok'));
 
@@ -3017,9 +3020,15 @@
         this._strip.is.pill.dataset.level = isAmps != null && isAmps > 21 ? 'warn' : 'ok';
         this._strip.is.pill.classList.toggle('is-selected', this._selectedSensorKey === 'is');
 
-        this._strip.pt.val.textContent = pt != null ? `${pt.toFixed(0)}°C` : '—';
-        this._strip.pt.pill.dataset.level = tempLevel(pt);
-        this._strip.pt.pill.classList.toggle('is-selected', this._selectedSensorKey === 'pt');
+        const stripTempKey = pt == null && tf != null ? 'tf' : 'pt';
+        const stripTempVal = pt != null ? pt : tf;
+        const stripTempLbl = stripTempKey === 'tf' ? 'FP TEMP' : 'PA TEMP';
+        this._strip.pt.lbl.textContent = stripTempLbl;
+        this._strip.pt.pill.dataset.sensorKey = stripTempKey;
+        this._strip.pt.pill.title = `Open ${stripTempLbl} graph in TX / ATU`;
+        this._strip.pt.val.textContent = stripTempVal != null ? `${stripTempVal.toFixed(0)}°C` : '—';
+        this._strip.pt.pill.dataset.level = stripTempKey === 'tf' ? tfLevel(stripTempVal) : tempLevel(stripTempVal);
+        this._strip.pt.pill.classList.toggle('is-selected', this._selectedSensorKey === stripTempKey);
 
         this._strip.swr.val.textContent = `${swr.toFixed(2)}:1`;
         this._strip.swr.pill.dataset.level = swrLevel(swr);
@@ -3263,10 +3272,12 @@
           : '—';
         s.is.tile.dataset.level = isAmps != null && isAmps > 21 ? 'warn' : 'ok';
 
-        s.pt.val.textContent = pt != null ? `${pt.toFixed(1)} °C` : '—';
+        const isConnected = Boolean(snapshot.connection && snapshot.connection.status === 'connected');
+        const paIdleLabel = isConnected ? 'Idle (on TX)' : '—';
+        s.pt.val.textContent = pt != null ? `${pt.toFixed(1)} °C` : paIdleLabel;
         s.pt.tile.dataset.level = tempLevel(pt);
 
-        s.lt.val.textContent = lt != null ? `${lt.toFixed(1)} °C` : '—';
+        s.lt.val.textContent = lt != null ? `${lt.toFixed(1)} °C` : paIdleLabel;
         s.lt.tile.dataset.level = tempLevel(lt);
 
         s.tf.val.textContent = tf != null ? `${tf.toFixed(1)} °C` : '—';
@@ -3276,6 +3287,7 @@
         if (tel.cpuTempC != null) sysParts.push(`C:${Number(tel.cpuTempC).toFixed(0)}°`);
         if (tel.dapTempC != null) sysParts.push(`D:${Number(tel.dapTempC).toFixed(0)}°`);
         if (tel.ducTempC != null) sysParts.push(`U:${Number(tel.ducTempC).toFixed(0)}°`);
+        if (tel.ducDrive != null) sysParts.push(`DV:${Number(tel.ducDrive).toFixed(0)}`);
         s.sys.val.textContent = sysParts.length ? sysParts.join(' ') : '—';
         s.sys.tile.dataset.level = tempLevel(tel.cpuTempC != null ? Number(tel.cpuTempC) : null);
 

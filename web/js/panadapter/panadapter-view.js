@@ -92,6 +92,7 @@
       this._lastClickFreqHz = null;
       this._hoverState = null;
       this._rafId = 0;
+      this._autoFixedTuneFromDrag = false;
 
       if (typeof globalThis.getComputedStyle === 'function') {
         const pos = globalThis.getComputedStyle(container).position;
@@ -205,6 +206,9 @@
 
     _onStateChange(snap) {
       if (this._destroyed || !snap) return;
+      if (!snap.fixedTune) {
+        this._autoFixedTuneFromDrag = false;
+      }
       for (const rxKey of ['A', 'B']) {
         const rxSnap = (rxKey === 'B' ? snap.rxB : snap.rxA) || {};
         const pane = this._panes[rxKey];
@@ -417,11 +421,26 @@
       pane.pendingStreamCenterUntil = 0;
       pane.recentRadioSpans.length = 0;
 
-      if (syncRadioSpan && this._client) {
-        if (typeof this._client.setDisplay === 'function') {
-          this._client.setDisplay(key, {
-            panSpanHz: clamp(Math.round(prevSpanHz), 6000, 368000),
-          });
+      if (this._interaction && typeof this._interaction.cancelPendingIfCenter === 'function') {
+        this._interaction.cancelPendingIfCenter();
+      }
+
+      if (this._client && (syncRadioSpan || this._autoFixedTuneFromDrag)) {
+        const shouldClearFixedTune = Boolean(this._autoFixedTuneFromDrag);
+        this._autoFixedTuneFromDrag = false;
+        const displayPatch = {};
+        if (syncRadioSpan) {
+          displayPatch.panSpanHz = clamp(Math.round(prevSpanHz), 6000, 368000);
+        }
+        if (shouldClearFixedTune) {
+          displayPatch.fixedTune = false;
+        }
+        if (Object.keys(displayPatch).length > 0) {
+          if (typeof this._client.setDisplay === 'function') {
+            this._client.setDisplay(key, displayPatch);
+          } else if (shouldClearFixedTune && typeof this._client.sendCat === 'function') {
+            this._client.sendCat('#FXT0;');
+          }
         }
         if (typeof this._client.sendCat === 'function') {
           this._client.sendCat(key === 'B' ? 'FC$;' : 'FC;');

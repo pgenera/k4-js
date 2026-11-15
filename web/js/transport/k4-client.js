@@ -1221,7 +1221,7 @@
      */
     refreshTxState() {
       return this.sendCat(
-        'TQX;IN;TS;PC;PCX;AT;AN;ACT;ACN1;ACN2;ACN3;XT;MG;MI;MS;CP;ML0;ML1;ML2;KS;KP;VXC;VXV;VXD;'
+        'TQX;TS;PC;PCX;AT;AN;ACT;ACN1;ACN2;ACN3;XT;MG;MI;MS;CP;ML0;ML1;ML2;KS;KP;VXC;VXV;VXD;'
       );
     }
 

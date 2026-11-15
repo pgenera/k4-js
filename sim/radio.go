@@ -1564,7 +1564,11 @@ func (r *Radio) execSingleLocked(orig, upper string, tSec float64) string {
 		if arg != "" {
 			isSet = true
 			if hz, err := strconv.ParseInt(arg, 10, 64); err == nil {
+				oldCenter := r.RxA.FreqHz + r.RxA.PanCenterOffsetHz
 				r.RxA.FreqHz = clampInt64(hz, 100000, 54000000)
+				if r.RxA.FixedTune {
+					r.RxA.PanCenterOffsetHz = clampInt64(oldCenter-r.RxA.FreqHz, -5000000, 5000000)
+				}
 			}
 		}
 		resp = fmt.Sprintf("FA%011d;", r.RxA.FreqHz)
@@ -1573,7 +1577,11 @@ func (r *Radio) execSingleLocked(orig, upper string, tSec float64) string {
 		if arg != "" {
 			isSet = true
 			if hz, err := strconv.ParseInt(arg, 10, 64); err == nil {
+				oldCenter := r.RxB.FreqHz + r.RxB.PanCenterOffsetHz
 				r.RxB.FreqHz = clampInt64(hz, 100000, 54000000)
+				if r.RxA.FixedTune {
+					r.RxB.PanCenterOffsetHz = clampInt64(oldCenter-r.RxB.FreqHz, -5000000, 5000000)
+				}
 			}
 		}
 		resp = fmt.Sprintf("FB%011d;", r.RxB.FreqHz)
@@ -1703,8 +1711,10 @@ func (r *Radio) execSingleLocked(orig, upper string, tSec float64) string {
 			target.PanCenterOffsetHz = 0
 		} else {
 			isSet = true
-			if off, err := strconv.ParseInt(arg, 10, 64); err == nil {
-				target.PanCenterOffsetHz = clampInt64(off, -5000000, 5000000)
+			if r.RxA.FixedTune {
+				if off, err := strconv.ParseInt(arg, 10, 64); err == nil {
+					target.PanCenterOffsetHz = clampInt64(off, -5000000, 5000000)
+				}
 			}
 		}
 		fiPrefix := "FI"
@@ -1717,9 +1727,11 @@ func (r *Radio) execSingleLocked(orig, upper string, tSec float64) string {
 		target := r.rxPtr(rx)
 		if arg != "" {
 			isSet = true
-			if centerHz, err := strconv.ParseInt(arg, 10, 64); err == nil {
-				clampedCenter := clampInt64(centerHz, 100000, 54000000)
-				target.PanCenterOffsetHz = clampInt64(clampedCenter-target.FreqHz, -5000000, 5000000)
+			if r.RxA.FixedTune {
+				if centerHz, err := strconv.ParseInt(arg, 10, 64); err == nil {
+					clampedCenter := clampInt64(centerHz, 100000, 54000000)
+					target.PanCenterOffsetHz = clampInt64(clampedCenter-target.FreqHz, -5000000, 5000000)
+				}
 			}
 		}
 		resp = fmt.Sprintf("%s%011d;", prefix, clampInt64(target.FreqHz+target.PanCenterOffsetHz, 100000, 54000000))
@@ -2431,6 +2443,10 @@ func (r *Radio) execSingleLocked(orig, upper string, tSec float64) string {
 			isSet = true
 			if arg == "0" || arg == "1" {
 				r.RxA.FixedTune = arg == "1"
+				if !r.RxA.FixedTune {
+					r.RxA.PanCenterOffsetHz = 0
+					r.RxB.PanCenterOffsetHz = 0
+				}
 			}
 		}
 		resp = fmt.Sprintf("#FXT%d;", bool01(r.RxA.FixedTune))

@@ -470,9 +470,36 @@
       }
     }
 
+    cancelPendingIfCenter() {
+      if (this._ifCenterFlushTimer) {
+        clearTimeout(this._ifCenterFlushTimer);
+        this._ifCenterFlushTimer = null;
+      }
+      this._pendingIfCenter = null;
+    }
+
     _sendIfCenter(rx, freqHz) {
-      if (!this.client || typeof this.client.sendCat !== 'function') return;
+      if (!this.client) return;
       const clamped = clamp(Math.round(freqHz), 100000, 54000000);
+      const snap =
+        this.state && typeof this.state.getSnapshot === 'function'
+          ? this.state.getSnapshot()
+          : null;
+      // K4 ignores FI/FC offsets while in #FXT0 (Track); enable #FXT1 when panning stream center.
+      if (!snap || !snap.fixedTune) {
+        if (typeof this.client.setDisplay === 'function') {
+          this.client.setDisplay(rx, { fixedTune: true });
+        } else if (typeof this.client.sendCat === 'function') {
+          this.client.sendCat('#FXT1;');
+          if (this.state && typeof this.state.update === 'function') {
+            this.state.update({ fixedTune: true }, 'display');
+          }
+        }
+        if (this.view) {
+          this.view._autoFixedTuneFromDrag = true;
+        }
+      }
+      if (typeof this.client.sendCat !== 'function') return;
       const builders = K4.CatCodec && K4.CatCodec.builders;
       if (builders && typeof builders.ifCenter === 'function') {
         this.client.sendCat(builders.ifCenter(rx, clamped));

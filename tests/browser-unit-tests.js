@@ -2208,14 +2208,17 @@
     assertApprox(snap.telemetry.peakSupplyAmps, 18.40, 1e-6, 'peakSupplyAmps retains max');
     assertApprox(snap.telemetry.fpTempC, 27.8, 1e-6, 'fpTempC updated');
 
-    // SIRF & SIDU sensors
+    // SIRF & SIDU/SID0 sensors
     state.applyParsedCat(parseCommand('SIRFV8:8.0,V5:5.0,V27:27.1,LT:31.2,LM:0,PA:12.50,PM:0,PT:48.5;'));
-    state.applyParsedCat(parseCommand('SIDUV5:5.0,V3:3.3,T:36.8;'));
+    state.applyParsedCat(parseCommand('SIDUV5:5.0,V3:3.3,T:36.8,DV:58.0;'));
     snap = state.getSnapshot();
     assertApprox(snap.telemetry.paTempC, 48.5, 1e-6, 'paTempC');
     assertApprox(snap.telemetry.lpaTempC, 31.2, 1e-6, 'lpaTempC');
     assertApprox(snap.telemetry.paAmps, 12.5, 1e-6, 'paAmps');
     assertApprox(snap.telemetry.ducTempC, 36.8, 1e-6, 'ducTempC');
+    assertApprox(snap.telemetry.ducDrive, 58.0, 1e-6, 'ducDrive');
+    state.applyParsedCat(parseCommand('SID0V12:12.6,ID:0,DV:0.0;'));
+    assertApprox(state.getSnapshot().telemetry.ducDrive, 0.0, 1e-6, 'ducDrive clears on SID0');
 
     // ATU tune capture: TU3 -> non-zero SWR -> TU0 captures atuMatchedSwr
     state.applyParsedCat(parseCommand('RX;'));
@@ -2487,10 +2490,12 @@
         bins: new Uint8Array(512),
       });
       cats.length = 0;
+      displays.length = 0;
       listeners.pointerdown({ type: 'pointerdown', pointerId: 2, pointerType: 'mouse', button: 0, clientX: 700, clientY: 80, shiftKey: false, altKey: false });
       listeners.pointermove({ type: 'pointermove', pointerId: 2, pointerType: 'mouse', button: 0, clientX: 420, clientY: 80, shiftKey: false, altKey: false });
       listeners.pointerup({ type: 'pointerup', pointerId: 2, pointerType: 'mouse', button: 0, clientX: 420, clientY: 80, shiftKey: false, altKey: false });
       assertEqual(tunes.length, 0, 'Full-span drag must NOT tune VFO');
+      assert(displays.some((d) => d.patch && d.patch.fixedTune === true), `Full-span drag enables #FXT1 (got ${JSON.stringify(displays)})`);
       assert(cats.some((c) => c.startsWith('FI000')), `Full-span drag emits FI CAT (got ${JSON.stringify(cats)})`);
 
       // Zero-drag click still tunes VFO A
@@ -2498,6 +2503,13 @@
       listeners.pointerup({ type: 'pointerup', pointerId: 3, pointerType: 'mouse', button: 0, clientX: 800, clientY: 80, shiftKey: false, altKey: false });
       assertEqual(tunes.length, 1, 'Zero-drag click still tunes VFO');
       assertEqual(tunes[0].rx, 'A', 'Zero-drag click tunes VFO A');
+
+      // Recentering after auto-#FXT1 drag clears fixedTune (#FXT0) and sends FC;
+      displays.length = 0;
+      cats.length = 0;
+      panView.resetViewport('A', { syncRadioSpan: true });
+      assert(displays.some((d) => d.patch && d.patch.fixedTune === false), `Center resets #FXT0 after drag (got ${JSON.stringify(displays)})`);
+      assert(cats.includes('FC;'), `Center emits FC; (got ${JSON.stringify(cats)})`);
     } finally {
       interaction.destroy();
       panView.destroy();

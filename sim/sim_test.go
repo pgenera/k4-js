@@ -1286,7 +1286,14 @@ func TestModelK4DiversityAndIfCenterOffset(t *testing.T) {
 		t.Fatalf("K4 without KRX4 should force DV0;, got %q", rep)
 	}
 
-	// FI SET moves panadapter stream center independently of VFO A frequency
+	// 1. FI SET in #FXT0 (Track) stays locked to VFO A
+	if rep, _ := r.HandleCAT("FI00014124000;", 0.0); rep != "FI00014074000;" {
+		t.Fatalf("FI SET in #FXT0 reply = %q, want FI00014074000;", rep)
+	}
+	// 2. #FXT1 enables independent FI stream center without moving VFO A
+	if rep, _ := r.HandleCAT("#FXT1;", 0.0); rep != "#FXT1;" {
+		t.Fatalf("#FXT1; reply = %q, want #FXT1;", rep)
+	}
 	if rep, _ := r.HandleCAT("FI00014124000;", 0.0); rep != "FI00014124000;" {
 		t.Fatalf("FI SET reply = %q, want FI00014124000;", rep)
 	}
@@ -1299,8 +1306,38 @@ func TestModelK4DiversityAndIfCenterOffset(t *testing.T) {
 	if centerHz != 14124000 {
 		t.Fatalf("SynthPAN centerHz = %d, want 14124000", centerHz)
 	}
-	if rep, _ := r.HandleCAT("FC;", 0.0); rep != "FI00014074000;" {
-		t.Fatalf("FC; recenter reply = %q, want FI00014074000;", rep)
+	// 3. Tuning VFO A while #FXT1 holds PAN stream center fixed
+	if rep, _ := r.HandleCAT("FA00014080000;", 0.0); rep != "FA00014080000;" {
+		t.Fatalf("FA SET reply = %q, want FA00014080000;", rep)
+	}
+	rxA, _, _, cwPitch, _, _, _ = r.Snapshot()
+	centerHz, _, _, _ = SynthPAN(rxA, cwPitch, 0.0, rng)
+	if centerHz != 14124000 {
+		t.Fatalf("SynthPAN centerHz drifted during #FXT1 FA tune = %d, want 14124000", centerHz)
+	}
+	// 4. FC; while still in #FXT1 recenters FI onto VFO A
+	if rep, _ := r.HandleCAT("FC;", 0.0); rep != "FI00014080000;" {
+		t.Fatalf("FC; recenter while #FXT1 reply = %q, want FI00014080000;", rep)
+	}
+	rxA, _, _, cwPitch, _, _, _ = r.Snapshot()
+	centerHz, _, _, _ = SynthPAN(rxA, cwPitch, 0.0, rng)
+	if centerHz != 14080000 {
+		t.Fatalf("SynthPAN centerHz after FC; = %d, want 14080000", centerHz)
+	}
+	// 5. FI shifted in #FXT1 then #FXT0 resets SynthPAN back onto VFO A
+	if rep, _ := r.HandleCAT("FI00014124000;", 0.0); rep != "FI00014124000;" {
+		t.Fatalf("FI SET reply = %q, want FI00014124000;", rep)
+	}
+	if rep, _ := r.HandleCAT("#FXT0;", 0.0); rep != "#FXT0;" {
+		t.Fatalf("#FXT0; reply = %q, want #FXT0;", rep)
+	}
+	if rep, _ := r.HandleCAT("FI;", 0.0); rep != "FI00014080000;" {
+		t.Fatalf("FI; after #FXT0 reply = %q, want FI00014080000;", rep)
+	}
+	rxA, _, _, cwPitch, _, _, _ = r.Snapshot()
+	centerHz, _, _, _ = SynthPAN(rxA, cwPitch, 0.0, rng)
+	if centerHz != 14080000 {
+		t.Fatalf("SynthPAN centerHz after #FXT0 = %d, want 14080000", centerHz)
 	}
 }
 
