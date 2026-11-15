@@ -103,9 +103,18 @@ Expose IARU Region 2 segment metadata (`CW`, `Digital`, `Phone/SSB`, `Beacon`) a
 - **Canvas DOM Contract**: Assign predictable CSS classes (`k4-pan-surface`, `k4-pan-gl`, `k4-pan-overlay`, `k4-minipan-box`) and update `dataset.frames`, `dataset.renderer` (`'webgl2' | 'canvas2d'`) on the root container for observability and E2E verification.
 
 ## 5. Interactive Controls (`web/js/panadapter/interaction.js`)
-- Left-click (no drag): tune Target VFO (`targetRx`, default `'A'`; `'B'` if `Shift` held or mobile target toggle set to `'B'`). If `Alt` held, `fine: true` (`1 Hz` snap).
+- **K4 `Mouse L/R Button QSY` Modes (`'lr'` default vs `'pane'` Left Only)**:
+  - **`'lr'` (`Left=A, Right=B`, default — matches Elecraft K4 Operating Manual default)**:
+    - Left-click (no drag) in either panadapter pane QSYs **VFO A** (`'A'`) and sets the K4 mouse wheel target icon to `A` (`'B'` if `Shift` held).
+    - Right-click (with `contextmenu` prevented inside panadapter) in either panadapter pane QSYs **VFO B** (`'B'`) and sets the K4 mouse wheel target icon to `B`.
+  - **`'pane'` (`Left Only`)**:
+    - Left-click (no drag) QSYs the VFO owning the clicked pane (`'A'` in Pan A, `'B'` in Pan B, or `'B'` if `Shift` held); right-click suppresses the context menu without QSY.
+  - Both modes support `Alt` for fine `1 Hz` snap.
   - Note: in Single-Pan (`#DPM0` or `#DPM1`), display controls (Inspector Geometry, HUD Span `−`/`+`, Axis/Center/Fixed-Tune) track the **visible display RX** (`dispRx = snap.dualPanMode === 2 ? targetRx : (snap.dualPanMode === 1 ? 'B' : 'A')`), independent of click-to-tune `targetRx`.
-- Right-click (with `contextmenu` prevented inside panadapter): tune VFO B (`'B'`) immediately!
-- Horizontal pointer drag (`> 5px` threshold): pan active RX frequency smoothly (accumulate delta Hz, throttle `FA`/`FB` sends at max 20 Hz, wait until drag completes or snap cleanly). Also support dragging passband side-edges to adjust `BW`/`IS` when cursor hovers within 6px of a passband edge (`EDGE_HIT_PX = 6`), preserving no-drag left-clicks inside `EDGE_HIT_PX` as VFO tunes.
-- Mouse wheel: default scrolls frequency by `stepHz` (`Alt` = fine); if `Ctrl`/`Meta` held or hovering over frequency axis/span control (`hit.inAxis`), zooms `#SPN`/`#SPN$` on **`hit.paneRx`** (the pane under cursor, NOT `targetRx`) smoothly across `[6, 12, 24, 36, 48, 72, 96, 144, 192, 288, 368]` kHz steps!
-- Touch gestures (`pointerType === 'touch'` / 2 pointers): single tap = click-to-tune active target VFO; 1-finger drag = smooth pan; 2-finger horizontal pinch = adjust `#SPN`/`#SPN$` on the pinched pane (`hit.paneRx`).
+- **K4 Yellow-Bordered Mouse HUD Icon & RIT Wheel Toggle**:
+  - Top-left HUD displays the K4 mouse icon (`Mouse: A` cyan, `Mouse: B` amber, `Mouse: RIT A/B` white) with a yellow border; left- or right-clicking the badge toggles `A`/`B` target without QSY, while middle-click (`auxclick`/`pointerdown` button `1`) inside the panadapter or on the badge (or `Shift+click` on the badge) toggles mouse-wheel control between the active VFO and its RIT offset (`-9999..+9999 Hz`).
+- **VFO Lock Safety (`LK` / `LK$`)**:
+  - When `rxA.locked` or `rxB.locked` is `true`, panadapter click-to-QSY, horizontal drag-pan, and mouse-wheel frequency steps targeting that locked VFO are blocked (matching K4 hardware `[LOCK A]`/`[LOCK B]` behavior), a toast prompts to unlock it, the panadapter VFO flag displays `LOCK`, and the VFO header's red lock button remains visible across breakpoints.
+- Horizontal pointer drag (`> 5px` threshold): pan the mouse-button target RX smoothly (accumulate delta Hz, throttle `FA`/`FB` sends at max 20 Hz, sync target RX on release). Also support dragging passband side-edges to adjust `BW`/`IS` when cursor hovers within 6px of a passband edge (`EDGE_HIT_PX = 6`), preserving no-drag left-clicks inside `EDGE_HIT_PX` as VFO tunes.
+- Mouse wheel: default scrolls the active K4 mouse-target VFO (`targetRx` or `Shift` -> `'B'`, or RIT offset `±10 Hz` / `±1 Hz` fine when in RIT wheel mode); if `Ctrl`/`Meta` held or hovering over frequency axis/span control (`hit.inAxis`), zooms `#SPN`/`#SPN$` on **`hit.paneRx`** (the pane under cursor, NOT `targetRx`) smoothly across `[6, 12, 24, 36, 48, 72, 96, 144, 192, 288, 368]` kHz steps!
+- Touch gestures (`pointerType === 'touch'` / 2 pointers): single tap = click-to-tune (`hit.paneRx` in `#DPM2`, else `targetRx`); 1-finger drag = smooth pan; 2-finger horizontal pinch = adjust `#SPN`/`#SPN$` on the pinched pane (`hit.paneRx`).

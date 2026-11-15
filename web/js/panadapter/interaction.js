@@ -58,6 +58,7 @@
       this._lastEdgeSendMs = -1e9;
       this._lastPinchSendMs = -1e9;
       this._lastRightHandledMs = -1e9;
+      this._lastLockWarnMs = -1e9;
 
       this._onPointerDown = this._handlePointerDown.bind(this);
       this._onPointerMove = this._handlePointerMove.bind(this);
@@ -65,6 +66,7 @@
       this._onPointerCancel = this._handlePointerUp.bind(this);
       this._onPointerLeave = this._handlePointerLeave.bind(this);
       this._onContextMenu = this._handleContextMenu.bind(this);
+      this._onAuxClick = this._handleAuxClick.bind(this);
       this._onWheel = this._handleWheel.bind(this);
 
       surface.addEventListener('pointerdown', this._onPointerDown);
@@ -73,6 +75,7 @@
       surface.addEventListener('pointercancel', this._onPointerCancel);
       surface.addEventListener('pointerleave', this._onPointerLeave);
       surface.addEventListener('contextmenu', this._onContextMenu);
+      surface.addEventListener('auxclick', this._onAuxClick);
       surface.addEventListener('wheel', this._onWheel, { passive: false });
     }
 
@@ -215,8 +218,65 @@
       return best;
     }
 
-    _tuneClick(xPx, hit, rx, fine) {
-      if (!hit || !this.client) return;
+    _resolveMouseQsyRx(button, hit, shiftKey) {
+      const mode =
+        this.view && typeof this.view.getMouseQsyMode === 'function'
+          ? this.view.getMouseQsyMode()
+          : 'lr';
+      if (mode === 'pane') {
+        if (button !== 0) return null;
+        if (shiftKey) return 'B';
+        return hit && hit.paneRx === 'B' ? 'B' : 'A';
+      }
+      if (button === 2) return 'B';
+      if (button === 0) return shiftKey ? 'B' : 'A';
+      return null;
+    }
+
+    _resolveTouchQsyRx(hit) {
+      if (hit && hit.snapshot && hit.snapshot.dualPanMode === 2) {
+        return hit.paneRx === 'B' ? 'B' : 'A';
+      }
+      return this.view && typeof this.view.getTargetRx === 'function'
+        ? this.view.getTargetRx()
+        : 'A';
+    }
+
+    _syncMouseTarget(rx) {
+      if (this.view && typeof this.view.selectTargetFromMouse === 'function') {
+        this.view.selectTargetFromMouse(rx);
+      } else if (this.view && typeof this.view.setTargetRx === 'function') {
+        this.view.setTargetRx(rx);
+      }
+    }
+
+    _isRxLocked(hit, rx) {
+      const snap = (hit && hit.snapshot) || this._getSnapshot();
+      const rxS = snap && (rx === 'B' ? snap.rxB : snap.rxA);
+      return Boolean(rxS && rxS.locked);
+    }
+
+    _notifyLocked(rx) {
+      const now = performance.now();
+      if (now - this._lastLockWarnMs < 1200) return;
+      this._lastLockWarnMs = now;
+      if (this.view && typeof this.view.notify === 'function') {
+        this.view.notify(
+          `VFO ${rx} is locked — click the VFO ${rx} lock button to unlock`,
+          'warn'
+        );
+      }
+    }
+
+    _tuneClick(xPx, hit, rx, fine, syncTarget = true) {
+      if (!hit || !this.client || !rx) return;
+      if (syncTarget) {
+        this._syncMouseTarget(rx);
+      }
+      if (this._isRxLocked(hit, rx)) {
+        this._notifyLocked(rx);
+        return;
+      }
       const rxKey = rx === 'B' ? 'rxB' : 'rxA';
       const rxState = (hit.snapshot && hit.snapshot[rxKey]) || {};
       const snappedHz = K4.SpectrumGeometry.dialFreqFromClick({
@@ -241,6 +301,11 @@
     _applyPanDrag(xPx, fine, isFinal) {
       const hit = this._dragHit;
       if (!hit || !this.client) return;
+      if (this._isRxLocked(hit, this._dragRx)) {
+        if (isFinal) this._syncMouseTarget(this._dragRx);
+        this._notifyLocked(this._dragRx);
+        return;
+      }
       const plotW = Math.max(1, hit.layout.specRect.w);
       const dx = xPx - this._startX;
       const deltaHz = -(dx / plotW) * hit.userSpanHz;
@@ -257,6 +322,9 @@
         return;
       }
       this._lastPanSendMs = now;
+      if (isFinal) {
+        this._syncMouseTarget(this._dragRx);
+      }
       if (typeof this.client.tune === 'function') {
         this.client.tune(this._dragRx, snappedHz, { optimistically: true });
       }
@@ -412,8 +480,7 @@
           this._dragExceeded = false;
           this._startX = xPx;
           this._startY = yPx;
-          this._dragRx =
-            hit && hit.paneRx === 'B' ? 'B' : this.view.getTargetRx();
+          this._dragRx = this._resolveTouchQsyRx(hit);
           const rxKey = this._dragRx === 'B' ? 'rxB' : 'rxA';
           const rxState = (hit && hit.snapshot && hit.snapshot[rxKey]) || {};
           this._startFreqHz = rxState.freqHz || 14074000;
@@ -422,9 +489,20 @@
         return;
       }
 
+      if (e.button === 1) {
+        if (typeof e.preventDefault === 'function') e.preventDefault();
+        if (this.view && typeof this.view.toggleWheelRitMode === 'function') {
+          this.view.toggleWheelRitMode();
+        }
+        return;
+      }
+
       if (e.button === 2) {
         this._lastRightHandledMs = performance.now();
-        this._tuneClick(xPx, hit, 'B', e.altKey);
+        const rx = this._resolveMouseQsyRx(2, hit, Boolean(e.shiftKey));
+        if (rx) {
+          this._tuneClick(xPx, hit, rx, e.altKey, true);
+        }
         return;
       }
 
@@ -453,10 +531,7 @@
       this._startX = xPx;
       this._startY = yPx;
       this._dragExceeded = false;
-      this._dragRx =
-        (hit && hit.paneRx === 'B') || e.shiftKey
-          ? 'B'
-          : this.view.getTargetRx();
+      this._dragRx = this._resolveMouseQsyRx(0, hit, Boolean(e.shiftKey)) || 'A';
       const rxKey = this._dragRx === 'B' ? 'rxB' : 'rxA';
       const rxState = (hit && hit.snapshot && hit.snapshot[rxKey]) || {};
       this._startFreqHz = rxState.freqHz || 14074000;
@@ -557,9 +632,8 @@
               this._applyPanDrag(xPx, false, true);
             } else {
               const hit = this._hitTest(xPx, yPx);
-              const rx =
-                hit && hit.paneRx === 'B' ? 'B' : this.view.getTargetRx();
-              this._tuneClick(xPx, hit, rx, false);
+              const rx = this._resolveTouchQsyRx(hit);
+              this._tuneClick(xPx, hit, rx, false, false);
             }
           }
           this._wasPinched = false;
@@ -589,11 +663,10 @@
           }
         } else if (e.button === 0 && e.type === 'pointerup') {
           const hit = this._hitTest(xPx, yPx);
-          const rx =
-            (hit && hit.paneRx === 'B') || e.shiftKey
-              ? 'B'
-              : this.view.getTargetRx();
-          this._tuneClick(xPx, hit, rx, Boolean(e.altKey));
+          const rx = this._resolveMouseQsyRx(0, hit, Boolean(e.shiftKey));
+          if (rx) {
+            this._tuneClick(xPx, hit, rx, Boolean(e.altKey), true);
+          }
         }
       }
 
@@ -618,7 +691,17 @@
       if (performance.now() - this._lastRightHandledMs > 250) {
         const { xPx, yPx } = this._getLocalPoint(e);
         const hit = this._hitTest(xPx, yPx);
-        this._tuneClick(xPx, hit, 'B', e.altKey);
+        const rx = this._resolveMouseQsyRx(2, hit, Boolean(e.shiftKey));
+        if (rx) {
+          this._tuneClick(xPx, hit, rx, e.altKey, true);
+        }
+      }
+    }
+
+    _handleAuxClick(e) {
+      if (e.button === 1) {
+        e.preventDefault();
+        e.stopPropagation();
       }
     }
 
@@ -638,15 +721,51 @@
         return;
       }
 
-      const rx =
-        hit.paneRx === 'B' || e.shiftKey ? 'B' : this.view.getTargetRx();
-
       const delta =
         Math.abs(e.deltaX) > Math.abs(e.deltaY) ? -e.deltaX : e.deltaY;
       if (delta === 0) return;
       const steps = delta < 0 ? 1 : -1;
+
+      const wheelRit =
+        !e.shiftKey &&
+        this.view &&
+        typeof this.view.getWheelRitMode === 'function' &&
+        this.view.getWheelRitMode();
+      if (wheelRit) {
+        const rx =
+          this.view && typeof this.view.getTargetRx === 'function'
+            ? this.view.getTargetRx()
+            : 'A';
+        const rxKey = rx === 'B' ? 'rxB' : 'rxA';
+        const rxState = (hit.snapshot && hit.snapshot[rxKey]) || {};
+        const ritStep = e.altKey ? 1 : 10;
+        const nextOffset = clamp(
+          Math.round((Number(rxState.ritOffsetHz) || 0) + steps * ritStep),
+          -9999,
+          9999
+        );
+        if (typeof this.client.setRit === 'function') {
+          this.client.setRit(rx, { on: true, offsetHz: nextOffset });
+        } else if (typeof this.client.sendCat === 'function' && K4.CatCodec) {
+          this.client.sendCat(
+            K4.CatCodec.builders.rit(rx, true) +
+              K4.CatCodec.builders.ritOffset(rx, nextOffset)
+          );
+        }
+        return;
+      }
+
+      const rx = e.shiftKey
+        ? 'B'
+        : this.view && typeof this.view.getTargetRx === 'function'
+        ? this.view.getTargetRx()
+        : 'A';
       const rxKey = rx === 'B' ? 'rxB' : 'rxA';
       const rxState = (hit.snapshot && hit.snapshot[rxKey]) || {};
+      if (rxState.locked) {
+        this._notifyLocked(rx);
+        return;
+      }
       const stepHz = e.altKey ? 1 : rxState.stepHz || 100;
 
       if (typeof this.client.stepFrequency === 'function') {
@@ -667,6 +786,7 @@
       this.surface.removeEventListener('pointercancel', this._onPointerCancel);
       this.surface.removeEventListener('pointerleave', this._onPointerLeave);
       this.surface.removeEventListener('contextmenu', this._onContextMenu);
+      this.surface.removeEventListener('auxclick', this._onAuxClick);
       this.surface.removeEventListener('wheel', this._onWheel);
     }
   }

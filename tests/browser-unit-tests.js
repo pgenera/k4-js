@@ -1503,6 +1503,155 @@
     K4.BookmarkStore.resetDefaults();
   });
 
+  // 21. K4 Panadapter mouse controls: Left=A/Right=B, Left-Only pane mode, middle-click RIT wheel, and LK1 lock guard
+  test('21. K4 Panadapter mouse controls: Left=A/Right=B, Left-Only, RIT wheel, and LK1 lock guard', () => {
+    const listeners = {};
+    const surface = {
+      style: {},
+      clientWidth: 1000,
+      clientHeight: 400,
+      getBoundingClientRect: () => ({ left: 0, top: 0, width: 1000, height: 400 }),
+      addEventListener: (t, fn) => { listeners[t] = fn; },
+      removeEventListener: (t, fn) => { if (listeners[t] === fn) delete listeners[t]; },
+      setPointerCapture: () => {},
+      releasePointerCapture: () => {},
+    };
+
+    const snapshot = {
+      cwPitchHz: 500,
+      dualPanMode: 1,
+      subRxEnabled: true,
+      rxA: { freqHz: 14074000, mode: 2, bwHz: 2400, ifShiftHz: 1500, panCenterHz: 14074000, panSpanHz: 48000, stepHz: 100, locked: false, ritOn: false, ritOffsetHz: 0 },
+      rxB: { freqHz: 14025000, mode: 2, bwHz: 2400, ifShiftHz: 1500, panCenterHz: 14025000, panSpanHz: 48000, stepHz: 100, locked: false, ritOn: false, ritOffsetHz: 0 },
+    };
+
+    let targetRx = 'B';
+    let mouseQsyMode = 'lr';
+    let wheelRitMode = false;
+    const tunes = [];
+    const steps = [];
+    const ritEdits = [];
+    const notices = [];
+    const selectedTargets = [];
+
+    const view = {
+      getTargetRx: () => targetRx,
+      setTargetRx: (rx) => { targetRx = rx === 'B' ? 'B' : 'A'; },
+      getMouseQsyMode: () => mouseQsyMode,
+      getWheelRitMode: () => wheelRitMode,
+      toggleWheelRitMode: () => { wheelRitMode = !wheelRitMode; },
+      selectTargetFromMouse: (rx) => {
+        wheelRitMode = false;
+        targetRx = rx === 'B' ? 'B' : 'A';
+        selectedTargets.push(targetRx);
+      },
+      notify: (msg, level) => notices.push({ msg, level }),
+      getFrameState: () => ({
+        snapshot,
+        dualPanMode: snapshot.dualPanMode,
+        panes: {
+          A: { panCenterHz: snapshot.rxA.panCenterHz, userSpanHz: 48000 },
+          B: { panCenterHz: snapshot.rxB.panCenterHz, userSpanHz: 48000 },
+        },
+      }),
+      setHoverState: () => {},
+      setLastClickFreqHz: () => {},
+    };
+    let paneRx = 'B';
+    const renderer = {
+      getLayouts: () => [
+        { rx: paneRx, paneRect: { x: 0, y: 0, w: 1000, h: 400 }, specRect: { x: 0, y: 0, w: 1000, h: 200 }, axisRect: { x: 0, y: 200, w: 1000, h: 24 } },
+      ],
+    };
+    const client = {
+      tune: (rx, hz) => {
+        tunes.push({ rx, hz });
+        snapshot[rx === 'B' ? 'rxB' : 'rxA'].freqHz = hz;
+      },
+      stepFrequency: (rx, s, stepHz) => {
+        steps.push({ rx, s, stepHz });
+      },
+      setRit: (rx, patch) => {
+        ritEdits.push({ rx, patch });
+        if (typeof patch.offsetHz === 'number') {
+          snapshot[rx === 'B' ? 'rxB' : 'rxA'].ritOffsetHz = patch.offsetHz;
+        }
+        if (typeof patch.on === 'boolean') {
+          snapshot[rx === 'B' ? 'rxB' : 'rxA'].ritOn = patch.on;
+        }
+      },
+    };
+
+    const interaction = new K4.PanadapterInteraction({
+      surface,
+      renderer,
+      view,
+      state: { getSnapshot: () => snapshot },
+      client,
+    });
+    try {
+      // 1) In default 'lr' mode, even if targetRx starts 'B' and paneRx is 'B' (#DPM1), left-click QSYs VFO A and switches target to 'A'
+      listeners.pointerdown({ type: 'pointerdown', pointerId: 1, pointerType: 'mouse', button: 0, clientX: 600, clientY: 100, shiftKey: false, altKey: false });
+      listeners.pointerup({ type: 'pointerup', pointerId: 1, pointerType: 'mouse', button: 0, clientX: 600, clientY: 100, shiftKey: false, altKey: false });
+      assertEqual(tunes[tunes.length - 1].rx, 'A', 'Left-click in lr mode tunes VFO A despite targetRx=B and paneRx=B');
+      assertEqual(targetRx, 'A', 'Left-click selects VFO A as wheel target');
+
+      // Right-click QSYs VFO B and switches target to 'B'
+      listeners.pointerdown({ type: 'pointerdown', pointerId: 2, pointerType: 'mouse', button: 2, clientX: 400, clientY: 100, shiftKey: false, altKey: false });
+      assertEqual(tunes[tunes.length - 1].rx, 'B', 'Right-click in lr mode tunes VFO B');
+      assertEqual(targetRx, 'B', 'Right-click selects VFO B as wheel target');
+
+      // Normal wheel tunes targetRx ('B'), even if paneRx is switched to 'A'
+      paneRx = 'A';
+      listeners.wheel({ preventDefault: () => {}, clientX: 400, clientY: 100, deltaX: 0, deltaY: -100, ctrlKey: false, metaKey: false, shiftKey: false, altKey: false });
+      assertEqual(steps[steps.length - 1].rx, 'B', 'Wheel steps targetRx B rather than hovered paneRx A');
+
+      // Middle-click toggles RIT wheel mode, and wheel adjusts RIT instead of frequency
+      listeners.pointerdown({ type: 'pointerdown', pointerId: 3, pointerType: 'mouse', button: 1, clientX: 400, clientY: 100, preventDefault: () => {} });
+      assertEqual(wheelRitMode, true, 'Middle-click enters RIT wheel mode');
+      const stepsBeforeRit = steps.length;
+      listeners.wheel({ preventDefault: () => {}, clientX: 400, clientY: 100, deltaX: 0, deltaY: -100, ctrlKey: false, metaKey: false, shiftKey: false, altKey: false });
+      assertEqual(steps.length, stepsBeforeRit, 'Wheel in RIT mode does not step VFO frequency');
+      assertEqual(ritEdits[ritEdits.length - 1].rx, 'B', 'Wheel in RIT mode adjusts targetRx B RIT');
+      assertEqual(ritEdits[ritEdits.length - 1].patch.offsetHz, 10, 'Wheel up adds +10 Hz RIT');
+
+      // Shift+left-click in lr mode tunes VFO B (and exits RIT wheel mode)
+      const tunesBeforeShift = tunes.length;
+      listeners.pointerdown({ type: 'pointerdown', pointerId: 4, pointerType: 'mouse', button: 0, clientX: 550, clientY: 100, shiftKey: true, altKey: false });
+      listeners.pointerup({ type: 'pointerup', pointerId: 4, pointerType: 'mouse', button: 0, clientX: 550, clientY: 100, shiftKey: true, altKey: false });
+      assertEqual(tunes.length, tunesBeforeShift + 1, 'Shift+left-click triggers tune');
+      assertEqual(tunes[tunes.length - 1].rx, 'B', 'Shift+left-click tunes VFO B');
+      assertEqual(wheelRitMode, false, 'Click-to-QSY clears RIT wheel mode');
+
+      // 2) In 'pane' (Left Only) mode, right-click does NOT QSY, while left-click QSYs clicked paneRx
+      mouseQsyMode = 'pane';
+      paneRx = 'A';
+      const tunesBeforeRight = tunes.length;
+      listeners.pointerdown({ type: 'pointerdown', pointerId: 5, pointerType: 'mouse', button: 2, clientX: 300, clientY: 100, shiftKey: false, altKey: false });
+      assertEqual(tunes.length, tunesBeforeRight, 'Right-click in Left-Only mode does not QSY');
+      paneRx = 'B';
+      listeners.pointerdown({ type: 'pointerdown', pointerId: 6, pointerType: 'mouse', button: 0, clientX: 350, clientY: 100, shiftKey: false, altKey: false });
+      listeners.pointerup({ type: 'pointerup', pointerId: 6, pointerType: 'mouse', button: 0, clientX: 350, clientY: 100, shiftKey: false, altKey: false });
+      assertEqual(tunes[tunes.length - 1].rx, 'B', 'Left-click in Pan B tunes VFO B in Left-Only mode');
+
+      // 3) LK1 Lock Guard in 'lr' mode: VFO A locked -> left-click blocks tune, selects A, notifies; right-click still tunes VFO B
+      mouseQsyMode = 'lr';
+      snapshot.rxA.locked = true;
+      const tunesBeforeLocked = tunes.length;
+      listeners.pointerdown({ type: 'pointerdown', pointerId: 7, pointerType: 'mouse', button: 0, clientX: 700, clientY: 100, shiftKey: false, altKey: false });
+      listeners.pointerup({ type: 'pointerup', pointerId: 7, pointerType: 'mouse', button: 0, clientX: 700, clientY: 100, shiftKey: false, altKey: false });
+      assertEqual(tunes.length, tunesBeforeLocked, 'LK1 blocks left-click panadapter QSY of VFO A');
+      assertEqual(targetRx, 'A', 'Left-click still updates wheel target to A');
+      assert(notices.length >= 1 && notices[notices.length - 1].level === 'warn', 'Locked VFO A click triggers warning toast');
+
+      listeners.pointerdown({ type: 'pointerdown', pointerId: 8, pointerType: 'mouse', button: 2, clientX: 750, clientY: 100, shiftKey: false, altKey: false });
+      assertEqual(tunes.length, tunesBeforeLocked + 1, 'Right-click still QSYs unlocked VFO B while VFO A is locked');
+      assertEqual(tunes[tunes.length - 1].rx, 'B', 'Right-click tunes VFO B');
+    } finally {
+      interaction.destroy();
+    }
+  });
+
   async function runAll() {
     const resultsEl = document.getElementById('results');
     const summaryEl = document.getElementById('summary');

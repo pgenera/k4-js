@@ -51,7 +51,18 @@
   }
 
   class PanadapterView {
-    constructor({ container, state, client, renderer = 'auto', palette = 'obsidian', peakHold = false } = {}) {
+    constructor({
+      container,
+      state,
+      client,
+      renderer = 'auto',
+      palette = 'obsidian',
+      peakHold = false,
+      mouseQsyMode = 'lr',
+      onSelectTarget = null,
+      onToggleWheelRit = null,
+      onNotify = null,
+    } = {}) {
       if (!container) {
         throw new Error('PanadapterView requires a container element');
       }
@@ -61,6 +72,13 @@
       this._destroyed = false;
 
       this._targetRx = 'A';
+      this._mouseQsyMode = mouseQsyMode === 'pane' ? 'pane' : 'lr';
+      this._wheelRitMode = false;
+      this._onSelectTarget =
+        typeof onSelectTarget === 'function' ? onSelectTarget : null;
+      this._onToggleWheelRit =
+        typeof onToggleWheelRit === 'function' ? onToggleWheelRit : null;
+      this._onNotify = typeof onNotify === 'function' ? onNotify : null;
       this._palette = palette || 'obsidian';
       this._peakHold = Boolean(peakHold);
       this._framesRendered = 0;
@@ -105,6 +123,8 @@
       container.dataset.renderer = this._renderer.type;
       container.dataset.frames = '0';
       container.dataset.targetRx = this._targetRx;
+      container.dataset.mouseQsyMode = this._mouseQsyMode;
+      container.dataset.wheelRit = 'false';
 
       this._interaction = K4.PanadapterInteraction
         ? new K4.PanadapterInteraction({
@@ -263,6 +283,8 @@
               dbmBins: null,
             },
         targetRx: this._targetRx,
+        mouseQsyMode: this._mouseQsyMode,
+        wheelRitMode: this._wheelRitMode,
         dualPanMode: Number.isFinite(snapshot.dualPanMode)
           ? snapshot.dualPanMode
           : 0,
@@ -390,6 +412,49 @@
 
     getTargetRx() {
       return this._targetRx;
+    }
+
+    setMouseQsyMode(mode) {
+      this._mouseQsyMode = mode === 'pane' ? 'pane' : 'lr';
+      this._container.dataset.mouseQsyMode = this._mouseQsyMode;
+      this._scheduleRender();
+    }
+
+    getMouseQsyMode() {
+      return this._mouseQsyMode;
+    }
+
+    setWheelRitMode(on) {
+      this._wheelRitMode = Boolean(on);
+      this._container.dataset.wheelRit = this._wheelRitMode ? 'true' : 'false';
+      this._scheduleRender();
+    }
+
+    getWheelRitMode() {
+      return this._wheelRitMode;
+    }
+
+    toggleWheelRitMode() {
+      if (this._onToggleWheelRit) {
+        this._onToggleWheelRit();
+      } else {
+        this.setWheelRitMode(!this._wheelRitMode);
+      }
+    }
+
+    selectTargetFromMouse(rx) {
+      const next = rx === 'B' ? 'B' : 'A';
+      this.setWheelRitMode(false);
+      this.setTargetRx(next);
+      if (this._onSelectTarget) {
+        this._onSelectTarget(next);
+      }
+    }
+
+    notify(msg, level) {
+      if (this._onNotify) {
+        this._onNotify(msg, level || 'info');
+      }
     }
 
     setPalette(name) {

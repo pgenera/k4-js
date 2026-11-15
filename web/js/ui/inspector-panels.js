@@ -212,6 +212,8 @@
       this.getPalette = opts.getPalette || (() => 'obsidian');
       this.onSetPeakHold = opts.onSetPeakHold || (() => {});
       this.getPeakHold = opts.getPeakHold || (() => true);
+      this.getMouseQsyMode = opts.getMouseQsyMode || (() => 'lr');
+      this.onSetMouseQsyMode = opts.onSetMouseQsyMode || (() => {});
       this.onToggleAudio = opts.onToggleAudio || (() => {});
 
       this._activeDesktopTab = 'band-mode';
@@ -1121,6 +1123,23 @@
       this._refs.wfhSlider.input.dataset.testid = 'wfh-slider';
       layoutCard.appendChild(this._refs.wfhSlider.row);
 
+      layoutCard.appendChild(el('span', 'k4-slider-label', 'Mouse L/R Button QSY'));
+      const qsySeg = el('div', 'k4-seg-group');
+      const lrBtn = el('button', 'k4-seg-btn', 'Left=A, Right=B');
+      lrBtn.type = 'button';
+      lrBtn.dataset.testid = 'mouse-qsy-lr';
+      lrBtn.dataset.qsyMode = 'lr';
+      lrBtn.addEventListener('click', () => this.onSetMouseQsyMode('lr'));
+      const paneBtn = el('button', 'k4-seg-btn', 'Left Only (Pan=VFO)');
+      paneBtn.type = 'button';
+      paneBtn.dataset.testid = 'mouse-qsy-pane';
+      paneBtn.dataset.qsyMode = 'pane';
+      paneBtn.addEventListener('click', () => this.onSetMouseQsyMode('pane'));
+      qsySeg.appendChild(lrBtn);
+      qsySeg.appendChild(paneBtn);
+      layoutCard.appendChild(qsySeg);
+      this._refs.mouseQsyBtns = [lrBtn, paneBtn];
+
       pane.appendChild(layoutCard);
 
       return pane;
@@ -1916,6 +1935,13 @@
         const pal = this.getPalette();
         for (const k of Object.keys(this._refs.paletteBtns)) {
           this._refs.paletteBtns[k].classList.toggle('is-active', k === pal);
+        }
+      }
+      if (this._refs.mouseQsyBtns) {
+        const qsyMode = this.getMouseQsyMode();
+        for (let i = 0; i < this._refs.mouseQsyBtns.length; i++) {
+          const b = this._refs.mouseQsyBtns[i];
+          b.classList.toggle('is-active', b.dataset.qsyMode === qsyMode);
         }
       }
 

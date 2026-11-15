@@ -25,6 +25,8 @@
     constructor() {
       this._params = new URLSearchParams(typeof location !== 'undefined' ? location.search : '');
       this._targetRx = 'A';
+      this._mouseQsyMode = (K4.storage && K4.storage.get('k4.mouseQsyMode', 'lr')) === 'pane' ? 'pane' : 'lr';
+      this._wheelRitMode = false;
       this._palette = K4.storage ? K4.storage.get('k4.palette', 'obsidian') : 'obsidian';
       this._peakHold = K4.storage ? K4.storage.get('k4.peakHold', true) !== false : true;
       this._drawerOpen = window.innerWidth >= 1200;
@@ -69,6 +71,10 @@
         state: this.state,
         client: this.client,
         renderer: rendererOpt,
+        mouseQsyMode: this._mouseQsyMode,
+        onSelectTarget: (rx) => this.setTargetRx(rx),
+        onToggleWheelRit: () => this.toggleWheelRitMode(),
+        onNotify: (msg, level) => this.toast(msg, level),
       });
 
       if (this.panadapter.setPalette) this.panadapter.setPalette(this._palette);
@@ -96,11 +102,57 @@
       const hudTop = el('div', 'k4-pan-hud-top');
       const group = el('div', 'k4-hud-group');
 
-      this._hudTargetBtn = el('button', 'k4-hud-btn is-cyan', 'Tune: VFO A');
+      this._hudTargetBtn = el('button', 'k4-hud-btn k4-hud-mouse-btn is-cyan');
       this._hudTargetBtn.type = 'button';
-      this._hudTargetBtn.title = 'Switch click-to-tune target between VFO A and VFO B';
-      this._hudTargetBtn.addEventListener('click', () => {
+      this._hudTargetBtn.dataset.testid = 'hud-target-btn';
+      const mouseSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      mouseSvg.setAttribute('viewBox', '0 0 12 14');
+      mouseSvg.setAttribute('width', '12');
+      mouseSvg.setAttribute('height', '12');
+      mouseSvg.setAttribute('aria-hidden', 'true');
+      const mouseBody = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+      mouseBody.setAttribute('x', '1.5');
+      mouseBody.setAttribute('y', '1');
+      mouseBody.setAttribute('width', '9');
+      mouseBody.setAttribute('height', '12');
+      mouseBody.setAttribute('rx', '4.5');
+      mouseBody.setAttribute('fill', 'none');
+      mouseBody.setAttribute('stroke', 'currentColor');
+      mouseBody.setAttribute('stroke-width', '1.4');
+      const mouseWheel = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+      mouseWheel.setAttribute('x1', '6');
+      mouseWheel.setAttribute('y1', '3.3');
+      mouseWheel.setAttribute('x2', '6');
+      mouseWheel.setAttribute('y2', '6.2');
+      mouseWheel.setAttribute('stroke', 'currentColor');
+      mouseWheel.setAttribute('stroke-width', '1.4');
+      mouseWheel.setAttribute('stroke-linecap', 'round');
+      mouseSvg.appendChild(mouseBody);
+      mouseSvg.appendChild(mouseWheel);
+      this._hudTargetBtn.appendChild(mouseSvg);
+      this._hudTargetLabel = el('span', 'k4-hud-mouse-label', 'Mouse: A');
+      this._hudTargetBtn.appendChild(this._hudTargetLabel);
+      this._hudTargetBtn.title = 'K4 Mouse target (Left=A, Right=B). Click to switch VFO A/B; middle-click or Shift-click to toggle RIT wheel.';
+      this._hudTargetBtn.addEventListener('click', (e) => {
+        if (e.shiftKey) {
+          this.toggleWheelRitMode();
+        } else if (this._wheelRitMode) {
+          this.toggleWheelRitMode(false);
+        } else {
+          this.setTargetRx(this._targetRx === 'A' ? 'B' : 'A');
+        }
+      });
+      this._hudTargetBtn.addEventListener('contextmenu', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
         this.setTargetRx(this._targetRx === 'A' ? 'B' : 'A');
+      });
+      this._hudTargetBtn.addEventListener('auxclick', (e) => {
+        if (e.button === 1) {
+          e.preventDefault();
+          e.stopPropagation();
+          this.toggleWheelRitMode();
+        }
       });
       group.appendChild(this._hudTargetBtn);
 
@@ -293,6 +345,8 @@
         getPalette: () => this._palette,
         onSetPeakHold: (on) => this.setPeakHold(on),
         getPeakHold: () => this._peakHold,
+        getMouseQsyMode: () => this._mouseQsyMode,
+        onSetMouseQsyMode: (m) => this.setMouseQsyMode(m),
         onToggleAudio: () => this.toggleAudio(),
       });
 
@@ -510,12 +564,51 @@
       this.toast('Disconnected from radio', 'info');
     }
 
-    setTargetRx(rx) {
+    setTargetRx(rx, opts = {}) {
       const next = rx === 'B' ? 'B' : 'A';
-      if (this._targetRx === next) return;
+      const clearRit = !opts || opts.keepRitWheel !== true;
+      const changed = this._targetRx !== next || (clearRit && this._wheelRitMode);
       this._targetRx = next;
+      if (clearRit) {
+        this._wheelRitMode = false;
+      }
       if (this.panadapter && this.panadapter.setTargetRx) {
         this.panadapter.setTargetRx(next);
+      }
+      if (clearRit && this.panadapter && this.panadapter.setWheelRitMode) {
+        this.panadapter.setWheelRitMode(false);
+      }
+      if (changed) {
+        this._render();
+      }
+    }
+
+    setMouseQsyMode(mode) {
+      const next = mode === 'pane' ? 'pane' : 'lr';
+      this._mouseQsyMode = next;
+      if (K4.storage) K4.storage.set('k4.mouseQsyMode', next);
+      if (this.panadapter && this.panadapter.setMouseQsyMode) {
+        this.panadapter.setMouseQsyMode(next);
+      }
+      this._render();
+    }
+
+    toggleWheelRitMode(force) {
+      const next = typeof force === 'boolean' ? force : !this._wheelRitMode;
+      this._wheelRitMode = next;
+      if (this.panadapter && this.panadapter.setWheelRitMode) {
+        this.panadapter.setWheelRitMode(next);
+      }
+      if (next) {
+        const snap = this._getSnapshot();
+        const rxS = (this._targetRx === 'B' ? snap.rxB : snap.rxA) || {};
+        if (!rxS.ritOn && this.client && typeof this.client.setRit === 'function') {
+          this.client.setRit(this._targetRx, { on: true });
+        }
+        this.toast(
+          `Mouse wheel -> VFO ${this._targetRx} RIT (middle-click pan or click Mouse badge to exit)`,
+          'info'
+        );
       }
       this._render();
     }
@@ -793,9 +886,17 @@
       const dispS = (dispRx === 'B' ? snap.rxB : snap.rxA) || {};
       const loupeRx = this._resolveLoupeRx(snap);
       const loupeS = (loupeRx === 'B' ? snap.rxB : snap.rxA) || {};
-      this._hudTargetBtn.textContent = `Tune: VFO ${this._targetRx}`;
-      this._hudTargetBtn.classList.toggle('is-cyan', this._targetRx === 'A');
-      this._hudTargetBtn.classList.toggle('is-amber', this._targetRx === 'B');
+      this._hudTargetLabel.textContent = this._wheelRitMode
+        ? `Mouse: RIT ${this._targetRx}`
+        : `Mouse: ${this._targetRx}`;
+      this._hudTargetBtn.classList.toggle('is-cyan', !this._wheelRitMode && this._targetRx === 'A');
+      this._hudTargetBtn.classList.toggle('is-amber', !this._wheelRitMode && this._targetRx === 'B');
+      this._hudTargetBtn.classList.toggle('is-rit', Boolean(this._wheelRitMode));
+      const qsyDesc =
+        this._mouseQsyMode === 'pane'
+          ? 'Left Only (Pane=VFO, Shift+Left=B)'
+          : 'Left=A, Right=B (in either pane)';
+      this._hudTargetBtn.title = `K4 Mouse (${qsyDesc}). Wheel tunes ${this._wheelRitMode ? `VFO ${this._targetRx} RIT` : `VFO ${this._targetRx}`}. Click/Right-click to switch A/B; middle-click or Shift-click to toggle RIT wheel.`;
       this._hudStepBtn.textContent = `Step: ${rxS.stepHz >= 1000 ? `${rxS.stepHz / 1000}k` : `${rxS.stepHz || 100} Hz`}`;
       this._hudSpanReadout.textContent = `${Math.round((dispS.panSpanHz || 48000) / 1000)} kHz`;
       const dpm = snap.dualPanMode === 1 ? 1 : snap.dualPanMode === 2 ? 2 : 0;

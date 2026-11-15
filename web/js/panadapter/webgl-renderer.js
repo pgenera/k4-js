@@ -605,6 +605,7 @@ void main() {
 
         // VFO needle & pill flag
         const markerHz = K4.SpectrumGeometry.displayMarkerHz(vfo.state, cwPitchHz);
+        const lockSuffix = vfo.state && vfo.state.locked ? ' LOCK' : '';
         if (markerHz >= viewLeftHz && markerHz <= viewRightHz) {
           const mx = K4.SpectrumGeometry.xFromRfFreq(
             markerHz,
@@ -621,9 +622,9 @@ void main() {
           ctx.stroke();
 
           const pillText =
-            specRect.w >= 460
+            (specRect.w >= 460
               ? vfo.key + ' ' + formatFreqMHz(vfo.state.freqHz)
-              : vfo.key;
+              : vfo.key) + lockSuffix;
           ctx.font = 'bold 10px ' + monoFont;
           const textW = ctx.measureText(pillText).width;
           const pillW = textW + 10;
@@ -645,7 +646,7 @@ void main() {
         } else if (vfo.primary || subRxEnabled) {
           // Off-screen VFO direction badge
           const isLeft = markerHz < viewLeftHz;
-          const badge = (isLeft ? '◀ ' : '') + vfo.key + (isLeft ? '' : ' ▶');
+          const badge = (isLeft ? '◀ ' : '') + vfo.key + lockSuffix + (isLeft ? '' : ' ▶');
           ctx.font = 'bold 10px ' + monoFont;
           const bw = ctx.measureText(badge).width + 10;
           const bx = isLeft ? specRect.x + 6 : specRect.x + specRect.w - bw - 6;
@@ -913,7 +914,13 @@ void main() {
           userSpanHz
         );
         const targetState =
-          frameState.targetRx === 'B' || paneRx === 'B' ? rxB : rxA;
+          dualPanMode === 2
+            ? paneRx === 'B'
+              ? rxB
+              : rxA
+            : frameState.targetRx === 'B'
+            ? rxB
+            : rxA;
         const activeMarkerHz = K4.SpectrumGeometry.displayMarkerHz(
           targetState,
           cwPitchHz

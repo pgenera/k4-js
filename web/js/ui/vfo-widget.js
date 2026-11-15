@@ -158,6 +158,9 @@
 
         span.addEventListener('wheel', (e) => {
           e.preventDefault();
+          if (typeof window === 'undefined' || window.innerWidth >= 960) {
+            this.onSelectTarget(this.rx);
+          }
           const dir = e.deltaY < 0 ? 1 : -1;
           const mult = e.shiftKey ? 10 : 1;
           const effStep = e.altKey ? 1 : step * mult;
@@ -165,6 +168,9 @@
         }, { passive: false });
 
         span.addEventListener('click', (e) => {
+          if (typeof window === 'undefined' || window.innerWidth >= 960) {
+            this.onSelectTarget(this.rx);
+          }
           const rect = span.getBoundingClientRect();
           const dir = rect.height > 0 && (e.clientY - rect.top) >= rect.height / 2 ? -1 : 1;
           const effStep = e.altKey ? 1 : step;
@@ -190,6 +196,21 @@
       unit.textContent = 'MHz';
       this.freqEl.appendChild(unit);
       root.appendChild(this.freqEl);
+
+      root.addEventListener('click', (e) => {
+        if (typeof window !== 'undefined' && window.innerWidth < 960) return;
+        const tgt = e.target;
+        if (
+          tgt === root ||
+          tgt === this.freqEl ||
+          (tgt &&
+            tgt.classList &&
+            (tgt.classList.contains('k4-vfo-unit') ||
+              tgt.classList.contains('k4-vfo-sep')))
+        ) {
+          this.onSelectTarget(this.rx);
+        }
+      });
 
       this.pillsEl = document.createElement('div');
       this.pillsEl.className = 'k4-vfo-pills';

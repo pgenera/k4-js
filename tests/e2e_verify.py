@@ -509,13 +509,40 @@ def run_file_origin_e2e(client: MarionetteClient, ws_url: str, password: str, st
     fb_after_shift = http_get_json(stats_url)["fbHz"]
     assert http_get_json(stats_url)["faHz"] == fa_before_sub, "Shift-click must not change VFO A"
 
-    # Right-click tunes VFO B cleanly without moving VFO A
+    # Right-click tunes VFO B cleanly without moving VFO A (and switches mouse target to B)
     pan_click_action(client, 0.70, 0.25, button=2, shift=False)
     wait_until(
-        lambda: http_get_json(stats_url)["fbHz"] != fb_after_shift,
-        "Right-click tunes VFO B (FB)",
+        lambda: http_get_json(stats_url)["fbHz"] != fb_after_shift and
+        client.execute_script("return globalThis.k4App._targetRx === 'B';"),
+        "Right-click tunes VFO B (FB) and selects VFO B mouse target",
     )
     assert http_get_json(stats_url)["faHz"] == fa_before_sub, "Right-click must not change VFO A"
+    fb_after_right = http_get_json(stats_url)["fbHz"]
+
+    # Plain left-click MUST tune VFO A (even after VFO B was targeted!) and switch mouse target back to A
+    pan_click_action(client, 0.60, 0.25, button=0, shift=False)
+    wait_until(
+        lambda: http_get_json(stats_url)["faHz"] != fa_before_sub and
+        client.execute_script("return globalThis.k4App._targetRx === 'A';"),
+        "Left-click tunes VFO A even after VFO B was targeted",
+    )
+    assert http_get_json(stats_url)["fbHz"] == fb_after_right, "Left-click must not change VFO B"
+    fa_before_lock = http_get_json(stats_url)["faHz"]
+
+    # VFO A Lock (LK1) blocks accidental panadapter left-click QSY until unlocked (LK0)
+    client.execute_script("globalThis.k4App.client.setLock('A', true);")
+    wait_until(
+        lambda: client.execute_script("return globalThis.k4App.state.getSnapshot().rxA.locked === true;"),
+        "VFO A lock enabled (LK1)",
+    )
+    pan_click_action(client, 0.40, 0.25, button=0, shift=False)
+    time.sleep(0.25)
+    assert http_get_json(stats_url)["faHz"] == fa_before_lock, "LK1 must block left-click panadapter QSY on VFO A"
+    client.execute_script("globalThis.k4App.client.setLock('A', false);")
+    wait_until(
+        lambda: client.execute_script("return globalThis.k4App.state.getSnapshot().rxA.locked === false;"),
+        "VFO A lock cleared (LK0)",
+    )
 
     # Cmd/Ctrl+K Omnibar jump to 7.074 (7074000 Hz)
     client.click_element(client.find_element('[data-testid="omnibar-btn"]'))

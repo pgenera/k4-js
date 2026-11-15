@@ -218,7 +218,7 @@ select {
 
 @media (min-width: 960px) and (max-width: 1159px) {
   .k4-vfo-slot--main .k4-vfo-band,
-  .k4-vfo-slot--sub .k4-vfo-lock,
+  .k4-vfo-slot--sub .k4-vfo-lock:not(.is-locked),
   .k4-omnibar-trigger .k4-kbd-hint,
   .k4-rx-badge .k4-rx-badge-text,
   .k4-conn-pill .k4-conn-rtt,
@@ -299,7 +299,7 @@ select {
 
   .k4-vfo-slot .k4-vfo-band,
   .k4-vfo-slot .k4-vfo-bw,
-  .k4-vfo-slot .k4-vfo-lock,
+  .k4-vfo-slot .k4-vfo-lock:not(.is-locked),
   .k4-vfo-slot .k4-vfo-sub-btn,
   .k4-vfo-slot .k4-vfo-unit {
     display: none !important;

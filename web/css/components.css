@@ -640,6 +640,16 @@
   color: var(--accent-vfo-a);
 }
 
+.k4-hud-mouse-btn {
+  border: 1px solid rgba(250, 204, 21, 0.65);
+}
+
+.k4-hud-btn.is-rit {
+  background: rgba(248, 250, 252, 0.16);
+  color: #F8FAFC;
+  border-color: rgba(250, 204, 21, 0.85);
+}
+
 .k4-hud-sep {
   width: 1px;
   height: 14px;
