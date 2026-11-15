@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"sync"
@@ -105,6 +106,8 @@ type RxState struct {
 	AutoRef             bool
 	FixedTune           bool
 	MiniPan             bool
+	PanNbMode           int
+	PanNbLevel          int
 	RitOn               bool
 	RitOffsetHz         int
 	PanCenterOffsetHz   int64
@@ -138,7 +141,13 @@ type Radio struct {
 	DualPanMode      int
 	DiversityEnabled bool
 	PanFrozen        bool
-	AudioMix         string
+	PanFPS             int
+	DisplayMode        int
+	WaterfallHeightPct int
+	SiFpEnabled        bool
+	SiRfEnabled        bool
+	SiDaEnabled        bool
+	AudioMix           string
 	EncodeMode       int
 	StreamingLatency int
 	AiMode           int
@@ -199,8 +208,11 @@ func NewRadio() *Radio {
 		SplitEnabled:     false,
 		VfoLinked:        false,
 		PanAvg:           4,
-		DualPanMode:      0,
-		AudioMix:         "A.B",
+		DualPanMode:        0,
+		PanFPS:             20,
+		DisplayMode:        1,
+		WaterfallHeightPct: 60,
+		AudioMix:           "A.B",
 		EncodeMode:       1,
 		StreamingLatency: 2,
 		AiMode:           5,
@@ -229,6 +241,76 @@ func (r *Radio) Snapshot() (rxA, rxB RxState, subRx bool, cwPitchHz int, encodeM
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.RxA, r.RxB, r.SubRxEnabled, r.CwPitchHz, r.EncodeMode, r.StreamingLatency, r.DualPanMode
+}
+
+func (r *Radio) PanStreamState() (fps int, frozen bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	fps = r.PanFPS
+	if fps < 1 {
+		fps = 1
+	} else if fps > 30 {
+		fps = 30
+	}
+	return fps, r.PanFrozen
+}
+
+func adcOverflowLocked(rx RxState) int {
+	if rx.Preamp >= 2 && rx.AttenDb == 0 && rx.RfGainDb >= 0 {
+		return 1
+	}
+	return 0
+}
+
+func (r *Radio) OverflowStatus() (ovA int, ovB int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return adcOverflowLocked(r.RxA), adcOverflowLocked(r.RxB)
+}
+
+func (r *Radio) formatSystemInfoLocked(mod string, tSec float64) string {
+	volts := 13.80 + 0.03*math.Sin(tSec*0.4)
+	amps := 1.66 + 0.04*math.Cos(tSec*0.7)
+	fpTemp := 25.4 + 0.3*math.Sin(tSec*0.15)
+	cpu1 := 45.2 + 0.6*math.Sin(tSec*0.2)
+	cpu2 := 43.1 + 0.5*math.Cos(tSec*0.25)
+	cpu4 := 44.8 + 0.5*math.Sin(tSec*0.18)
+	paTemp := 25.0 + 0.4*math.Sin(tSec*0.12)
+	lpaTemp := 24.0 + 0.3*math.Cos(tSec*0.14)
+	dapTemp := 31.2 + 0.3*math.Sin(tSec*0.16)
+
+	switch mod {
+	case "FP":
+		return fmt.Sprintf(
+			"SIFPVS:%.2f,IS:%.2f,V10:10.19,V8:8.09,V5:4.96,VL:2.02,VH:27.09,VD:3.29,VR:0.85,TF:%.1f;SICPT1:%.1f,T2:%.1f,T4:%.1f;",
+			volts, amps, fpTemp, cpu1, cpu2, cpu4,
+		)
+	case "RF":
+		return fmt.Sprintf("SIRFV8:8.0,V5:5.0,LT:%.0f,LM:0,PA:0.0,PM:0,PT:%.0f;", lpaTemp, paTemp)
+	case "DA":
+		return fmt.Sprintf("SIDAV5:4.9,V3A:3.3,V3D:3.3,V1P8:1.8,V1P2:1.1,VOSC:3.2,T:%.1f;", dapTemp)
+	default:
+		return ""
+	}
+}
+
+func (r *Radio) PeriodicSystemInfoCAT(tSec float64) string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.AiMode < 4 {
+		return ""
+	}
+	var sb strings.Builder
+	if r.SiFpEnabled {
+		sb.WriteString(r.formatSystemInfoLocked("FP", tSec))
+	}
+	if r.SiRfEnabled {
+		sb.WriteString(r.formatSystemInfoLocked("RF", tSec))
+	}
+	if r.SiDaEnabled {
+		sb.WriteString(r.formatSystemInfoLocked("DA", tSec))
+	}
+	return sb.String()
 }
 
 func (r *Radio) Stats() DebugStats {
@@ -304,7 +386,7 @@ func (r *Radio) fullSnapshotLocked(tSec float64) string {
 	sb.WriteString("SN00421;")
 	sb.WriteString(fmt.Sprintf("SL%d;", r.StreamingLatency))
 	sb.WriteString("AN1;")
-	sb.WriteString("OV00;OV$00;")
+	sb.WriteString(fmt.Sprintf("OV%d0;OV$%d0;", adcOverflowLocked(r.RxA), adcOverflowLocked(r.RxB)))
 	sb.WriteString(fmt.Sprintf("FA%011d;", r.RxA.FreqHz))
 	sb.WriteString(fmt.Sprintf("FB%011d;", r.RxB.FreqHz))
 	sb.WriteString(fmt.Sprintf("MD%d;", r.RxA.Mode))
@@ -344,6 +426,11 @@ func (r *Radio) fullSnapshotLocked(tSec float64) string {
 	sb.WriteString(fmt.Sprintf("GT$%d;", r.RxB.Agc))
 	sb.WriteString(fmt.Sprintf("AP%d%d;", bool01(r.RxA.ApfOn), r.RxA.ApfBwIdx))
 	sb.WriteString(fmt.Sprintf("AP$%d%d;", bool01(r.RxB.ApfOn), r.RxB.ApfBwIdx))
+	sb.WriteString(fmt.Sprintf("RT%d;", bool01(r.RxA.RitOn)))
+	sb.WriteString(fmt.Sprintf("RT$%d;", bool01(r.RxB.RitOn)))
+	sb.WriteString(fmt.Sprintf("RO%+05d;", r.RxA.RitOffsetHz))
+	sb.WriteString(fmt.Sprintf("RO$%+05d;", r.RxB.RitOffsetHz))
+	sb.WriteString(fmt.Sprintf("DV%d;", bool01(r.DiversityEnabled)))
 	sb.WriteString(fmt.Sprintf("SMH%+04d;", MeasurePassbandDbm(r.RxA, r.CwPitchHz, tSec)))
 	sb.WriteString(fmt.Sprintf("SMH$%+04d;", MeasurePassbandDbm(r.RxB, r.CwPitchHz, tSec)))
 	sb.WriteString(fmt.Sprintf("#SPN%d;", r.RxA.PanSpanHz))
@@ -365,6 +452,13 @@ func (r *Radio) fullSnapshotLocked(tSec float64) string {
 		sb.WriteString(fmt.Sprintf("#MP$%d;", bool01(r.RxB.MiniPan)))
 	}
 	sb.WriteString(fmt.Sprintf("#FRZ%d;", bool01(r.PanFrozen)))
+	sb.WriteString(fmt.Sprintf("#FPS%02d;", r.PanFPS))
+	sb.WriteString(fmt.Sprintf("#NB%d;", r.RxA.PanNbMode))
+	sb.WriteString(fmt.Sprintf("#NB$%d;", r.RxB.PanNbMode))
+	sb.WriteString(fmt.Sprintf("#NBL%d;", r.RxA.PanNbLevel))
+	sb.WriteString(fmt.Sprintf("#NBL$%d;", r.RxB.PanNbLevel))
+	sb.WriteString(fmt.Sprintf("#DSM%d;", r.DisplayMode))
+	sb.WriteString(fmt.Sprintf("#WFH%03d;", r.WaterfallHeightPct))
 	sb.WriteString(fmt.Sprintf("MX%s;", r.AudioMix))
 	sb.WriteString(fmt.Sprintf("EM%d;", r.EncodeMode))
 	sb.WriteString(medfSampleStr)
@@ -436,9 +530,28 @@ func (r *Radio) execSingleLocked(orig, upper string, tSec float64) string {
 	case upper == "AN":
 		return "AN1;"
 	case upper == "OV":
-		return "OV00;"
+		return fmt.Sprintf("OV%d0;", adcOverflowLocked(r.RxA))
 	case upper == "OV$":
-		return "OV$00;"
+		return fmt.Sprintf("OV$%d0;", adcOverflowLocked(r.RxB))
+	case strings.HasPrefix(upper, "SI") && len(upper) == 5 && (upper[4] == '0' || upper[4] == '1'):
+		mod := upper[2:4]
+		on := upper[4] == '1'
+		switch mod {
+		case "FP":
+			r.SiFpEnabled = on
+		case "RF":
+			r.SiRfEnabled = on
+		case "DA":
+			r.SiDaEnabled = on
+		case "DD", "DU", "RC":
+			// Valid telemetry module subscription acknowledged cleanly.
+		default:
+			return "?;"
+		}
+		if on {
+			return r.formatSystemInfoLocked(mod, tSec)
+		}
+		return ""
 	case upper == "IF":
 		ritOff := clampInt(r.RxA.RitOffsetHz, -9999, 9999)
 		dataSub := 0
@@ -591,16 +704,24 @@ func (r *Radio) execSingleLocked(orig, upper string, tSec float64) string {
 		if arg != "" {
 			isSet = true
 		}
+		copyAtoB := func() {
+			r.SubRxEnabled = true
+			r.RxB.FreqHz = r.RxA.FreqHz
+			r.RxB.Mode = r.RxA.Mode
+			r.RxB.DataSubMode = r.RxA.DataSubMode
+			r.RxB.BwHz = r.RxA.BwHz
+			r.RxB.IfShiftHz = r.RxA.IfShiftHz
+		}
 		switch arg {
 		case "0":
 			r.DiversityEnabled = false
 		case "1":
 			r.DiversityEnabled = true
-			r.SubRxEnabled = true
+			copyAtoB()
 		case "/":
 			r.DiversityEnabled = !r.DiversityEnabled
 			if r.DiversityEnabled {
-				r.SubRxEnabled = true
+				copyAtoB()
 			}
 		}
 		resp = fmt.Sprintf("DV%d;", bool01(r.DiversityEnabled))
@@ -649,6 +770,16 @@ func (r *Radio) execSingleLocked(orig, upper string, tSec float64) string {
 			}
 		}
 		resp = fmt.Sprintf("%s%+05d;", prefix, target.RitOffsetHz)
+	case upper == "RC" || upper == "RC$":
+		rx, _, _ := splitSubRx(upper, "RC")
+		target := r.rxPtr(rx)
+		isSet = true
+		target.RitOffsetHz = 0
+		roPrefix := "RO"
+		if rx == 'B' {
+			roPrefix = "RO$"
+		}
+		resp = fmt.Sprintf("%s+0000;", roPrefix)
 	case strings.HasPrefix(upper, "FT"):
 		arg := strings.TrimPrefix(upper, "FT")
 		if arg == "0" || arg == "1" {
@@ -970,6 +1101,8 @@ func (r *Radio) execSingleLocked(orig, upper string, tSec float64) string {
 			}
 			resp = fmt.Sprintf("%s%d;", prefix, bool01(target.MiniPan))
 		}
+	case upper == "#FRZ$":
+		return "#FRZ?;"
 	case strings.HasPrefix(upper, "#FRZ"):
 		arg := strings.TrimPrefix(upper, "#FRZ")
 		if arg != "" {
@@ -984,6 +1117,63 @@ func (r *Radio) execSingleLocked(orig, upper string, tSec float64) string {
 			r.PanFrozen = !r.PanFrozen
 		}
 		resp = fmt.Sprintf("#FRZ%d;", bool01(r.PanFrozen))
+	case upper == "#FPS$":
+		return "#FPS?;"
+	case strings.HasPrefix(upper, "#FPS"):
+		arg := strings.TrimPrefix(upper, "#FPS")
+		if arg != "" {
+			isSet = true
+			if v, err := strconv.Atoi(arg); err == nil {
+				r.PanFPS = clampInt(v, 1, 30)
+			}
+		}
+		resp = fmt.Sprintf("#FPS%02d;", r.PanFPS)
+	case strings.HasPrefix(upper, "#NBL"):
+		rx, prefix, arg := splitSubRx(upper, "#NBL")
+		target := r.rxPtr(rx)
+		if arg != "" {
+			isSet = true
+			if v, err := strconv.Atoi(arg); err == nil {
+				target.PanNbLevel = clampInt(v, 0, 14)
+			}
+		}
+		resp = fmt.Sprintf("%s%d;", prefix, target.PanNbLevel)
+	case strings.HasPrefix(upper, "#NB"):
+		rx, prefix, arg := splitSubRx(upper, "#NB")
+		target := r.rxPtr(rx)
+		if arg != "" {
+			isSet = true
+			if v, err := strconv.Atoi(arg); err == nil {
+				target.PanNbMode = clampInt(v, 0, 2)
+			}
+		}
+		resp = fmt.Sprintf("%s%d;", prefix, target.PanNbMode)
+	case upper == "#DSM$":
+		return "#DSM?;"
+	case strings.HasPrefix(upper, "#DSM"):
+		arg := strings.TrimPrefix(upper, "#DSM")
+		if arg != "" {
+			isSet = true
+			if v, err := strconv.Atoi(arg); err == nil {
+				if v == 0 || v == 2 {
+					r.DisplayMode = 0
+				} else {
+					r.DisplayMode = 1
+				}
+			}
+		}
+		resp = fmt.Sprintf("#DSM%d;", r.DisplayMode)
+	case upper == "#WFH$":
+		return "#WFH?;"
+	case strings.HasPrefix(upper, "#WFH"):
+		arg := strings.TrimPrefix(upper, "#WFH")
+		if arg != "" {
+			isSet = true
+			if v, err := strconv.Atoi(arg); err == nil {
+				r.WaterfallHeightPct = clampInt(v, 0, 100)
+			}
+		}
+		resp = fmt.Sprintf("#WFH%03d;", r.WaterfallHeightPct)
 	case strings.HasPrefix(upper, "MX"):
 		arg := strings.TrimPrefix(upper, "MX")
 		if arg != "" {

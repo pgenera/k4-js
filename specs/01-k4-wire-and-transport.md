@@ -24,7 +24,7 @@ The browser connects directly over `ws://` or `wss://` to an off-the-shelf WebSo
    - Determine `slTier`: default `2` (40 ms, clamped `0..7`).
    - Send (omitting bare `SP;` because `SP` is SET-only in rev. D4 and triggers `?;`/`ER`, and omitting `#SCL$;`, `#WBS$;`, `#AR$;`, `#FXT$;` because `#SCL`, `#WBS`, `#AR`, and `#FXT` are global-only on real K4 firmware and `$` returns `?;`; also keep `AI5;` after `RDY;` because `RDY;` initializes client mode to `AI4`):
      ```
-     RDY;K41;ER1;AI5;EM<emMode>;SL<slTier>;FA;FB;MD;MD$;DT;DT$;BW;BW$;IS;IS$;CW;VT;VT$;LK;LK$;SB;FT;SMH;SMH$;#SPN;#SPN$;#REF;#REF$;#SCL;#AVG;#WBS;#AR;#DPM;#MP;#MP$;MX;#FXT;TD;TD$;
+     RDY;K41;ER1;AI5;EM<emMode>;SL<slTier>;FA;FB;MD;MD$;DT;DT$;BW;BW$;IS;IS$;CW;VT;VT$;LK;LK$;SB;FT;SQ;SQ$;AP;AP$;RT;RT$;RO;RO$;DV;OV;OV$;SMH;SMH$;#SPN;#SPN$;#REF;#REF$;#SCL;#AVG;#WBS;#AR;#DPM;#MP;#MP$;#FRZ;#FPS;#NB;#NB$;#NBL;#NBL$;#DSM;#WFH;MX;#FXT;TD;TD$;SIFP1;SIRF1;SIDA1;
      ```
 3. **First Packet Confirmation**: Transition `connection.status` to `'connected'` and `connection.authStatus` from `'authenticating'` to `'authenticated'` (clearing `error: null`) as soon as ANY valid framed K4 packet arrives from the socket. If the socket closes cleanly or with error while `authStatus === 'authenticating'`, set `status: 'error'`, `authStatus: 'rejected'` with diagnostic hint.
 4. **1 Hz Keepalive & Clean Close**:
@@ -89,6 +89,7 @@ When `policy === 'rx-only'`:
      - Unknown `#*` commands (as well as `#TX` and `#CAL`) are rejected by default-deny.
   5. **Safe RX / pan / audio / session prefixes (`ALLOWED_PREFIXES`, checked longest-first with boundary check)**:
      - `PING`, `PONG`, `SMH`, `RDY`, `RRN`, `DNB`, `UPB`, `FA`, `FB`, `MD`, `DT`, `BW`, `IS`, `CW`, `VT`, `LK`, `BN`, `SB`, `LN`, `PA`, `RA`, `AG`, `RG`, `SQ`, `NB`, `NR`, `NM`, `NA`, `GT`, `AP`, `AR`, `MX`, `BL`, `RD`, `RU`, `RC`, `TD`, `TB`, `EM`, `SL`, `K4`, `ER`, `AI`, `SM`, `DV`, `OV`, `FI`, `FC`, `RT`, `RO`, `VC`, `FP`, `MA`, `DN`, `UP`.
+      - Hardware telemetry subscriptions (`SI*`): explicitly allow only `/^SI(?:FP|RF|DA|DD|DU|RC)[01]$/` (`SIFP1;`, `SIRF1;`, `SIDA1;`, etc.), while `XT` (XIT) and all TX/relay/admin commands remain blocked.
      - `matchPrefixBoundary` requires exact match or a valid separator (`$`, `+`, `-`, `/`, `\`, space, `~`, `?`, or `'0'..'9'`, plus unrestricted suffix for `MX` / `#AR`).
      - **Rev. D4 `VC$*` guard**: reject `$` immediately after `VC` (`VC$*` is blocked because D4 defines `VCsm;` with no `$` Sub-RX form), while allowing `VC;` and `VCsm;`.
   6. **Default-deny fallback**: any unrecognized command (including SET forms of GET-only commands like `AN1;`, `FT1;`, `IDW6ELE;`, `PP` SET, unknown `#*`, or `VC$12;`) is blocked.

@@ -126,7 +126,7 @@ void main() {
     );
   }
 
-  function computePaneLayouts(width, height, dualPanMode, topInset = 0) {
+  function computePaneLayouts(width, height, dualPanMode, topInset = 0, layoutOpts = null) {
     const w = Math.max(0, width);
     const h = Math.max(0, height);
     if (w === 0 || h === 0) return [];
@@ -152,13 +152,34 @@ void main() {
       rects.push({ rx: primaryRx, x: 0, y: y0, w, h: totalH });
     }
 
+    const dispMode =
+      layoutOpts && Number.isFinite(layoutOpts.displayMode) ? layoutOpts.displayMode : 1;
+    const wfhRaw =
+      layoutOpts && Number.isFinite(layoutOpts.waterfallHeightPct)
+        ? layoutOpts.waterfallHeightPct
+        : 62;
+    const specOnly = dispMode === 0 || dispMode === 2 || wfhRaw <= 0;
+
     return rects.map((r) => {
       const axisH = 26;
       const availH = Math.max(40, r.h - axisH);
-      const specH = Math.max(24, Math.round(availH * 0.38));
+      if (specOnly) {
+        const specH = availH;
+        const axisY = r.y + specH;
+        return {
+          rx: r.rx,
+          paneRect: { x: r.x, y: r.y, w: r.w, h: r.h },
+          specRect: { x: r.x, y: r.y, w: r.w, h: specH },
+          axisRect: { x: r.x, y: axisY, w: r.w, h: axisH },
+          wfRect: { x: r.x, y: axisY + axisH, w: r.w, h: 0 },
+        };
+      }
+      const wfFrac = clamp(wfhRaw / 100, 0.15, 0.85);
+      let wfH = Math.max(16, Math.round(availH * wfFrac));
+      const specH = Math.max(20, availH - wfH);
+      wfH = Math.max(16, availH - specH);
       const axisY = r.y + specH;
       const wfY = axisY + axisH;
-      const wfH = Math.max(16, r.y + r.h - wfY);
       return {
         rx: r.rx,
         paneRect: { x: r.x, y: r.y, w: r.w, h: r.h },
@@ -640,6 +661,73 @@ void main() {
           ctx.textBaseline = 'middle';
           ctx.fillText(badge, bx + bw / 2, by + 8.5);
         }
+
+        // RIT RX offset marker & badge when active
+        if (vfo.state && vfo.state.ritOn && vfo.state.ritOffsetHz) {
+          const ritHz = K4.SpectrumGeometry.displayMarkerHz(
+            Object.assign({}, vfo.state, {
+              freqHz: (vfo.state.freqHz || 0) + (vfo.state.ritOffsetHz || 0),
+            }),
+            cwPitchHz
+          );
+          if (ritHz >= viewLeftHz && ritHz <= viewRightHz) {
+            const rxX = K4.SpectrumGeometry.xFromRfFreq(
+              ritHz,
+              specRect.x,
+              specRect.w,
+              panCenterHz,
+              userSpanHz
+            );
+            ctx.save();
+            ctx.setLineDash([2, 3]);
+            ctx.strokeStyle = '#A78BFA';
+            ctx.lineWidth = 1.4;
+            ctx.beginPath();
+            ctx.moveTo(rxX, specRect.y + 20);
+            ctx.lineTo(rxX, specRect.y + specRect.h);
+            ctx.stroke();
+            ctx.restore();
+            ctx.fillStyle = '#C4B5FD';
+            ctx.font = 'bold 9px ' + monoFont;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'top';
+            ctx.fillText('RIT', rxX, specRect.y + 22);
+          }
+        }
+      }
+
+      // Status pills (ADC Overflow / Pan Freeze) in top-right corner of spectrum
+      {
+        let pillRight = specRect.x + specRect.w - 8;
+        const pillY = specRect.y + 6;
+        if (primaryRxState && primaryRxState.adcOverflow) {
+          const ovText = 'ADC OVF';
+          ctx.font = 'bold 9.5px ' + monoFont;
+          const ovW = ctx.measureText(ovText).width + 10;
+          drawRoundedPill(ctx, pillRight - ovW, pillY, ovW, 16, 4);
+          ctx.fillStyle = 'rgba(225, 29, 72, 0.92)';
+          ctx.fill();
+          ctx.fillStyle = '#FFF1F2';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(ovText, pillRight - ovW / 2, pillY + 8.5);
+          pillRight -= ovW + 6;
+        }
+        if (snapshot.panFrozen) {
+          const frzText = 'FROZEN';
+          ctx.font = 'bold 9.5px ' + monoFont;
+          const frzW = ctx.measureText(frzText).width + 10;
+          drawRoundedPill(ctx, pillRight - frzW, pillY, frzW, 16, 4);
+          ctx.fillStyle = 'rgba(56, 189, 248, 0.24)';
+          ctx.fill();
+          ctx.strokeStyle = 'rgba(56, 189, 248, 0.78)';
+          ctx.lineWidth = 1;
+          ctx.stroke();
+          ctx.fillStyle = '#E0F2FE';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(frzText, pillRight - frzW / 2, pillY + 8.5);
+        }
       }
 
       if (dualPanMode === 2) {
@@ -725,36 +813,74 @@ void main() {
         ctx.fillStyle = '#CBD5E1';
         ctx.fillText(formatAxisKHz(t.freqHz), t.x, axisRect.y + 17.5);
       }
-      ctx.restore();
 
-      // 3. Waterfall VFO Needle Hairlines (subtle guide through waterfall)
-      ctx.save();
-      ctx.beginPath();
-      ctx.rect(wfRect.x, wfRect.y, wfRect.w, wfRect.h);
-      ctx.clip();
-      for (let vi = 0; vi < vfosToDraw.length; vi++) {
-        const vfo = vfosToDraw[vi];
-        const markerHz = K4.SpectrumGeometry.displayMarkerHz(vfo.state, cwPitchHz);
-        if (markerHz >= viewLeftHz && markerHz <= viewRightHz) {
-          const mx = K4.SpectrumGeometry.xFromRfFreq(
-            markerHz,
-            wfRect.x,
-            wfRect.w,
-            panCenterHz,
-            userSpanHz
-          );
-          ctx.strokeStyle =
-            vfo.key === 'A'
-              ? 'rgba(56, 189, 248, 0.34)'
-              : 'rgba(245, 158, 11, 0.32)';
-          ctx.lineWidth = 1;
-          ctx.beginPath();
-          ctx.moveTo(mx, wfRect.y);
-          ctx.lineTo(mx, wfRect.y + wfRect.h);
-          ctx.stroke();
+      // Saved frequency bookmark markers along the frequency axis
+      const bookmarks = (frameState && frameState.bookmarks) || [];
+      let lastBmLabelRight = -1e9;
+      for (let bi = 0; bi < bookmarks.length; bi++) {
+        const bm = bookmarks[bi];
+        if (!bm || bm.freqHz < viewLeftHz || bm.freqHz > viewRightHz) continue;
+        const bx = K4.SpectrumGeometry.xFromRfFreq(
+          bm.freqHz,
+          axisRect.x,
+          axisRect.w,
+          panCenterHz,
+          userSpanHz
+        );
+        if (bx < axisRect.x + 6 || bx > axisRect.x + axisRect.w - 6) continue;
+        ctx.fillStyle = '#FBBF24';
+        ctx.beginPath();
+        ctx.moveTo(bx, axisRect.y + 11);
+        ctx.lineTo(bx - 3.5, axisRect.y + 6);
+        ctx.lineTo(bx + 3.5, axisRect.y + 6);
+        ctx.closePath();
+        ctx.fill();
+
+        const shortLabel = String(bm.label || '').slice(0, 12);
+        if (shortLabel) {
+          ctx.font = 'bold 8.5px ' + sansFont;
+          const lw = ctx.measureText(shortLabel).width;
+          if (bx + 5 > lastBmLabelRight && bx + 5 + lw < axisRect.x + axisRect.w - 4) {
+            ctx.textAlign = 'left';
+            ctx.textBaseline = 'middle';
+            ctx.fillStyle = 'rgba(251, 191, 36, 0.88)';
+            ctx.fillText(shortLabel, bx + 5, axisRect.y + 9.5);
+            lastBmLabelRight = bx + 10 + lw;
+          }
         }
       }
       ctx.restore();
+
+      // 3. Waterfall VFO Needle Hairlines (subtle guide through waterfall)
+      if (wfRect.h > 0) {
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(wfRect.x, wfRect.y, wfRect.w, wfRect.h);
+        ctx.clip();
+        for (let vi = 0; vi < vfosToDraw.length; vi++) {
+          const vfo = vfosToDraw[vi];
+          const markerHz = K4.SpectrumGeometry.displayMarkerHz(vfo.state, cwPitchHz);
+          if (markerHz >= viewLeftHz && markerHz <= viewRightHz) {
+            const mx = K4.SpectrumGeometry.xFromRfFreq(
+              markerHz,
+              wfRect.x,
+              wfRect.w,
+              panCenterHz,
+              userSpanHz
+            );
+            ctx.strokeStyle =
+              vfo.key === 'A'
+                ? 'rgba(56, 189, 248, 0.34)'
+                : 'rgba(245, 158, 11, 0.32)';
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(mx, wfRect.y);
+            ctx.lineTo(mx, wfRect.y + wfRect.h);
+            ctx.stroke();
+          }
+        }
+        ctx.restore();
+      }
 
       // 4. Interactive Hover Crosshair & Readout Pill
       if (hover && hover.active && hover.paneRx === paneRx) {
@@ -1637,12 +1763,17 @@ void main() {
     render(frameState) {
       if (this._destroyed) return;
       const dualPanMode = frameState ? frameState.dualPanMode : 0;
+      const snap = (frameState && frameState.snapshot) || {};
       const topInset = measureHudTopInset(this.container, this.cssH);
       this.layouts = computePaneLayouts(
         this.cssW,
         this.cssH,
         dualPanMode,
-        topInset
+        topInset,
+        {
+          displayMode: snap.displayMode,
+          waterfallHeightPct: snap.waterfallHeightPct,
+        }
       );
 
       const devW = this.glCanvas.width;
@@ -1669,7 +1800,9 @@ void main() {
               : [56 / 255, 189 / 255, 248 / 255];
 
           this._drawSpectrumGl(layout.specRect, paneState, accent, devW, devH);
-          this._drawWaterfallGl(layout.wfRect, layout.rx, paneState, devW, devH);
+          if (layout.wfRect.h > 0) {
+            this._drawWaterfallGl(layout.wfRect, layout.rx, paneState, devW, devH);
+          }
         }
 
         gl.disable(gl.SCISSOR_TEST);
@@ -2023,12 +2156,17 @@ void main() {
     render(frameState) {
       if (this._destroyed) return;
       const dualPanMode = frameState ? frameState.dualPanMode : 0;
+      const snap = (frameState && frameState.snapshot) || {};
       const topInset = measureHudTopInset(this.container, this.cssH);
       this.layouts = computePaneLayouts(
         this.cssW,
         this.cssH,
         dualPanMode,
-        topInset
+        topInset,
+        {
+          displayMode: snap.displayMode,
+          waterfallHeightPct: snap.waterfallHeightPct,
+        }
       );
 
       if (this.cssW <= 0 || this.cssH <= 0 || !this.ctx) {
@@ -2051,7 +2189,9 @@ void main() {
             : 'rgba(56, 189, 248, 0.38)';
 
         this._drawSpectrum2D(layout.specRect, paneState, accentHex, accentFillTop);
-        this._drawWaterfall2D(layout.wfRect, layout.rx, paneState);
+        if (layout.wfRect.h > 0) {
+          this._drawWaterfall2D(layout.wfRect, layout.rx, paneState);
+        }
       }
 
       drawOverlayAndMiniPan({

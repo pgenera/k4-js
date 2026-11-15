@@ -226,7 +226,9 @@
       const bootstrapCat =
         `RDY;K41;ER1;AI5;EM${emMode};SL${slTier};` +
         'FA;FB;MD;MD$;DT;DT$;BW;BW$;IS;IS$;CW;VT;VT$;LK;LK$;SB;FT;SMH;SMH$;' +
-        '#SPN;#SPN$;#REF;#REF$;#SCL;#AVG;#WBS;#AR;#DPM;#MP;#MP$;#FXT;TD;TD$;MX;';
+        '#SPN;#SPN$;#REF;#REF$;#SCL;#AVG;#WBS;#AR;#DPM;#MP;#MP$;#FXT;TD;TD$;MX;' +
+        'SQ;SQ$;AP;AP$;RT;RT$;RO;RO$;DV;OV;OV$;#FRZ;#FPS;#NB;#NB$;#NBL;#NBL$;#DSM;#WFH;' +
+        'SIFP1;SIRF1;SIDA1;';
       this.sendCat(bootstrapCat);
       this._syncTbPolling();
 
@@ -862,6 +864,42 @@
         cmds.push(`#MP${target === 'B' ? '$' : ''};`);
       }
 
+      if (patch.panFrozen !== undefined) {
+        const v = Boolean(patch.panFrozen);
+        topPatch.panFrozen = v;
+        cmds.push(K4.CatCodec.builders.panFreeze(v), '#FRZ;');
+      }
+
+      if (patch.panFps !== undefined) {
+        const v = Math.round(clamp(Number(patch.panFps) || 20, 1, 30));
+        topPatch.panFps = v;
+        cmds.push(K4.CatCodec.builders.panFps(v), '#FPS;');
+      }
+
+      if (patch.displayMode !== undefined) {
+        const v = Number(patch.displayMode) === 0 || Number(patch.displayMode) === 2 ? 0 : 1;
+        topPatch.displayMode = v;
+        cmds.push(K4.CatCodec.builders.displayMode(v), '#DSM;');
+      }
+
+      if (patch.waterfallHeightPct !== undefined) {
+        const v = Math.round(clamp(Number(patch.waterfallHeightPct), 0, 100));
+        topPatch.waterfallHeightPct = v;
+        cmds.push(K4.CatCodec.builders.waterfallHeight(v), '#WFH;');
+      }
+
+      if (patch.panNbMode !== undefined) {
+        const v = Math.round(clamp(Number(patch.panNbMode) || 0, 0, 2));
+        rxPatch.panNbMode = v;
+        cmds.push(K4.CatCodec.builders.panNb(target, v), `#NB${target === 'B' ? '$' : ''};`);
+      }
+
+      if (patch.panNbLevel !== undefined) {
+        const v = Math.round(clamp(Number(patch.panNbLevel) || 0, 0, 14));
+        rxPatch.panNbLevel = v;
+        cmds.push(K4.CatCodec.builders.panNbLevel(target, v), `#NBL${target === 'B' ? '$' : ''};`);
+      }
+
       if (Object.keys(rxPatch).length > 0) {
         this.state.updateRx(target, rxPatch, target === 'B' ? 'rxB.display' : 'rxA.display');
       }
@@ -1012,6 +1050,94 @@
       const on = Boolean(locked);
       this.state.updateRx(target, { locked: on }, target === 'B' ? 'rxB.locked' : 'rxA.locked');
       return this.sendCat(K4.CatCodec.builders.lock(target, on));
+    }
+
+    /**
+     * Configure RIT (RT/RO/RC) on receiver 'A' or 'B'.
+     * @param {'A'|'B'} rx
+     * @param {{ on?: boolean, offsetHz?: number, clear?: boolean }} patch
+     */
+    setRit(rx, patch = {}) {
+      const target = rx === 'B' ? 'B' : 'A';
+      const dollar = target === 'B' ? '$' : '';
+      const cmds = [];
+      const rxPatch = {};
+      if (patch.clear) {
+        rxPatch.ritOffsetHz = 0;
+        cmds.push(K4.CatCodec.builders.ritClear(target));
+      }
+      if (patch.on !== undefined) {
+        const on = Boolean(patch.on);
+        rxPatch.ritOn = on;
+        cmds.push(K4.CatCodec.builders.rit(target, on));
+      }
+      if (patch.offsetHz !== undefined) {
+        const hz = Math.round(clamp(Number(patch.offsetHz) || 0, -9999, 9999));
+        rxPatch.ritOffsetHz = hz;
+        cmds.push(K4.CatCodec.builders.ritOffset(target, hz));
+      }
+      if (Object.keys(rxPatch).length > 0) {
+        this.state.updateRx(target, rxPatch, target === 'B' ? 'rxB.rit' : 'rxA.rit');
+        cmds.push(`RT${dollar};`, `RO${dollar};`);
+      }
+      return this.sendCat(cmds.join(''));
+    }
+
+    /**
+     * Zero RIT offset on receiver 'A' or 'B' (RC / RC$).
+     * @param {'A'|'B'} rx
+     */
+    clearRit(rx) {
+      return this.setRit(rx, { clear: true });
+    }
+
+    /**
+     * Configure CW Audio Peaking Filter (AP / AP$) on receiver 'A' or 'B'.
+     * @param {'A'|'B'} rx
+     * @param {{ on?: boolean, bwIdx?: number }} patch
+     */
+    setApf(rx, patch = {}) {
+      const target = rx === 'B' ? 'B' : 'A';
+      const dollar = target === 'B' ? '$' : '';
+      const cur = this.state.getRx(target);
+      const on = patch.on !== undefined ? Boolean(patch.on) : Boolean(cur.apfOn);
+      const bwIdx = Math.round(
+        clamp(Number(patch.bwIdx !== undefined ? patch.bwIdx : cur.apfBwIdx || 0), 0, 2)
+      );
+      this.state.updateRx(
+        target,
+        { apfOn: on, apfBwIdx: bwIdx },
+        target === 'B' ? 'rxB.apf' : 'rxA.apf'
+      );
+      return this.sendCat(`${K4.CatCodec.builders.apf(target, on, bwIdx)}AP${dollar};`);
+    }
+
+    /**
+     * Set receiver squelch level (SQ / SQ$, 0..40).
+     * @param {'A'|'B'} rx
+     * @param {number} level
+     */
+    setSquelch(rx, level) {
+      const target = rx === 'B' ? 'B' : 'A';
+      const dollar = target === 'B' ? '$' : '';
+      const v = Math.round(clamp(Number(level) || 0, 0, 40));
+      this.state.updateRx(target, { squelch: v }, target === 'B' ? 'rxB.squelch' : 'rxA.squelch');
+      return this.sendCat(`${K4.CatCodec.builders.squelch(target, v)}SQ${dollar};`);
+    }
+
+    /**
+     * Toggle Diversity Receive mode (DV0/DV1). Turning DV1 on hardware also enables Sub-RX and copies A->B.
+     * @param {boolean} on
+     */
+    setDiversity(on) {
+      const enabled = Boolean(on);
+      const snap = this.state.getSnapshot();
+      if (enabled && snap.hasSubRx !== false) {
+        this.state.update({ diversityEnabled: true, subRxEnabled: true }, 'diversityEnabled');
+        return this.sendCat('DV1;DV;SB;MD$;BW$;IS$;');
+      }
+      this.state.update({ diversityEnabled: false }, 'diversityEnabled');
+      return this.sendCat('DV0;DV;');
     }
   }
 

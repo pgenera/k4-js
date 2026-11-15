@@ -41,3 +41,8 @@ K4 streaming audio arrives `32×` (`~30 dB`) below full scale (`K4_GAIN_BOOST = 
 - **Channel Mixing & Controls (`K4.mixStereoSample(main, sub, opts)`)**:
   - `gainA`, `gainB` (`0..1`), `subRxEnabled`, `muted`, `balance` (`-1..+1`), and `mixMode` matching K4 `MX` options (`'A.B'`, `'AB.AB'`, `'A.-A'`, `'A.AB'`, `'AB.B'`, `'AB.A'`, `'B.AB'`, `'B.B'`, `'B.A'`, `'A.A'`). If `!subRxEnabled`, Sub channel contribution is gated to `0` (`main` routed cleanly according to preset or `A.A` stereo dual-mono so single-RX listening fills both ears unless `A.B` binaural with Sub ON is active!).
   - Expose `getDiagnostics()` -> `{ started, muted, sinkType: 'worklet'|'script-processor'|'none', encodeMode, bufferMs, targetMs, underruns, packetsIn, seqGaps }`.
+
+## 5. AF Passband Scope & Stereo 16-bit PCM `.wav` Clip Recorder
+- Decoded 12 kHz stereo PCM frames (from both `EM0`/`EM1` PCM and WebCodecs `EM2`/`EM3` `AudioData` outputs, downsampled/tapped prior to mute attenuation) feed both an internal 1024-sample mono FFT ring buffer and an active stereo `.wav` clip buffer, working identically even when WebAudio `AudioContext` is suspended or muted.
+- `getAfSpectrum(maxHz = 3200)` computes a Hann-windowed 1024-point radix-2 FFT and returns `{ binsDb: Float32Array, binHz, sampleRate: 12000, maxHz, hasSignal }`.
+- `K4.encodeWavPcm16(chunks, totalFrames, sampleRate = 12000, channels = 2)` writes a standard 44-byte RIFF/WAVE PCM16 buffer; `startRecording(meta)`, `stopRecording()`, `isRecording()`, and `getRecordingStatus()` enforce a 300 s capture safety ceiling and return `{ wavBytes, blob, durationSec, sampleRate, channels, totalFrames, filename }`.

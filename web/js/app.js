@@ -153,6 +153,16 @@
       });
       group.appendChild(this._hudLoupeBtn);
 
+      this._hudFreezeBtn = el('button', 'k4-hud-btn', 'Freeze');
+      this._hudFreezeBtn.type = 'button';
+      this._hudFreezeBtn.dataset.testid = 'hud-freeze-btn';
+      this._hudFreezeBtn.title = 'Freeze/Unfreeze Panadapter (#FRZ)';
+      this._hudFreezeBtn.addEventListener('click', () => {
+        const snap = this._getSnapshot();
+        this.client.setDisplay(this._dispRx(snap), { panFrozen: !snap.panFrozen });
+      });
+      group.appendChild(this._hudFreezeBtn);
+
       hudTop.appendChild(group);
       stage.appendChild(hudTop);
 
@@ -419,9 +429,13 @@
         } else if (e.key === '-' || e.key === '_') {
           e.preventDefault();
           this._stepSpan(1);
+        } else if (e.key === 'f' || e.key === 'F') {
+          e.preventDefault();
+          const snap = this._getSnapshot();
+          this.client.setDisplay(this._dispRx(snap), { panFrozen: !snap.panFrozen });
         } else if (e.key === '?') {
           e.preventDefault();
-          this.toast('Shortcuts: Cmd/Ctrl+K Jump · M Mute · ←/→ Step · +/- Span · Esc Close', 'info');
+          this.toast('Shortcuts: Cmd/Ctrl+K Jump · M Mute · F Freeze · ←/→ Step · +/- Span · Esc Close', 'info');
         }
       });
 
@@ -794,6 +808,8 @@
           : 'Toggle Dual Panadapter (#DPM)';
       this._hudLoupeBtn.textContent = `Loupe ${loupeRx}`;
       this._hudLoupeBtn.classList.toggle('is-active', Boolean(loupeS.miniPan));
+      this._hudFreezeBtn.textContent = snap.panFrozen ? 'Frozen' : 'Freeze';
+      this._hudFreezeBtn.classList.toggle('is-active', Boolean(snap.panFrozen));
 
       // Decoded Text Ticker (TB$)
       if (this._tickerDecodeSelect && typeof K4.syncDecodeSelect === 'function') {

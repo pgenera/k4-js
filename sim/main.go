@@ -50,6 +50,7 @@ func NewSimServer(cfg ServerConfig) (*SimServer, error) {
 		listener: ln,
 		startAt:  time.Now(),
 	}
+	s.radio.PanFPS = cfg.FPS
 	if cfg.ControlHTTP != "" {
 		mux := http.NewServeMux()
 		mux.HandleFunc("/debug/stats", s.handleDebugStats)
@@ -176,11 +177,11 @@ func (s *SimServer) handleConn(ctx context.Context, conn net.Conn) {
 	var streamWg sync.WaitGroup
 	streamWg.Add(3)
 
-	// 1. PAN + MiniPAN loop at configured FPS
+	// 1. PAN + MiniPAN loop at configured FPS (dynamically honors #FPS and #FRZ)
 	go func() {
 		defer streamWg.Done()
-		interval := time.Second / time.Duration(s.cfg.FPS)
-		ticker := time.NewTicker(interval)
+		curFPS, _ := s.radio.PanStreamState()
+		ticker := time.NewTicker(time.Second / time.Duration(curFPS))
 		defer ticker.Stop()
 		rng := rand.New(rand.NewSource(42))
 		var seqA, seqB uint8
@@ -189,6 +190,14 @@ func (s *SimServer) handleConn(ctx context.Context, conn net.Conn) {
 			case <-connCtx.Done():
 				return
 			case now := <-ticker.C:
+				nextFPS, frozen := s.radio.PanStreamState()
+				if nextFPS != curFPS {
+					curFPS = nextFPS
+					ticker.Reset(time.Second / time.Duration(curFPS))
+				}
+				if frozen {
+					continue
+				}
 				tSec := now.Sub(s.startAt).Seconds()
 				rxA, rxB, subRx, cwPitchHz, _, _, dualPan := s.radio.Snapshot()
 
@@ -296,12 +305,13 @@ func (s *SimServer) handleConn(ctx context.Context, conn net.Conn) {
 		}
 	}()
 
-	// 3. Periodic S-meter + TB$ decoded text (with literal semicolons!) loop
+	// 3. Periodic S-meter, OV transition, SI* telemetry, and TB$ decoded text loop
 	go func() {
 		defer streamWg.Done()
 		smTicker := time.NewTicker(250 * time.Millisecond)
 		defer smTicker.Stop()
 		var tickCount int
+		lastOvA, lastOvB := s.radio.OverflowStatus()
 		for {
 			select {
 			case <-connCtx.Done():
@@ -315,6 +325,15 @@ func (s *SimServer) handleConn(ctx context.Context, conn net.Conn) {
 				if subRx {
 					sb.WriteString(fmt.Sprintf("SMH$%+04d;", MeasurePassbandDbm(rxB, cwPitchHz, tSec)))
 				}
+				ovA, ovB := s.radio.OverflowStatus()
+				if ovA != lastOvA {
+					lastOvA = ovA
+					sb.WriteString(fmt.Sprintf("OV%d0;", ovA))
+				}
+				if ovB != lastOvB {
+					lastOvB = ovB
+					sb.WriteString(fmt.Sprintf("OV$%d0;", ovB))
+				}
 				// Emit TB/TB$ quickly at startup (tick 2) and every 2.5s thereafter when near beacon
 				if tickCount == 2 || tickCount%10 == 0 {
 					if NearBeacon(rxA.FreqHz) {
@@ -322,6 +341,9 @@ func (s *SimServer) handleConn(ctx context.Context, conn net.Conn) {
 					}
 					if NearBeacon(rxB.FreqHz) {
 						sb.WriteString("TB$020CQ DE W6ELE K ; 73 ;;")
+					}
+					if siCat := s.radio.PeriodicSystemInfoCAT(tSec); siCat != "" {
+						sb.WriteString(siCat)
 					}
 				}
 				if err := writePacket(EncodeCAT(sb.String())); err != nil {

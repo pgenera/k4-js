@@ -122,6 +122,10 @@
           this._onStateChange(snap);
         });
       }
+      this._unsubBookmarks =
+        K4.BookmarkStore && typeof K4.BookmarkStore.subscribe === 'function'
+          ? K4.BookmarkStore.subscribe(() => this._scheduleRender())
+          : null;
 
       this._resizeObserver = null;
       this._onWindowResize = null;
@@ -265,14 +269,16 @@
         peakHold: this._peakHold,
         palette: this._palette,
         hover: this._hoverState,
+        bookmarks: K4.BookmarkStore ? K4.BookmarkStore.list() : [],
       };
     }
 
     pushPanPacket(pkt) {
       if (this._destroyed || !pkt || !pkt.bins || pkt.bins.length === 0) return;
+      const snap = this._getSnapshot();
+      if (snap.panFrozen) return;
       const rx = pkt.rx === 'B' ? 'B' : 'A';
       const pane = this._panes[rx];
-      const snap = this._getSnapshot();
       const rxSnap = (rx === 'B' ? snap.rxB : snap.rxA) || {};
       const n = pkt.bins.length;
 
@@ -342,6 +348,8 @@
 
     pushMiniPanPacket(pkt) {
       if (this._destroyed || !pkt || !pkt.bins || pkt.bins.length === 0) return;
+      const snap = this._getSnapshot();
+      if (snap.panFrozen) return;
       const rx = pkt.rx === 'B' ? 'B' : 'A';
       const buf = this._miniPanByRx[rx];
       const n = pkt.bins.length;
@@ -363,7 +371,6 @@
         Number.isFinite(rawSpanKHz) && rawSpanKHz > 0 ? rawSpanKHz : 10;
       buf.dbmBins = dbm;
 
-      const snap = this._getSnapshot();
       const rxSnap = rx === 'B' ? snap.rxB : snap.rxA;
       const mpEnabled = Boolean(
         rxSnap &&
@@ -454,6 +461,10 @@
       if (this._unsubState) {
         this._unsubState();
         this._unsubState = null;
+      }
+      if (this._unsubBookmarks) {
+        this._unsubBookmarks();
+        this._unsubBookmarks = null;
       }
       if (this._resizeObserver) {
         this._resizeObserver.disconnect();

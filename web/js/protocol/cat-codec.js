@@ -200,6 +200,35 @@
       const v = parseIntStrict(arg);
       return v === null ? null : { kind: 'fixedTune', rx: null, fixedTune: v === 1 };
     }),
+    makeGlobalParser('#FPS', (arg) => {
+      const v = parseIntStrict(arg);
+      return v === null ? null : { kind: 'panFps', rx: null, panFps: clamp(v, 1, 30) };
+    }),
+    makeGlobalParser('#DSM', (arg) => {
+      const v = parseIntStrict(arg);
+      if (v === null) return null;
+      return { kind: 'displayMode', rx: null, displayMode: v === 0 || v === 2 ? 0 : 1, rawMode: clamp(v, 0, 3) };
+    }),
+    makeGlobalParser('#WFH', (arg) => {
+      const v = parseIntStrict(arg);
+      return v === null ? null : { kind: 'waterfallHeight', rx: null, waterfallHeightPct: clamp(v, 0, 100) };
+    }),
+    makeRxParser('#NBL$', (arg, rx) => {
+      const v = parseIntStrict(arg);
+      return v === null ? null : { kind: 'panNbLevel', rx, panNbLevel: clamp(v, 0, 14) };
+    }),
+    makeRxParser('#NBL', (arg, rx) => {
+      const v = parseIntStrict(arg);
+      return v === null ? null : { kind: 'panNbLevel', rx, panNbLevel: clamp(v, 0, 14) };
+    }),
+    makeRxParser('#NB$', (arg, rx) => {
+      const v = parseIntStrict(arg);
+      return v === null ? null : { kind: 'panNb', rx, panNbMode: clamp(v, 0, 2) };
+    }),
+    makeRxParser('#NB', (arg, rx) => {
+      const v = parseIntStrict(arg);
+      return v === null ? null : { kind: 'panNb', rx, panNbMode: clamp(v, 0, 2) };
+    }),
     makeGlobalParser('PONG', (arg) => {
       const t = arg.trim();
       if (!t) return { kind: 'pong', rx: null, epoch: null };
@@ -422,6 +451,7 @@
       const t = arg.trim();
       return t ? { kind: 'serial', rx: null, serial: t } : null;
     }),
+    makeGlobalParser('SI', (arg) => parseSystemInfo(arg)),
   ].sort((a, b) => b.prefix.length - a.prefix.length);
 
   function parseAutoRef(arg, rx) {
@@ -573,6 +603,32 @@
       adcOverflow: t[0] === '1',
       cor: t.length >= 2 ? t[1] === '1' : false,
     };
+  }
+
+  function parseSystemInfo(arg) {
+    const raw = String(arg || '').trim();
+    if (raw.length < 3) return null;
+    const module = raw.slice(0, 2).toUpperCase();
+    if (!/^[A-Z0-9]{2}$/.test(module)) return null;
+    const rest = raw.slice(2).trim();
+    if (rest === '0' || rest === '1') {
+      return { kind: 'systemInfoSub', rx: null, module, enabled: rest === '1' };
+    }
+    if (!rest.includes(':')) return null;
+    const fields = {};
+    const parts = rest.split(',');
+    for (let i = 0; i < parts.length; i++) {
+      const pair = parts[i].trim();
+      const colonIdx = pair.indexOf(':');
+      if (colonIdx <= 0) continue;
+      const key = pair.slice(0, colonIdx).trim().toUpperCase();
+      const valRaw = pair.slice(colonIdx + 1).trim();
+      if (!key) continue;
+      const num = Number(valRaw);
+      fields[key] = valRaw !== '' && Number.isFinite(num) ? num : valRaw;
+    }
+    if (Object.keys(fields).length === 0) return null;
+    return { kind: 'systemInfo', rx: null, module, fields };
   }
 
   /**
@@ -743,8 +799,37 @@
       const v = Math.round(clamp(Number.isFinite(raw) ? raw : 0, -9999, 9999));
       return 'RO' + rxDollar(rx) + (v < 0 ? '-' : '+') + String(Math.abs(v)).padStart(4, '0') + ';';
     },
+    ritClear(rx) {
+      return 'RC' + rxDollar(rx) + ';';
+    },
     freezePan(on) {
       return '#FRZ' + (on ? '1' : '0') + ';';
+    },
+    panFreeze(on) {
+      return '#FRZ' + (on ? '1' : '0') + ';';
+    },
+    panFps(fps) {
+      const f = clamp(Math.round(Number(fps) || 20), 1, 30);
+      return '#FPS' + String(f).padStart(2, '0') + ';';
+    },
+    panNb(rx, mode) {
+      const m = clamp(Math.round(Number(mode) || 0), 0, 2);
+      return '#NB' + rxDollar(rx) + m + ';';
+    },
+    panNbLevel(rx, level) {
+      const l = clamp(Math.round(Number(level) || 0), 0, 14);
+      return '#NBL' + rxDollar(rx) + l + ';';
+    },
+    displayMode(mode) {
+      return '#DSM' + (Number(mode) === 0 || Number(mode) === 2 ? '0' : '1') + ';';
+    },
+    waterfallHeight(pct) {
+      const p = clamp(Math.round(Number(pct) || 0), 0, 100);
+      return '#WFH' + String(p).padStart(3, '0') + ';';
+    },
+    systemInfoSub(module, on) {
+      const mod = String(module || 'FP').trim().toUpperCase().slice(0, 2);
+      return 'SI' + mod + (on ? '1' : '0') + ';';
     },
     fixedTune(on) {
       return '#FXT' + (on ? '1' : '0') + ';';

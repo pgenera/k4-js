@@ -1323,6 +1323,186 @@
     }
   });
 
+  // 18. Item 1 & 2 CAT codecs, RxOnlyGate SI*, RadioState telemetry, and Client helpers
+  test('18. Item 1 & 2 CatCodec, RxOnlyGate SI*, RadioState telemetry, and Client helpers', () => {
+    const K4 = globalThis.K4;
+    const b = K4.CatCodec.builders;
+    assertEqual(b.panFps(15), '#FPS15;', 'builder panFps');
+    assertEqual(b.displayMode(0), '#DSM0;', 'builder displayMode 0');
+    assertEqual(b.displayMode(1), '#DSM1;', 'builder displayMode 1');
+    assertEqual(b.waterfallHeight(40), '#WFH040;', 'builder waterfallHeight');
+    assertEqual(b.panNb('A', 2), '#NB2;', 'builder panNb A Auto');
+    assertEqual(b.panNbLevel('B', 7), '#NBL$7;', 'builder panNbLevel B');
+    assertEqual(b.ritClear('B'), 'RC$;', 'builder ritClear B');
+    assertEqual(b.systemInfoSub('FP', true), 'SIFP1;', 'builder systemInfoSub');
+
+    const gate = new K4.RxOnlyGate('rx-only');
+    assertEqual(gate.inspectCat('SIFP1;SIRF1;SIDA1;').blocked.length, 0, 'SI* sub commands allowed in rx-only');
+    assertEqual(gate.inspectCat('XT1;').blocked.length, 1, 'XT1 remains blocked in rx-only');
+
+    const state = new K4.RadioState();
+    const batch =
+      '#FPS12;#DSM0;#WFH025;#NB2;#NBL09;OV11;' +
+      'SIFPVS:13.80,IS:1.08,TF:34.2;SICPT1:39.0,T2:37.5,T4:38.2;SIRFPT:38.5,LT:36.0;SIDAT:31.2;';
+    const frames = K4.CatCodec.splitFrames(batch);
+    for (const f of frames) {
+      const parsed = K4.CatCodec.parseCommand(f);
+      if (parsed) state.applyParsedCat(parsed);
+    }
+    const snap = state.getSnapshot();
+    assertEqual(snap.panFps, 12, 'RadioState panFps');
+    assertEqual(snap.displayMode, 0, 'RadioState displayMode');
+    assertEqual(snap.waterfallHeightPct, 25, 'RadioState waterfallHeightPct');
+    assertEqual(snap.rxA.panNbMode, 2, 'RadioState rxA panNbMode');
+    assertEqual(snap.rxA.panNbLevel, 9, 'RadioState rxA panNbLevel');
+    assertEqual(snap.rxA.adcOverflow, true, 'RadioState rxA adcOverflow');
+    assertEqual(snap.rxA.cor, true, 'RadioState rxA cor');
+    assertApprox(snap.telemetry.supplyVolts, 13.8, 0.05, 'RadioState telemetry VS');
+    assertApprox(snap.telemetry.supplyAmps, 1.08, 0.02, 'RadioState telemetry IS');
+    assertApprox(snap.telemetry.fpTempC, 34.2, 0.1, 'RadioState telemetry fpTempC');
+    assertApprox(snap.telemetry.paTempC, 38.5, 0.1, 'RadioState telemetry paTempC');
+    assertApprox(snap.telemetry.lpaTempC, 36.0, 0.1, 'RadioState telemetry lpaTempC');
+    assertApprox(snap.telemetry.cpuTempC, 39.0, 0.1, 'RadioState telemetry cpuTempC');
+    assertApprox(snap.telemetry.dapTempC, 31.2, 0.1, 'RadioState telemetry dapTempC');
+
+    const sent = [];
+    const client = new K4.Client({ state, gate });
+    client.sendCat = (cmd) => {
+      sent.push(cmd);
+      return true;
+    };
+    client.setRit('A', { on: true, offsetHz: -120 });
+    client.clearRit('B');
+    client.setApf('A', { on: true, bwIdx: 2 });
+    client.setSquelch('B', 15);
+    client.setDiversity(true);
+    client.setDisplay('A', { panFrozen: true, panFps: 15, displayMode: 0, waterfallHeightPct: 35, panNbMode: 1, panNbLevel: 6 });
+
+    const joined = sent.join('');
+    assert(joined.includes('RT1;'), 'setRit sends RT1');
+    assert(joined.includes('RO-0120;'), 'setRit sends RO-0120');
+    assert(joined.includes('RC$;'), 'clearRit sends RC$');
+    assert(joined.includes('AP1;') || joined.includes('AP12;'), 'setApf sends AP');
+    assert(joined.includes('SQ$015;'), 'setSquelch sends SQ$015');
+    assert(joined.includes('DV1;'), 'setDiversity sends DV1');
+    assert(joined.includes('#FRZ1;'), 'setDisplay sends #FRZ1');
+    assert(joined.includes('#FPS15;'), 'setDisplay sends #FPS15');
+    assert(joined.includes('#DSM0;'), 'setDisplay sends #DSM0');
+    assert(joined.includes('#WFH035;'), 'setDisplay sends #WFH035');
+    assert(joined.includes('#NB1;'), 'setDisplay sends #NB1');
+    assert(joined.includes('#NBL6;') || joined.includes('#NBL06;'), 'setDisplay sends #NBL6');
+  });
+
+  // 19. Panadapter layouts (#DSM0, #WFH) and #FRZ1 freeze gating
+  test('19. computePaneLayouts honors #DSM and #WFH, and PanadapterView honors #FRZ', () => {
+    const K4 = globalThis.K4;
+    const specOnly = K4._computePanLayouts(1000, 600, 0, 42, { displayMode: 0, waterfallHeightPct: 60 });
+    assertEqual(specOnly[0].wfRect.h, 0, '#DSM0 sets waterfall height to 0');
+    assert(specOnly[0].specRect.h > 450, '#DSM0 expands spectrum height');
+
+    const shortWf = K4._computePanLayouts(1000, 600, 0, 42, { displayMode: 1, waterfallHeightPct: 25 });
+    const tallWf = K4._computePanLayouts(1000, 600, 0, 42, { displayMode: 1, waterfallHeightPct: 75 });
+    assert(tallWf[0].wfRect.h > shortWf[0].wfRect.h * 2, '#WFH scales waterfall height split');
+
+    const state = new K4.RadioState();
+    const container = document.createElement('div');
+    container.style.width = '640px';
+    container.style.height = '320px';
+    document.body.appendChild(container);
+    let view = null;
+    try {
+      view = new K4.PanadapterView({ container, state });
+      const pkt = {
+        rx: 'A',
+        bins: new Uint8Array(128).fill(80),
+        sampleRateKHz: 48,
+        centerFreqHz: 7074000,
+        noiseFloorDbm: -128,
+      };
+      state.update({ panFrozen: true }, 'panFrozen');
+      view.pushPanPacket(pkt);
+      const frozenReady = Boolean(view._panes && view._panes.A && view._panes.A.binsReady);
+
+      state.update({ panFrozen: false }, 'panFrozen');
+      view.pushPanPacket(pkt);
+      const liveReady = Boolean(view._panes && view._panes.A && view._panes.A.binsReady);
+      assertEqual(frozenReady, false, '#FRZ1 drops incoming pan packets');
+      assertEqual(liveReady, true, '#FRZ0 accepts incoming pan packets');
+    } finally {
+      if (view && typeof view.destroy === 'function') view.destroy();
+      container.remove();
+    }
+  });
+
+  // 20. AudioEngine AF Scope FFT + WAV PCM16 Recorder + K4.BookmarkStore
+  test('20. AudioEngine getAfSpectrum, WAV PCM16 recorder, and BookmarkStore CRUD', () => {
+    const K4 = globalThis.K4;
+
+    // 1. K4.encodeWavPcm16 RIFF header & byte length check
+    const chunk = new Int16Array(1200 * 2);
+    const wavBytes = K4.encodeWavPcm16([chunk], 1200, 12000, 2);
+    assertEqual(wavBytes.byteLength, 44 + 1200 * 4, 'WAV size = 44 + 4800 bytes');
+    const dv = new DataView(wavBytes.buffer, wavBytes.byteOffset, wavBytes.byteLength);
+    const magic = String.fromCharCode(dv.getUint8(0), dv.getUint8(1), dv.getUint8(2), dv.getUint8(3));
+    const wave = String.fromCharCode(dv.getUint8(8), dv.getUint8(9), dv.getUint8(10), dv.getUint8(11));
+    assertEqual(magic, 'RIFF', 'WAV RIFF header');
+    assertEqual(wave, 'WAVE', 'WAV WAVE format');
+    assertEqual(dv.getUint16(22, true), 2, 'WAV 2 channels');
+    assertEqual(dv.getUint32(24, true), 12000, 'WAV 12 kHz sample rate');
+    assertEqual(dv.getUint16(34, true), 16, 'WAV 16-bit PCM');
+
+    // 2. AudioEngine 700 Hz FFT peak & stereo recording without AudioContext resume
+    const state = new K4.RadioState();
+    const engine = new K4.AudioEngine({ state });
+    try {
+      engine.startRecording({ rx: 'A', freqHz: 7074000 });
+      const framesPerPkt = 240;
+      let sampleIdx = 0;
+      for (let p = 0; p < 6; p++) {
+        const buf = new ArrayBuffer(framesPerPkt * 4);
+        const view = new DataView(buf);
+        for (let i = 0; i < framesPerPkt; i++) {
+          const s = Math.round(16000 * Math.sin((2 * Math.PI * 700 * sampleIdx) / 12000));
+          view.setInt16(i * 4, s, true);
+          view.setInt16(i * 4 + 2, s, true);
+          sampleIdx++;
+        }
+        engine.pushPacket({ seq: p, encodeMode: 1, dataView: view, frameCount: framesPerPkt });
+      }
+
+      const spec = engine.getAfSpectrum(3200);
+      assert(spec && spec.binsDb && spec.binsDb.length > 20, 'getAfSpectrum returns binsDb');
+      let maxIdx = 0;
+      let maxVal = -Infinity;
+      for (let i = 0; i < spec.binsDb.length; i++) {
+        if (spec.binsDb[i] > maxVal) {
+          maxVal = spec.binsDb[i];
+          maxIdx = i;
+        }
+      }
+      const peakHz = maxIdx * spec.binHz;
+      assertApprox(peakHz, 700, 120, 'AF FFT peak detects 700 Hz synthetic tone');
+
+      const rec = engine.stopRecording();
+      const wavLen = rec && rec.wavBytes ? rec.wavBytes.byteLength : 0;
+      assert(wavLen >= 44 + 6 * framesPerPkt * 4, 'stopRecording produced complete WAV');
+      assert(rec.blob instanceof Blob, 'stopRecording produced Blob');
+    } finally {
+      engine.destroy();
+    }
+
+    // 3. K4.BookmarkStore CRUD
+    K4.BookmarkStore.resetDefaults();
+    const initialCount = K4.BookmarkStore.list().length;
+    assert(initialCount >= 4, 'BookmarkStore seeds defaults');
+    const added = K4.BookmarkStore.add({ label: 'Test Beacon', freqHz: 14100000, mode: 3, bwHz: 400 });
+    assert(added && added.id, 'BookmarkStore.add returns bookmark with id');
+    assertEqual(K4.BookmarkStore.list().length, initialCount + 1, 'BookmarkStore list grew by 1');
+    K4.BookmarkStore.remove(added.id);
+    assertEqual(K4.BookmarkStore.list().length, initialCount, 'BookmarkStore remove restores count');
+    K4.BookmarkStore.resetDefaults();
+  });
+
   async function runAll() {
     const resultsEl = document.getElementById('results');
     const summaryEl = document.getElementById('summary');

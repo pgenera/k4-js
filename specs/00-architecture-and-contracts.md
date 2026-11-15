@@ -81,7 +81,7 @@ Both `web/index.html` and `web/test.html` MUST load scripts in this exact order:
 ## 4. Exported Namespace Summary (`globalThis.K4`)
 Every class and helper signature referenced across boundaries MUST match these exact names:
 - `K4.EventEmitter`: `.on(event, fn) -> unsub`, `.off(event, fn)`, `.once(event, fn)`, `.emit(event, payload)`
-- `K4.storage`: `.get(key, defaultVal)`, `.set(key, val)`, `.remove(key)`, `.getSession(key, defaultVal)`, `.setSession(key, val)`
+- `K4.storage`: `.get(key, defaultVal)`, `.set(key, val)`, `.remove(key)`, `.getSession(key, defaultVal)`, `.setSession(key, val)`; `K4.BookmarkStore`: `.list()`, `.add(bm)`, `.remove(id)`, `.resetDefaults()`, `.subscribe(fn)`
 - `K4.sha384HexSync(input)` -> 96-char lowercase hex string; `K4.sha384Hex(input)` -> `Promise<string>`
 - `K4.PacketConstants`: `{ START_MARKER, END_MARKER, HEADER_SIZE: 4, LENGTH_SIZE: 4, FOOTER_SIZE: 4, OVERHEAD: 12, MAX_PAYLOAD_SIZE: 262144, TYPE_CAT: 0, TYPE_AUDIO: 1, TYPE_PAN: 2, TYPE_MINIPAN: 3 }`
 - `K4.PacketFramer`: `.push(uint8Array)`, `.reset()`, `.getStats()`; static `.encodePacket(payloadUint8)`, `.encodeCatPacket(catAscii)`
@@ -104,7 +104,7 @@ Every class and helper signature referenced across boundaries MUST match these e
   - Passes `cmdStr` through `gate.inspectCat(cmdStr)`. Any blocked commands trigger `'blocked'` event; if `sanitized` is non-empty and WS is open, wraps in `PacketFramer.encodeCatPacket(sanitized)` and sends. Returns `{ sent: boolean, allowed: string[], blocked: string[] }`.
 - `client.tune(rx /* 'A'|'B' */, freqHz, { optimistically = true } = {})`: snaps integer Hz clamped `[100000, 54000000]`, updates state if optimistic, sends `FA...;` or `FB...;`.
 - `client.stepFrequency(rx, steps, stepHzOverride)`: reads current `freqHz` & `stepHz`, tunes by `steps * stepHz`.
-- `client.setBand(rx, bandIdOrDef)` / `client.setMode(rx, modeKey, dataSubMode)` / `client.setDisplay(rx, patch)` / `client.setAudioMix(mix)` / `client.setEncodeMode(em)` / `client.setLatencyTier(sl)`: build & send validated CAT commands and apply immediate optimistic state where helpful (`SL`, display prefs, `tune`).
+- `client.setBand(rx, bandIdOrDef)` / `client.setMode(rx, modeKey, dataSubMode)` / `client.setDisplay(rx, patch)` / `client.setAudioMix(mix)` / `client.setEncodeMode(em)` / `client.setLatencyTier(sl)` / `client.setRit(rx, patch)` / `client.clearRit(rx)` / `client.setApf(rx, patch)` / `client.setSquelch(rx, level)` / `client.setDiversity(on)`: build & send validated CAT commands and apply immediate optimistic state where helpful (`SL`, display prefs, `tune`).
 - Events emitted by `client`: `'connection'`, `'state'`, `'pan'` (`{ rx, pkt }`), `'minipan'` (`{ rx, pkt }`), `'audio'` (`audioPkt`), `'cat'` (`{ parsed, raw }`), `'blocked'`, `'error'`.
 
 ### `K4.PanadapterView` (`web/js/panadapter/panadapter-view.js`)
@@ -117,15 +117,18 @@ Every class and helper signature referenced across boundaries MUST match these e
 - `new K4.AudioEngine({ state })`
 - `audioEngine.start()` (called on user gesture / unmute button click) -> initializes `AudioContext`, tries `audioWorklet` Data URI else falls back cleanly to `ScriptProcessorNode`, returns Promise resolving with `{ started, sinkType }`.
 - `audioEngine.setMuted(bool)`, `audioEngine.isMuted()`, `audioEngine.setVolume('A'|'B', gain01)`, `audioEngine.setBalance(panMinus1To1)`, `audioEngine.setMixMode(mxStr)`, `audioEngine.setLatencyTier(sl0to7)`.
-- `audioEngine.pushPacket(audioPkt)` -> decodes via `PcmDecoder` (`EM0`/`EM1`) or `OpusPacketDecoder` (`EM2`/`EM3`), applies `32.0` calibrated gain + soft limiter, resamples into stereo ring buffer.
+- `audioEngine.pushPacket(audioPkt)` -> decodes via `PcmDecoder` (`EM0`/`EM1`) or `OpusPacketDecoder` (`EM2`/`EM3`), applies `32.0` calibrated gain + soft limiter, resamples into stereo ring buffer, and taps 12 kHz PCM into AF FFT & WAV clip recorder.
+- `audioEngine.getAfSpectrum(maxHz = 3200)` -> `{ binsDb, binHz, sampleRate, maxHz, hasSignal }`; `startRecording()`, `stopRecording()`, `isRecording()`, `getRecordingStatus()`, and `K4.encodeWavPcm16(...)`.
 
 ### Stable `data-testid` Attributes for UI & E2E Tests (`ui` & `sim-deploy`)
 - `[data-testid="conn-btn"]` (top bar connection status pill)
 - `[data-testid="conn-dialog"]`, `[data-testid="ws-url-input"]`, `[data-testid="password-input"]`, `[data-testid="connect-submit"]`, `[data-testid="disconnect-btn"]`
-- `[data-testid="vfo-a"]`, `[data-testid="vfo-a-freq"]`, `[data-testid="vfo-a-mode"]`
-- `[data-testid="vfo-b"]`, `[data-testid="vfo-b-freq"]`, `[data-testid="vfo-b-mode"]`
-- `[data-testid="smeter"]`, `[data-testid="smeter-dbm"]`
-- `[data-testid="pan-canvas"]` (clickable interactive spectrum/waterfall surface inside `#pan-stage`)
+- `[data-testid="vfo-a"]`, `[data-testid="vfo-a-freq"]`, `[data-testid="vfo-a-mode"]`, `[data-testid="vfo-A-rit-badge"]`
+- `[data-testid="vfo-b"]`, `[data-testid="vfo-b-freq"]`, `[data-testid="vfo-b-mode"]`, `[data-testid="vfo-B-rit-badge"]`
+- `[data-testid="smeter"]`, `[data-testid="smeter-dbm"]`, `[data-testid="smeter-ovf-badge"]`
+- `[data-testid="pan-canvas"]`, `[data-testid="hud-freeze-btn"]`
+- `[data-testid="af-scope-canvas"]`, `[data-testid="wav-record-btn"]`, `[data-testid="wav-download-link"]`, `[data-testid="diag-supply"]`
+- `[data-testid="bookmark-label-input"]`, `[data-testid="bookmark-save-btn"]`, `[data-testid="bookmark-list"]`
 - `[data-testid="omnibar-btn"]`, `[data-testid="omnibar-modal"]`, `[data-testid="omnibar-input"]`
 - `[data-testid="audio-toggle"]`
 - `[data-testid="rx-only-badge"]`

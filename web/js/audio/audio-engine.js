@@ -7,6 +7,9 @@
   const DEFAULT_SAMPLE_RATE = 48000;
   const DRIFT_NUDGE = 0.002;
   const UNDERRUN_FADE_SAMPLES = 16;
+  const AF_FFT_SIZE = 1024;
+  const AF_TAP_SAMPLE_RATE = 12000;
+  const MAX_RECORD_SECONDS = 300;
 
   const VALID_MIX_MODES = new Set([
     'A.B', 'AB.AB', 'A.-A', 'A.AB', 'AB.B', 'AB.A', 'B.AB', 'B.B', 'B.A', 'A.A',
@@ -58,6 +61,84 @@
   }
 
   const BaseEmitter = typeof K4.EventEmitter === 'function' ? K4.EventEmitter : FallbackEmitter;
+
+  /**
+   * Encode Int16 interleaved PCM chunks into a standard 44-byte RIFF WAVE Uint8Array.
+   * @param {Int16Array[]} chunks
+   * @param {number} totalFrames
+   * @param {number} [sampleRate=12000]
+   * @param {number} [channels=2]
+   * @returns {Uint8Array}
+   */
+  function encodeWavPcm16(chunks, totalFrames, sampleRate = 12000, channels = 2) {
+    const ch = Math.max(1, Math.min(2, Math.round(channels || 2)));
+    const sr = Math.max(1000, Math.round(sampleRate || 12000));
+    const frames = Math.max(0, Math.round(totalFrames || 0));
+    const dataBytes = frames * ch * 2;
+    const out = new Uint8Array(44 + dataBytes);
+    const view = new DataView(out.buffer);
+
+    const writeAscii = (off, str) => {
+      for (let i = 0; i < str.length; i++) {
+        out[off + i] = str.charCodeAt(i) & 0xff;
+      }
+    };
+
+    writeAscii(0, 'RIFF');
+    view.setUint32(4, 36 + dataBytes, true);
+    writeAscii(8, 'WAVE');
+    writeAscii(12, 'fmt ');
+    view.setUint32(16, 16, true); // PCM fmt chunk size
+    view.setUint16(20, 1, true); // Linear PCM
+    view.setUint16(22, ch, true);
+    view.setUint32(24, sr, true);
+    view.setUint32(28, sr * ch * 2, true);
+    view.setUint16(32, ch * 2, true);
+    view.setUint16(34, 16, true);
+    writeAscii(36, 'data');
+    view.setUint32(40, dataBytes, true);
+
+    let byteOff = 44;
+    const maxSampleByte = 44 + dataBytes;
+    for (let ci = 0; ci < chunks.length && byteOff < maxSampleByte; ci++) {
+      const c = chunks[ci];
+      if (!c) continue;
+      for (let i = 0; i < c.length && byteOff + 1 < maxSampleByte; i++) {
+        view.setInt16(byteOff, c[i], true);
+        byteOff += 2;
+      }
+    }
+    return out;
+  }
+
+  function buildBitRevTable(n) {
+    const table = new Uint16Array(n);
+    const bits = Math.round(Math.log2(n));
+    for (let i = 0; i < n; i++) {
+      let x = i;
+      let rev = 0;
+      for (let b = 0; b < bits; b++) {
+        rev = (rev << 1) | (x & 1);
+        x >>= 1;
+      }
+      table[i] = rev;
+    }
+    return table;
+  }
+
+  function buildHannWindow(n) {
+    const win = new Float32Array(n);
+    let sum = 0;
+    for (let i = 0; i < n; i++) {
+      const v = 0.5 * (1 - Math.cos((2 * Math.PI * i) / (n - 1)));
+      win[i] = v;
+      sum += v;
+    }
+    return { win, sum };
+  }
+
+  const AF_BIT_REV = buildBitRevTable(AF_FFT_SIZE);
+  const AF_HANN = buildHannWindow(AF_FFT_SIZE);
 
   /**
    * Browser Web Audio receiver engine supporting K4 PCM (EM0/EM1) and WebCodecs Opus (EM2/EM3),
@@ -141,6 +222,33 @@
       // Lazy Opus decoder instance
       this._opusDecoder = null;
       this._opusUnsupportedWarned = false;
+
+      // AF Passband 0..3.2 kHz FFT tap & stereo PCM16 .wav recorder
+      this._fftRing = new Float32Array(AF_FFT_SIZE);
+      this._fftWriteIdx = 0;
+      this._fftFilled = 0;
+      this._fftRe = new Float32Array(AF_FFT_SIZE);
+      this._fftIm = new Float32Array(AF_FFT_SIZE);
+      this._afBinsDb = new Float32Array(AF_FFT_SIZE >> 1).fill(-110);
+      this._afHasComputed = false;
+      this._tapMixOpts = {
+        gainA: 1,
+        gainB: 1,
+        subRxEnabled: false,
+        muted: false,
+        balance: 0,
+        mixMode: 'A.B',
+      };
+      this._tapMixScratch = { left: 0, right: 0 };
+
+      this._recActive = false;
+      this._recStartMs = 0;
+      this._recMeta = {};
+      this._recChunks = [];
+      this._recCurChunk = null;
+      this._recCurIdx = 0;
+      this._recTotalFrames = 0;
+      this._lastRecordedClip = null;
     }
 
     _readSnapshot(stateObj) {
@@ -519,7 +627,9 @@
         if (!K4.PcmDecoder) return;
         const decoded = K4.PcmDecoder.decode(audioPkt);
         if (decoded && decoded.left && decoded.left.length > 0) {
-          this._resampleAndEnqueue(decoded.left, decoded.right, decoded.sampleRate || 12000);
+          const sr = decoded.sampleRate || AF_TAP_SAMPLE_RATE;
+          this._tapDecodedStereo(decoded.left, decoded.right, sr);
+          this._resampleAndEnqueue(decoded.left, decoded.right, sr);
         }
         return;
       }
@@ -535,7 +645,9 @@
         if (!this._opusDecoder) {
           this._opusDecoder = new K4.OpusPacketDecoder({
             onOutput: ({ left, right, sampleRate }) => {
-              this._resampleAndEnqueue(left, right, sampleRate || 48000);
+              const sr = sampleRate || 48000;
+              this._tapDecodedStereo(left, right, sr);
+              this._resampleAndEnqueue(left, right, sr);
             },
             onError: (err) => this.emit('error', err),
           });
@@ -784,6 +896,210 @@
       };
     }
 
+    _tapDecodedStereo(leftSrc, rightSrc, srcRate) {
+      if (!leftSrc || !rightSrc) return;
+      const len = Math.min(leftSrc.length, rightSrc.length);
+      if (len <= 0) return;
+      const stride = Math.max(1, Math.round((srcRate || AF_TAP_SAMPLE_RATE) / AF_TAP_SAMPLE_RATE));
+
+      const opts = this._tapMixOpts;
+      opts.gainA = this._gainA;
+      opts.gainB = this._gainB;
+      opts.subRxEnabled = this._subRxEnabled;
+      opts.muted = false; // Scope & recorder capture post-mix AF regardless of local mute
+      opts.balance = this._balance;
+      opts.mixMode = this._mixMode;
+
+      const mixFn = K4.mixStereoSample;
+      const sc = this._tapMixScratch;
+
+      for (let i = 0; i < len; i += stride) {
+        const m = leftSrc[i];
+        const s = rightSrc[i];
+        let outL;
+        let outR;
+        if (mixFn) {
+          mixFn(m, s, opts, sc);
+          outL = sc.left;
+          outR = sc.right;
+        } else {
+          outL = m * this._gainA;
+          outR = this._subRxEnabled ? s * this._gainB : outL;
+        }
+
+        const mono = 0.5 * (outL + outR);
+        this._fftRing[this._fftWriteIdx] = mono;
+        this._fftWriteIdx = (this._fftWriteIdx + 1) % AF_FFT_SIZE;
+        if (this._fftFilled < AF_FFT_SIZE) {
+          this._fftFilled += 1;
+        }
+
+        if (this._recActive) {
+          if (this._recTotalFrames >= AF_TAP_SAMPLE_RATE * MAX_RECORD_SECONDS) {
+            this.stopRecording();
+          } else {
+            if (!this._recCurChunk || this._recCurIdx >= this._recCurChunk.length) {
+              if (this._recCurChunk && this._recCurIdx > 0) {
+                this._recChunks.push(this._recCurChunk.subarray(0, this._recCurIdx));
+              }
+              this._recCurChunk = new Int16Array(AF_TAP_SAMPLE_RATE * 2);
+              this._recCurIdx = 0;
+            }
+            const lClamped = clamp(outL, -1, 1);
+            const rClamped = clamp(outR, -1, 1);
+            this._recCurChunk[this._recCurIdx++] = Math.round(lClamped * 32767);
+            this._recCurChunk[this._recCurIdx++] = Math.round(rClamped * 32767);
+            this._recTotalFrames += 1;
+          }
+        }
+      }
+    }
+
+    /**
+     * Compute smoothed 0..maxHz AF passband FFT spectrum in dBFS directly from decoded audio.
+     * Works identically in live browser sessions and headless tests when AudioContext is suspended.
+     * @param {number} [maxHz=3200]
+     * @returns {{ binsDb: Float32Array, binHz: number, sampleRate: number, maxHz: number, hasSignal: boolean }}
+     */
+    getAfSpectrum(maxHz = 3200) {
+      const binHz = AF_TAP_SAMPLE_RATE / AF_FFT_SIZE;
+      const numBins = Math.max(4, Math.min(AF_FFT_SIZE >> 1, Math.ceil((maxHz || 3200) / binHz) + 1));
+
+      if (this._fftFilled < 64) {
+        return {
+          binsDb: this._afBinsDb.subarray(0, numBins),
+          binHz,
+          sampleRate: AF_TAP_SAMPLE_RATE,
+          maxHz: maxHz || 3200,
+          hasSignal: false,
+        };
+      }
+
+      const re = this._fftRe;
+      const im = this._fftIm;
+      const win = AF_HANN.win;
+      const ring = this._fftRing;
+      const start = (this._fftWriteIdx - AF_FFT_SIZE + AF_FFT_SIZE) % AF_FFT_SIZE;
+
+      for (let i = 0; i < AF_FFT_SIZE; i++) {
+        const idx = AF_BIT_REV[i];
+        const sample = ring[(start + i) % AF_FFT_SIZE];
+        re[idx] = sample * win[i];
+        im[idx] = 0;
+      }
+
+      for (let size = 2; size <= AF_FFT_SIZE; size <<= 1) {
+        const half = size >> 1;
+        const angle = (-2 * Math.PI) / size;
+        const wStepRe = Math.cos(angle);
+        const wStepIm = Math.sin(angle);
+        for (let i = 0; i < AF_FFT_SIZE; i += size) {
+          let wRe = 1;
+          let wIm = 0;
+          for (let j = 0; j < half; j++) {
+            const k0 = i + j;
+            const k1 = k0 + half;
+            const tRe = wRe * re[k1] - wIm * im[k1];
+            const tIm = wRe * im[k1] + wIm * re[k1];
+            re[k1] = re[k0] - tRe;
+            im[k1] = im[k0] - tIm;
+            re[k0] += tRe;
+            im[k0] += tIm;
+            const nextWRe = wRe * wStepRe - wIm * wStepIm;
+            wIm = wRe * wStepIm + wIm * wStepRe;
+            wRe = nextWRe;
+          }
+        }
+      }
+
+      const norm = 2 / AF_HANN.sum;
+      for (let k = 0; k < numBins; k++) {
+        const mag = Math.hypot(re[k], im[k]) * norm;
+        const db = clamp(20 * Math.log10(Math.max(1e-6, mag)), -110, 0);
+        if (!this._afHasComputed) {
+          this._afBinsDb[k] = db;
+        } else {
+          const alpha = db > this._afBinsDb[k] ? 0.65 : 0.25;
+          this._afBinsDb[k] = this._afBinsDb[k] * (1 - alpha) + db * alpha;
+        }
+      }
+      this._afHasComputed = true;
+
+      return {
+        binsDb: this._afBinsDb.subarray(0, numBins),
+        binHz,
+        sampleRate: AF_TAP_SAMPLE_RATE,
+        maxHz: maxHz || 3200,
+        hasSignal: true,
+      };
+    }
+
+    isRecording() {
+      return this._recActive;
+    }
+
+    getRecordingStatus() {
+      return {
+        recording: this._recActive,
+        durationSec: this._recTotalFrames / AF_TAP_SAMPLE_RATE,
+        sampleRate: AF_TAP_SAMPLE_RATE,
+        totalFrames: this._recTotalFrames,
+        lastClip: this._lastRecordedClip,
+      };
+    }
+
+    startRecording(meta = {}) {
+      this._recActive = true;
+      this._recStartMs = Date.now();
+      this._recMeta = meta && typeof meta === 'object' ? Object.assign({}, meta) : {};
+      this._recChunks = [];
+      this._recCurChunk = new Int16Array(AF_TAP_SAMPLE_RATE * 2);
+      this._recCurIdx = 0;
+      this._recTotalFrames = 0;
+      const status = this.getRecordingStatus();
+      this.emit('recording', status);
+      return status;
+    }
+
+    stopRecording() {
+      if (!this._recActive) {
+        return this._lastRecordedClip;
+      }
+      this._recActive = false;
+      if (this._recCurChunk && this._recCurIdx > 0) {
+        this._recChunks.push(this._recCurChunk.subarray(0, this._recCurIdx));
+      }
+      this._recCurChunk = null;
+      this._recCurIdx = 0;
+
+      const wavBytes = encodeWavPcm16(this._recChunks, this._recTotalFrames, AF_TAP_SAMPLE_RATE, 2);
+      this._recChunks = [];
+      const durationSec = Math.round((this._recTotalFrames / AF_TAP_SAMPLE_RATE) * 100) / 100;
+      const blob =
+        typeof globalThis.Blob === 'function'
+          ? new globalThis.Blob([wavBytes], { type: 'audio/wav' })
+          : null;
+      const freqMHz = Number.isFinite(this._recMeta.freqHz)
+        ? (this._recMeta.freqHz / 1000000).toFixed(3)
+        : 'rx';
+      const modeTag = String(this._recMeta.modeLabel || 'k4')
+        .toLowerCase()
+        .replace(/[^a-z0-9-]+/g, '');
+      const filename = `k4-${freqMHz}MHz-${modeTag || 'audio'}.wav`;
+
+      this._lastRecordedClip = {
+        wavBytes,
+        blob,
+        durationSec,
+        sampleRate: AF_TAP_SAMPLE_RATE,
+        channels: 2,
+        totalFrames: this._recTotalFrames,
+        filename,
+      };
+      this.emit('recording', this.getRecordingStatus());
+      return this._lastRecordedClip;
+    }
+
     stop() {
       if (this._workletNode) {
         try {
@@ -829,4 +1145,5 @@
 
   K4.AudioEngine = AudioEngine;
   K4.SL_TARGET_MS = SL_TARGET_MS;
+  K4.encodeWavPcm16 = encodeWavPcm16;
 })();

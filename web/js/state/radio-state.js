@@ -67,10 +67,26 @@
       panTierKHz: 48,
       noiseFloorDbm: -120,
       adcOverflow: false,
+      cor: false,
+      panNbMode: 0,
+      panNbLevel: 0,
       ifCenterHz: null,
       ritOn: false,
       ritOffsetHz: 0,
       band: bandForFreq(defaultFreqHz),
+    };
+  }
+
+  function createDefaultTelemetry() {
+    return {
+      supplyVolts: null,
+      supplyAmps: null,
+      fpTempC: null,
+      cpuTempC: null,
+      paTempC: null,
+      lpaTempC: null,
+      dapTempC: null,
+      updatedAt: null,
     };
   }
 
@@ -104,12 +120,16 @@
       panAvg: 4,
       dualPanMode: 0,
       panFrozen: false,
+      panFps: 20,
+      displayMode: 1,
+      waterfallHeightPct: 60,
       fixedTune: false,
       hasSubRx: true,
       optionModules: '',
       audioMix: 'A.B',
       encodeMode: 1,
       streamingLatency: 2,
+      telemetry: createDefaultTelemetry(),
       decodedText: [],
       band: rxA.band,
     };
@@ -127,8 +147,9 @@
         if (initial.rxA) Object.assign(this._state.rxA, initial.rxA);
         if (initial.rxB) Object.assign(this._state.rxB, initial.rxB);
         if (initial.connection) Object.assign(this._state.connection, initial.connection);
+        if (initial.telemetry) Object.assign(this._state.telemetry, initial.telemetry);
         for (const k of Object.keys(initial)) {
-          if (k !== 'rxA' && k !== 'rxB' && k !== 'connection' && k !== 'decodedText') {
+          if (k !== 'rxA' && k !== 'rxB' && k !== 'connection' && k !== 'telemetry' && k !== 'decodedText') {
             this._state[k] = initial[k];
           }
         }
@@ -166,12 +187,16 @@
         panAvg: this._state.panAvg,
         dualPanMode: this._state.dualPanMode,
         panFrozen: this._state.panFrozen,
+        panFps: this._state.panFps,
+        displayMode: this._state.displayMode,
+        waterfallHeightPct: this._state.waterfallHeightPct,
         fixedTune: this._state.fixedTune,
         hasSubRx: this._state.hasSubRx,
         optionModules: this._state.optionModules,
         audioMix: this._state.audioMix,
         encodeMode: this._state.encodeMode,
         streamingLatency: this._state.streamingLatency,
+        telemetry: Object.assign({}, this._state.telemetry),
         decodedText: this._state.decodedText.slice(),
         band: this._state.band,
       };
@@ -509,7 +534,19 @@
         }
 
         case 'adcOverflow':
-          this.updateRx(parsed.rx, { adcOverflow: parsed.adcOverflow }, `${rxKey}.adcOverflow`);
+          this.updateRx(
+            parsed.rx,
+            { adcOverflow: Boolean(parsed.adcOverflow), cor: Boolean(parsed.cor) },
+            `${rxKey}.adcOverflow`
+          );
+          return true;
+
+        case 'panNb':
+          this.updateRx(parsed.rx, { panNbMode: parsed.panNbMode }, `${rxKey}.panNbMode`);
+          return true;
+
+        case 'panNbLevel':
+          this.updateRx(parsed.rx, { panNbLevel: parsed.panNbLevel }, `${rxKey}.panNbLevel`);
           return true;
 
         case 'ifCenter':
@@ -533,6 +570,48 @@
           this._state.panFrozen = parsed.panFrozen;
           this._emitChange('panFrozen');
           return true;
+
+        case 'panFps':
+          this._state.panFps = parsed.panFps;
+          this._emitChange('panFps');
+          return true;
+
+        case 'displayMode':
+          this._state.displayMode = parsed.displayMode;
+          this._emitChange('displayMode');
+          return true;
+
+        case 'waterfallHeight':
+          this._state.waterfallHeightPct = parsed.waterfallHeightPct;
+          this._emitChange('waterfallHeightPct');
+          return true;
+
+        case 'systemInfo': {
+          const t = this._state.telemetry;
+          const f = parsed.fields || {};
+          let changed = false;
+          if (parsed.module === 'FP') {
+            if (Number.isFinite(f.VS)) { t.supplyVolts = f.VS; changed = true; }
+            if (Number.isFinite(f.IS)) { t.supplyAmps = f.IS; changed = true; }
+            if (Number.isFinite(f.TF)) { t.fpTempC = f.TF; changed = true; }
+          } else if (parsed.module === 'CP') {
+            const temps = [f.T1, f.T2, f.T4].filter((v) => Number.isFinite(v));
+            if (temps.length > 0) {
+              t.cpuTempC = Math.max(...temps);
+              changed = true;
+            }
+          } else if (parsed.module === 'RF') {
+            if (Number.isFinite(f.PT)) { t.paTempC = f.PT; changed = true; }
+            if (Number.isFinite(f.LT)) { t.lpaTempC = f.LT; changed = true; }
+          } else if (parsed.module === 'DA') {
+            if (Number.isFinite(f.T)) { t.dapTempC = f.T; changed = true; }
+          }
+          if (changed) {
+            t.updatedAt = Date.now();
+            this._emitChange('telemetry');
+          }
+          return changed;
+        }
 
         case 'radioId':
           this.updateConnection({ radioId: parsed.id });

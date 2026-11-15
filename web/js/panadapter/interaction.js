@@ -101,7 +101,10 @@
         const topInset = K4._measureHudTopInset
           ? K4._measureHudTopInset(this.surface.parentElement, h)
           : 0;
-        layouts = K4._computePanLayouts(w, h, frame.dualPanMode || 0, topInset);
+        layouts = K4._computePanLayouts(w, h, frame.dualPanMode || 0, topInset, {
+          displayMode: snapshot.displayMode,
+          waterfallHeightPct: snapshot.waterfallHeightPct,
+        });
       }
       if (!layouts || layouts.length === 0) return null;
 

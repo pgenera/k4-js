@@ -1650,7 +1650,7 @@
   color: var(--text-primary);
   font-size: 12px;
   box-shadow: var(--shadow-hud);
-  pointer-events: auto;
+  pointer-events: none;
 }
 
 .k4-toast[data-level="error"],
@@ -1665,4 +1665,161 @@
 
 .k4-toast[data-level="warn"] {
   border-color: var(--accent-vfo-b-border);
+}
+
+[hidden] {
+  display: none !important;
+}
+
+.k4-smeter-ovf {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  margin-right: 6px;
+  border-radius: 4px;
+  border: 1px solid var(--accent-danger-border);
+  background: var(--accent-danger-soft);
+  color: #FFE4E6;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+}
+
+.k4-vfo-rit-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  border-radius: 4px;
+  border: 1px solid var(--accent-rx-only-border);
+  background: var(--accent-rx-only-soft);
+  color: #A7F3D0;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.k4-btn-secondary {
+  height: 32px;
+  padding: 0 11px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-medium);
+  background: rgba(30, 41, 59, 0.85);
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.k4-btn-secondary:hover {
+  border-color: var(--accent-vfo-a-border);
+  background: rgba(56, 189, 248, 0.14);
+}
+
+.k4-btn-secondary.is-recording {
+  border-color: var(--accent-danger-border);
+  background: var(--accent-danger-soft);
+  color: #FFE4E6;
+}
+
+.k4-mono-sm {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
+}
+
+.k4-af-scope-canvas {
+  width: 100%;
+  height: 96px;
+  display: block;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-hairline);
+  background: #070A10;
+  margin-bottom: 8px;
+}
+
+.k4-wav-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.k4-rit-quick-row {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 4px;
+  margin: 4px 0 8px;
+}
+
+.k4-bookmark-form {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.k4-bookmark-form .k4-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 32px;
+  padding: 0 8px;
+  font-size: 12px;
+}
+
+.k4-bookmark-list {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  max-height: 190px;
+  overflow-y: auto;
+}
+
+.k4-bookmark-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.k4-bookmark-recall {
+  flex: 1 1 auto;
+  min-width: 0;
+  text-align: left;
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-hairline);
+  background: rgba(15, 23, 42, 0.65);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+
+.k4-bookmark-recall:hover {
+  border-color: var(--accent-vfo-a-border);
+  background: rgba(56, 189, 248, 0.12);
+}
+
+.k4-bookmark-del {
+  flex: 0 0 auto;
+  width: 26px;
+  height: 26px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-hairline);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.k4-bookmark-del:hover {
+  border-color: var(--accent-danger-border);
+  background: var(--accent-danger-soft);
+  color: #FFE4E6;
 }

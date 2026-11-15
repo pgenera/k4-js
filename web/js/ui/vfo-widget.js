@@ -252,6 +252,13 @@
       });
       this.pillsEl.appendChild(this.bwBtn);
 
+      this.ritBadge = document.createElement('span');
+      this.ritBadge.className = 'k4-vfo-rit-badge';
+      this.ritBadge.dataset.testid = `vfo-${this.rx}-rit-badge`;
+      this.ritBadge.textContent = 'RIT';
+      this.ritBadge.hidden = true;
+      this.pillsEl.appendChild(this.ritBadge);
+
       this.lockBtn = document.createElement('button');
       this.lockBtn.type = 'button';
       this.lockBtn.className = 'k4-mini-pill k4-vfo-lock';
@@ -355,6 +362,16 @@
       if (this._lastCache.bw !== bwLabel) {
         this._lastCache.bw = bwLabel;
         this.bwBtn.textContent = bwLabel;
+      }
+
+      const ritOn = Boolean(rxState.ritOn);
+      const ritHz = Math.round(Number(rxState.ritOffsetHz) || 0);
+      const ritText = ritHz === 0 ? 'RIT 0' : `RIT ${ritHz > 0 ? `+${ritHz}` : ritHz}`;
+      if (this._lastCache.ritOn !== ritOn || this._lastCache.ritText !== ritText) {
+        this._lastCache.ritOn = ritOn;
+        this._lastCache.ritText = ritText;
+        this.ritBadge.hidden = !ritOn;
+        this.ritBadge.textContent = ritText;
       }
     }
   }

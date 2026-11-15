@@ -202,7 +202,8 @@
       cmdUpper === 'BG' ||
       cmdUpper === 'PP' ||
       cmdUpper === 'PP1' ||
-      /^PP\d{2}$/.test(cmdUpper)
+      /^PP\d{2}$/.test(cmdUpper) ||
+      /^SI(?:FP|RF|DA|DD|DU|RC)[01]$/.test(cmdUpper)
     ) {
       return { allowed: true, reason: null };
     }

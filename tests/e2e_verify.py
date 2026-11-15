@@ -367,17 +367,32 @@ def connect_via_ui(client: MarionetteClient, ws_url: str, password: str):
     client.clear_and_type('[data-testid="password-input"]', password)
     client.click_element(client.find_element('[data-testid="connect-submit"]'))
 
-    wait_until(
-        lambda: client.execute_script(
+    try:
+        wait_until(
+            lambda: client.execute_script(
+                """
+                const btn = document.querySelector('[data-testid="conn-btn"]');
+                const snap = globalThis.k4App && globalThis.k4App.state.getSnapshot();
+                return btn && btn.dataset.status === 'connected' &&
+                       snap && snap.connection.authStatus === 'authenticated';
+                """
+            ),
+            "authenticated WebSocket connection",
+        )
+    except AssertionError as e:
+        diag = client.execute_script(
             """
-            const btn = document.querySelector('[data-testid="conn-btn"]');
             const snap = globalThis.k4App && globalThis.k4App.state.getSnapshot();
-            return btn && btn.dataset.status === 'connected' &&
-                   snap && snap.connection.authStatus === 'authenticated';
+            return {
+              wsInput: document.querySelector('[data-testid="ws-url-input"]')?.value,
+              btnStatus: document.querySelector('[data-testid="conn-btn"]')?.dataset.status,
+              connection: snap ? snap.connection : null,
+              metrics: globalThis.k4App && globalThis.k4App.client.getMetrics(),
+            };
             """
-        ),
-        "authenticated WebSocket connection",
-    )
+        )
+        errs = client.collect_console_errors()
+        raise AssertionError(f"{e} | diag={diag} | console={errs}") from None
 
 
 def run_browser_unit_tests(client: MarionetteClient):
@@ -532,6 +547,134 @@ def run_file_origin_e2e(client: MarionetteClient, ws_url: str, password: str, st
         ),
         "TB$ decoded text ticker contains 'CQ DE W6ELE K ; 73 ;'",
     )
+
+    # Item 2 Telemetry (SI*: supplyVolts + paTempC + Observatory diag readout)
+    client.execute_script("globalThis.k4App.inspector.selectDesktopTab('audio');")
+    wait_until(
+        lambda: client.execute_script(
+            """
+            const snap = globalThis.k4App.state.getSnapshot();
+            const supEl = document.querySelector('[data-testid="diag-supply"]');
+            return snap.telemetry && snap.telemetry.supplyVolts > 12 &&
+                   snap.telemetry.paTempC > 20 &&
+                   supEl && supEl.textContent.includes('V');
+            """
+        ),
+        "SI* telemetry hydrated into RadioState and Inspector diag-supply",
+    )
+
+    # Item 1 RIT (RT / RO / RC) + VFO Badge
+    client.execute_script("globalThis.k4App.client.setRit('A', { on: true, offsetHz: 150 });")
+    wait_until(
+        lambda: client.execute_script(
+            """
+            const b = document.querySelector('[data-testid="vfo-A-rit-badge"]');
+            return b && !b.hidden && b.textContent.includes('+150');
+            """
+        ),
+        "VFO A RIT badge displays +150 when enabled",
+    )
+    client.execute_script("globalThis.k4App.client.clearRit('A');")
+    wait_until(
+        lambda: client.execute_script("return globalThis.k4App.state.getSnapshot().rxA.ritOffsetHz === 0;"),
+        "RC clears VFO A RIT offset to 0",
+    )
+    client.execute_script("globalThis.k4App.client.setRit('A', { on: false });")
+
+    # Item 1 ADC Overflow (PA21;RA000;RG00;OV;) + S-meter OVF badge
+    client.execute_script("globalThis.k4App.client.sendCat('PA21;RA000;RG00;OV;');")
+    wait_until(
+        lambda: client.execute_script(
+            """
+            const b = document.querySelector('[data-testid="smeter-ovf-badge"]');
+            return b && !b.hidden && globalThis.k4App.state.getSnapshot().rxA.adcOverflow === true;
+            """
+        ),
+        "ADC Overflow OVF badge becomes visible on PA21",
+    )
+    client.execute_script("globalThis.k4App.client.sendCat('PA00;OV;');")
+    wait_until(
+        lambda: client.execute_script(
+            """
+            const b = document.querySelector('[data-testid="smeter-ovf-badge"]');
+            return b && b.hidden && globalThis.k4App.state.getSnapshot().rxA.adcOverflow === false;
+            """
+        ),
+        "ADC Overflow OVF badge clears on PA00",
+    )
+
+    # Item 1 Panadapter Freeze (#FRZ) HUD toggle & Display Mode (#DSM)
+    client.click_element(client.find_element('[data-testid="hud-freeze-btn"]'))
+    wait_until(
+        lambda: client.execute_script(
+            """
+            const btn = document.querySelector('[data-testid="hud-freeze-btn"]');
+            return globalThis.k4App.state.getSnapshot().panFrozen === true && btn && btn.textContent === 'Frozen';
+            """
+        ),
+        "HUD Freeze button freezes panadapter (#FRZ1)",
+    )
+    client.click_element(client.find_element('[data-testid="hud-freeze-btn"]'))
+    wait_until(
+        lambda: client.execute_script("return globalThis.k4App.state.getSnapshot().panFrozen === false;"),
+        "HUD Freeze button unfreezes panadapter (#FRZ0)",
+    )
+
+    client.execute_script("globalThis.k4App.client.setDisplay('A', { displayMode: 0 });")
+    wait_until(
+        lambda: client.execute_script("return globalThis.k4App.state.getSnapshot().displayMode === 0;"),
+        "Display mode switches to Spectrum Only (#DSM0)",
+    )
+    client.execute_script("globalThis.k4App.client.setDisplay('A', { displayMode: 1 });")
+    wait_until(
+        lambda: client.execute_script("return globalThis.k4App.state.getSnapshot().displayMode === 1;"),
+        "Display mode restores Spec + WF (#DSM1)",
+    )
+
+    # Item 2 AF Scope & Stereo 16-bit PCM .wav Clip Recorder
+    client.execute_script("globalThis.k4App.audio.startRecording();")
+    wait_until(
+        lambda: client.execute_script("return globalThis.k4App.audio.getRecordingStatus().totalFrames > 1000;"),
+        "AudioEngine records live k4sim PCM frames",
+    )
+    af_res = client.execute_script(
+        """
+        const rec = globalThis.k4App.audio.stopRecording();
+        const spec = globalThis.k4App.audio.getAfSpectrum(3200);
+        const hasCanvas = Boolean(document.querySelector('[data-testid="af-scope-canvas"]'));
+        return {
+          bytes: rec && rec.wavBytes ? rec.wavBytes.byteLength : 0,
+          bins: spec && spec.binsDb ? spec.binsDb.length : 0,
+          hasCanvas,
+        };
+        """
+    )
+    assert af_res["bytes"] > 4000, f"Expected WAV bytes > 4000, got {af_res}"
+    assert af_res["bins"] > 20, f"Expected AF FFT bins > 20, got {af_res}"
+    assert af_res["hasCanvas"] is True, f"AF Scope canvas missing: {af_res}"
+
+    # Item 2 Bookmarks CRUD + recall via UI
+    client.execute_script("globalThis.k4App.inspector.selectDesktopTab('band-mode');")
+    client.clear_and_type('[data-testid="bookmark-label-input"]', "40m E2E")
+    client.click_element(client.find_element('[data-testid="bookmark-save-btn"]'))
+    wait_until(
+        lambda: client.execute_script(
+            "const l = document.querySelector('[data-testid=\"bookmark-list\"]'); return l && l.textContent.includes('40m E2E');"
+        ),
+        "Saved 40m E2E bookmark appears in list",
+    )
+    client.execute_script("globalThis.k4App.client.tune('A', 14074000);")
+    wait_until(lambda: http_get_json(stats_url)["faHz"] == 14074000, "Moved VFO A away before bookmark recall")
+    client.execute_script(
+        """
+        const btns = Array.from(document.querySelectorAll('.k4-bookmark-recall'));
+        const target = btns.find((b) => b.textContent.includes('40m E2E'));
+        if (!target) throw new Error('40m E2E bookmark button not found');
+        target.click();
+        """
+    )
+    wait_until(lambda: http_get_json(stats_url)["faHz"] == 7074000, "Bookmark recall returns VFO A to 7074000 Hz")
+    client.execute_script("K4.BookmarkStore.resetDefaults();")
 
     # Verify RxOnlyGate blocks TX commands locally and simulator sees 0 TX violations
     gate_res = client.execute_script(

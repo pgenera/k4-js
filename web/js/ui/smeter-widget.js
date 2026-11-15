@@ -48,6 +48,14 @@
       this.titleEl.textContent = 'S-METER';
       head.appendChild(this.titleEl);
 
+      this.ovfBadge = document.createElement('span');
+      this.ovfBadge.className = 'k4-smeter-ovf';
+      this.ovfBadge.dataset.testid = 'smeter-ovf-badge';
+      this.ovfBadge.textContent = 'OVF';
+      this.ovfBadge.title = 'ADC Overflow';
+      this.ovfBadge.hidden = true;
+      head.appendChild(this.ovfBadge);
+
       this.dbmEl = document.createElement('span');
       this.dbmEl.className = 'k4-smeter-dbm';
       this.dbmEl.dataset.testid = 'smeter-dbm';
@@ -97,7 +105,8 @@
       const rxA = snapshot.rxA || {};
       const rxB = snapshot.rxB || {};
       const useSubPrimary = targetRx === 'B' && snapshot.subRxEnabled;
-      const primaryDbm = Number((useSubPrimary ? rxB : rxA).sMeterDbm);
+      const primaryRx = useSubPrimary ? rxB : rxA;
+      const primaryDbm = Number(primaryRx.sMeterDbm);
       const dbm = Number.isFinite(primaryDbm) ? primaryDbm : -115;
 
       const now = performance.now();
@@ -119,6 +128,11 @@
         this.fillEl.style.width = `${pct}%`;
       }
       this.peakEl.style.left = `${peakPct}%`;
+
+      const ovf = Boolean(primaryRx.adcOverflow);
+      if (this.ovfBadge && this.ovfBadge.hidden !== !ovf) {
+        this.ovfBadge.hidden = !ovf;
+      }
 
       const label = `${formatSUnit(dbm)} · ${Math.round(dbm)} dBm`;
       if (this._lastText !== label) {

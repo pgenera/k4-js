@@ -130,6 +130,7 @@
 
     return {
       row,
+      input,
       sync(nextVal) {
         const num = Number(nextVal);
         if (!Number.isFinite(num)) return;
@@ -353,6 +354,19 @@
       });
       rxCard.appendChild(linkRow.row);
       this._refs.linkSwitch = linkRow;
+
+      const divRow = makeSwitchRow('Diversity RX (DV)', () => {
+        const next = !this._snap().diversityEnabled;
+        if (typeof this.client.setDiversity === 'function') {
+          this.client.setDiversity(next);
+        } else {
+          this._sendCat(`DV${next ? '1' : '0'};`);
+        }
+      }, true);
+      divRow.btn.dataset.testid = 'diversity-switch';
+      rxCard.appendChild(divRow.row);
+      this._refs.divSwitch = divRow;
+
       pane.appendChild(rxCard);
 
       // Band Grid
@@ -413,6 +427,39 @@
       }
       stepCard.appendChild(stepGrid);
       pane.appendChild(stepCard);
+
+      // Frequency Bookmarks
+      const bmCard = makeCard('Frequency Bookmarks');
+      const bmForm = el('div', 'k4-bookmark-form');
+      const bmInput = document.createElement('input');
+      bmInput.type = 'text';
+      bmInput.className = 'k4-input';
+      bmInput.placeholder = 'Label (e.g. 20m DX)...';
+      bmInput.dataset.testid = 'bookmark-label-input';
+      const bmSaveBtn = el('button', 'k4-btn-secondary', '+ Save VFO');
+      bmSaveBtn.type = 'button';
+      bmSaveBtn.dataset.testid = 'bookmark-save-btn';
+      bmSaveBtn.addEventListener('click', () => this._saveCurrentBookmark());
+      bmInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          this._saveCurrentBookmark();
+        }
+      });
+      bmForm.appendChild(bmInput);
+      bmForm.appendChild(bmSaveBtn);
+      bmCard.appendChild(bmForm);
+
+      const bmList = el('div', 'k4-bookmark-list');
+      bmList.dataset.testid = 'bookmark-list';
+      bmCard.appendChild(bmList);
+      this._refs.bookmarkInput = bmInput;
+      this._refs.bookmarkList = bmList;
+      this._renderBookmarkList();
+      if (K4.BookmarkStore && typeof K4.BookmarkStore.subscribe === 'function') {
+        this._unsubBookmarks = K4.BookmarkStore.subscribe(() => this._renderBookmarkList());
+      }
+      pane.appendChild(bmCard);
 
       return pane;
     }
@@ -549,6 +596,25 @@
       });
       rfCard.appendChild(this._refs.rfGainSlider.row);
 
+      this._refs.squelchSlider = makeSliderRow({
+        label: 'Squelch (SQ)',
+        min: 0,
+        max: 40,
+        step: 1,
+        value: 0,
+        formatValue: (v) => `${Math.round(v)}`,
+        onChange: (v) => {
+          const rx = this.getTargetRx();
+          if (typeof this.client.setSquelch === 'function') {
+            this.client.setSquelch(rx, Math.round(v));
+          } else {
+            this._sendCat(`SQ${rx === 'B' ? '$' : ''}${String(Math.round(v)).padStart(3, '0')};`);
+          }
+        },
+      });
+      this._refs.squelchSlider.input.dataset.testid = 'squelch-slider';
+      rfCard.appendChild(this._refs.squelchSlider.row);
+
       rfCard.appendChild(el('span', 'k4-slider-label', 'AGC (GT)'));
       const agcGroup = el('div', 'k4-seg-group');
       this._refs.agcBtns = {};
@@ -670,6 +736,70 @@
       dspCard.appendChild(this._refs.nmSlider.row);
 
       pane.appendChild(dspCard);
+
+      const ritApfCard = makeCard('RIT & CW Peaking');
+      this._refs.ritSwitch = makeSwitchRow('RIT (RT)', () => {
+        const rx = this.getTargetRx();
+        const s = this._rxSnap(rx);
+        this.client.setRit(rx, { on: !s.ritOn });
+      });
+      this._refs.ritSwitch.btn.dataset.testid = 'rit-switch';
+      ritApfCard.appendChild(this._refs.ritSwitch.row);
+
+      this._refs.ritOffsetSlider = makeSliderRow({
+        label: 'RIT Offset (RO)',
+        min: -3000,
+        max: 3000,
+        step: 10,
+        value: 0,
+        formatValue: (v) => `${v > 0 ? '+' : ''}${Math.round(v)} Hz`,
+        onChange: (v) => this.client.setRit(this.getTargetRx(), { offsetHz: Math.round(v) }),
+      });
+      this._refs.ritOffsetSlider.input.dataset.testid = 'rit-offset-slider';
+      ritApfCard.appendChild(this._refs.ritOffsetSlider.row);
+
+      const ritQuick = el('div', 'k4-rit-quick-row');
+      const ritDeltas = [-50, -10, 0, 10, 50];
+      for (let i = 0; i < ritDeltas.length; i++) {
+        const delta = ritDeltas[i];
+        const btn = el('button', 'k4-seg-btn', delta === 0 ? 'Clear (RC)' : `${delta > 0 ? '+' : ''}${delta}`);
+        btn.type = 'button';
+        if (delta === 0) {
+          btn.dataset.testid = 'rit-clear-btn';
+          btn.addEventListener('click', () => this.client.clearRit(this.getTargetRx()));
+        } else {
+          btn.addEventListener('click', () => {
+            const rx = this.getTargetRx();
+            const s = this._rxSnap(rx);
+            this.client.setRit(rx, { offsetHz: (s.ritOffsetHz || 0) + delta });
+          });
+        }
+        ritQuick.appendChild(btn);
+      }
+      ritApfCard.appendChild(ritQuick);
+
+      this._refs.apfSwitch = makeSwitchRow('CW Audio Peak Filter (AP)', () => {
+        const rx = this.getTargetRx();
+        const s = this._rxSnap(rx);
+        this.client.setApf(rx, { on: !s.apfOn });
+      });
+      this._refs.apfSwitch.btn.dataset.testid = 'apf-switch';
+      ritApfCard.appendChild(this._refs.apfSwitch.row);
+
+      ritApfCard.appendChild(el('span', 'k4-slider-label', 'CW APF Width'));
+      const apfSeg = el('div', 'k4-seg-group');
+      const apfWidths = ['30 Hz', '50 Hz', '150 Hz'];
+      this._refs.apfBwBtns = [];
+      for (let i = 0; i < apfWidths.length; i++) {
+        const b = el('button', 'k4-seg-btn', apfWidths[i]);
+        b.type = 'button';
+        b.dataset.apfBw = String(i);
+        b.addEventListener('click', () => this.client.setApf(this.getTargetRx(), { bwIdx: i }));
+        apfSeg.appendChild(b);
+        this._refs.apfBwBtns.push(b);
+      }
+      ritApfCard.appendChild(apfSeg);
+      pane.appendChild(ritApfCard);
 
       const tdCard = makeCard('CW / DATA Text Decode (TD)');
       const tdRow = el('div', 'k4-decode-row');
@@ -848,6 +978,56 @@
       });
       spanCard.appendChild(this._refs.fixedTuneSwitch.row);
 
+      this._refs.freezeSwitch = makeSwitchRow('Freeze Waterfall (#FRZ)', () => {
+        const s = this._snap();
+        this.client.setDisplay(this._dispRx(s), { panFrozen: !s.panFrozen });
+      });
+      this._refs.freezeSwitch.btn.dataset.testid = 'display-freeze-switch';
+      spanCard.appendChild(this._refs.freezeSwitch.row);
+
+      this._refs.fpsSlider = makeSliderRow({
+        label: 'Frame Rate (#FPS)',
+        min: 5,
+        max: 30,
+        step: 1,
+        value: 20,
+        formatValue: (v) => `${Math.round(v)} fps`,
+        onChange: (v) => this.client.setDisplay(this._dispRx(), { panFps: Math.round(v) }),
+      });
+      this._refs.fpsSlider.input.dataset.testid = 'fps-slider';
+      spanCard.appendChild(this._refs.fpsSlider.row);
+
+      spanCard.appendChild(el('span', 'k4-slider-label', 'Pan DDC Blanker (#NB)'));
+      const panNbSeg = el('div', 'k4-seg-group');
+      const panNbModes = [
+        [0, 'Off'],
+        [1, 'On'],
+        [2, 'Auto'],
+      ];
+      this._refs.panNbBtns = [];
+      for (let i = 0; i < panNbModes.length; i++) {
+        const [val, text] = panNbModes[i];
+        const b = el('button', 'k4-seg-btn', text);
+        b.type = 'button';
+        b.dataset.panNb = String(val);
+        b.addEventListener('click', () => this.client.setDisplay(this._dispRx(), { panNbMode: val }));
+        panNbSeg.appendChild(b);
+        this._refs.panNbBtns.push(b);
+      }
+      spanCard.appendChild(panNbSeg);
+
+      this._refs.panNbLevelSlider = makeSliderRow({
+        label: 'Pan NB Level (#NBL)',
+        min: 0,
+        max: 14,
+        step: 1,
+        value: 0,
+        formatValue: (v) => `${Math.round(v)}`,
+        onChange: (v) => this.client.setDisplay(this._dispRx(), { panNbLevel: Math.round(v) }),
+      });
+      this._refs.panNbLevelSlider.input.dataset.testid = 'pan-nbl-slider';
+      spanCard.appendChild(this._refs.panNbLevelSlider.row);
+
       pane.appendChild(spanCard);
 
       const layoutCard = makeCard('Panadapter Layout & LUT');
@@ -902,6 +1082,45 @@
         this._refs.paletteBtns[p.id] = btn;
       }
       layoutCard.appendChild(palGrid);
+
+      layoutCard.appendChild(el('span', 'k4-slider-label', 'Display Mode (#DSM)'));
+      const dsmSeg = el('div', 'k4-seg-group');
+      const specWfBtn = el('button', 'k4-seg-btn', 'Spec + WF');
+      specWfBtn.type = 'button';
+      specWfBtn.dataset.testid = 'dsm-spec-wf';
+      specWfBtn.dataset.dsm = '1';
+      specWfBtn.addEventListener('click', () => {
+        const snap = this.state.getSnapshot();
+        this.client.setDisplay(this._dispRx(snap), { displayMode: 1 });
+      });
+      const specOnlyBtn = el('button', 'k4-seg-btn', 'Spectrum Only');
+      specOnlyBtn.type = 'button';
+      specOnlyBtn.dataset.testid = 'dsm-spec-only';
+      specOnlyBtn.dataset.dsm = '0';
+      specOnlyBtn.addEventListener('click', () => {
+        const snap = this.state.getSnapshot();
+        this.client.setDisplay(this._dispRx(snap), { displayMode: 0 });
+      });
+      dsmSeg.appendChild(specWfBtn);
+      dsmSeg.appendChild(specOnlyBtn);
+      layoutCard.appendChild(dsmSeg);
+      this._refs.dsmBtns = [specWfBtn, specOnlyBtn];
+
+      this._refs.wfhSlider = makeSliderRow({
+        label: 'Waterfall Split (#WFH)',
+        min: 20,
+        max: 80,
+        step: 5,
+        value: 60,
+        formatValue: (v) => `${Math.round(v)}%`,
+        onChange: (v) => {
+          const snap = this.state.getSnapshot();
+          this.client.setDisplay(this._dispRx(snap), { waterfallHeightPct: Math.round(v) });
+        },
+      });
+      this._refs.wfhSlider.input.dataset.testid = 'wfh-slider';
+      layoutCard.appendChild(this._refs.wfhSlider.row);
+
       pane.appendChild(layoutCard);
 
       return pane;
@@ -909,6 +1128,66 @@
 
     _buildAudioPane() {
       const pane = el('div', 'k4-panel-pane');
+
+      const scopeCard = makeCard('AF Passband Scope & Clip Recorder');
+      const scopeCanvas = document.createElement('canvas');
+      scopeCanvas.className = 'k4-af-scope-canvas';
+      scopeCanvas.width = 320;
+      scopeCanvas.height = 96;
+      scopeCanvas.dataset.testid = 'af-scope-canvas';
+      scopeCard.appendChild(scopeCanvas);
+      this._refs.afScopeCanvas = scopeCanvas;
+
+      const wavBar = el('div', 'k4-wav-bar');
+      const wavBtn = el('button', 'k4-btn-secondary', '● Record .wav');
+      wavBtn.type = 'button';
+      wavBtn.dataset.testid = 'wav-record-btn';
+      const wavStatus = el('span', 'k4-mono-sm', 'Ready (12 kHz Stereo PCM16)');
+      wavStatus.dataset.testid = 'wav-status';
+      const wavLink = el('a', 'k4-mini-pill', 'Download .wav');
+      wavLink.dataset.testid = 'wav-download-link';
+      wavLink.hidden = true;
+      wavLink.setAttribute('download', 'k4-clip.wav');
+
+      wavBtn.addEventListener('click', () => {
+        if (!this.audio) return;
+        if (!this.audio.isRecording()) {
+          if (this._wavBlobUrl) {
+            URL.revokeObjectURL(this._wavBlobUrl);
+            this._wavBlobUrl = null;
+          }
+          wavLink.hidden = true;
+          this.audio.startRecording();
+          wavBtn.textContent = '■ Stop .wav';
+          wavBtn.classList.add('is-recording');
+          wavStatus.textContent = 'Recording 0.0 s...';
+        } else {
+          const rec = this.audio.stopRecording();
+          wavBtn.textContent = '● Record .wav';
+          wavBtn.classList.remove('is-recording');
+          const byteLen = rec && rec.wavBytes ? rec.wavBytes.byteLength : (rec && rec.blob ? rec.blob.size : 0);
+          if (rec && rec.blob && byteLen > 0) {
+            this._wavBlobUrl = URL.createObjectURL(rec.blob);
+            wavLink.href = this._wavBlobUrl;
+            wavLink.download = rec.filename || 'k4-clip.wav';
+            wavLink.textContent = `Save ${(byteLen / 1024).toFixed(1)} KB .wav`;
+            wavLink.hidden = false;
+            wavStatus.textContent = `Captured ${rec.durationSec.toFixed(1)} s (${(byteLen / 1024).toFixed(1)} KB)`;
+          } else {
+            wavStatus.textContent = 'No audio frames captured';
+          }
+        }
+      });
+
+      wavBar.appendChild(wavBtn);
+      wavBar.appendChild(wavStatus);
+      wavBar.appendChild(wavLink);
+      scopeCard.appendChild(wavBar);
+      this._refs.wavBtn = wavBtn;
+      this._refs.wavStatus = wavStatus;
+      this._refs.wavLink = wavLink;
+      pane.appendChild(scopeCard);
+      this._startAfScopeLoop();
 
       const audioCard = makeCard('Audio Mixer & Stream');
       const muteBtn = el('button', 'k4-btn-primary', 'Start & Unmute Audio');
@@ -1026,6 +1305,9 @@
         ['bufferMs', 'Jitter Buf'],
         ['packets', 'Audio Pkts'],
         ['underruns', 'Underruns / Gaps'],
+        ['supply', 'DC Supply'],
+        ['cpuTemp', 'CPU / FP Temp'],
+        ['paTemp', 'PA / LPA Temp'],
       ];
       this._refs.diag = {};
       for (let i = 0; i < diagFields.length; i++) {
@@ -1033,6 +1315,7 @@
         const box = el('div', 'k4-kv-item');
         box.appendChild(el('div', 'k4-kv-k', label));
         const val = el('div', 'k4-kv-v', '—');
+        val.dataset.testid = `diag-${k}`;
         box.appendChild(val);
         kvGrid.appendChild(box);
         this._refs.diag[k] = val;
@@ -1188,6 +1471,192 @@
       }
     }
 
+    _saveCurrentBookmark() {
+      if (!K4.BookmarkStore || !this._refs.bookmarkInput) return;
+      const snap = this._snap();
+      const rx = this.getTargetRx();
+      const rxS = this._rxSnap(rx);
+      const rawLabel = this._refs.bookmarkInput.value.trim();
+      const label = rawLabel || `${((rxS.freqHz || 7074000) / 1e6).toFixed(4)} MHz`;
+      K4.BookmarkStore.add({
+        label,
+        freqHz: rxS.freqHz || 7074000,
+        mode: rxS.mode,
+        dataSubMode: rxS.dataSubMode || 0,
+        bwHz: rxS.bwHz,
+      });
+      this._refs.bookmarkInput.value = '';
+    }
+
+    _recallBookmark(bm) {
+      if (!bm || !this.client) return;
+      const rx = this.getTargetRx();
+      this.client.tune(rx, bm.freqHz, { optimistically: true });
+      if (bm.mode != null) {
+        this.client.setMode(rx, bm.mode, bm.dataSubMode || 0);
+      }
+      if (bm.bwHz != null && typeof this.client.setFilter === 'function') {
+        this.client.setFilter(rx, { bwHz: bm.bwHz });
+      }
+    }
+
+    _renderBookmarkList() {
+      const listEl = this._refs.bookmarkList;
+      if (!listEl || !K4.BookmarkStore) return;
+      listEl.textContent = '';
+      const bookmarks = K4.BookmarkStore.list();
+      for (let i = 0; i < bookmarks.length; i++) {
+        const bm = bookmarks[i];
+        const row = el('div', 'k4-bookmark-row');
+        const recallBtn = el('button', 'k4-bookmark-recall', `${bm.label} · ${(bm.freqHz / 1e6).toFixed(4)}`);
+        recallBtn.type = 'button';
+        recallBtn.dataset.bookmarkId = bm.id;
+        recallBtn.addEventListener('click', () => this._recallBookmark(bm));
+
+        const delBtn = el('button', 'k4-bookmark-del', '×');
+        delBtn.type = 'button';
+        delBtn.title = `Delete bookmark ${bm.label}`;
+        delBtn.dataset.bookmarkDel = bm.id;
+        delBtn.addEventListener('click', () => K4.BookmarkStore.remove(bm.id));
+
+        row.appendChild(recallBtn);
+        row.appendChild(delBtn);
+        listEl.appendChild(row);
+      }
+    }
+
+    _startAfScopeLoop() {
+      if (this._afScopeTimer) return;
+      this._afScopeTimer = setInterval(() => {
+        if (this._refs.afScopeCanvas && this._refs.afScopeCanvas.isConnected) {
+          this._drawAfScope(this._snap());
+        }
+      }, 120);
+    }
+
+    _drawAfScope(snapshot) {
+      const canvas = this._refs.afScopeCanvas;
+      if (!canvas || !canvas.isConnected) return;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+
+      if (this.audio && typeof this.audio.isRecording === 'function' && this.audio.isRecording() && this._refs.wavStatus) {
+        const st = this.audio.getRecordingStatus ? this.audio.getRecordingStatus() : {};
+        const sec = Number(st.durationSec || (st.totalFrames ? st.totalFrames / 12000 : 0) || 0);
+        this._refs.wavStatus.textContent = `Recording ${sec.toFixed(1)} s...`;
+      }
+
+      const w = canvas.width;
+      const h = canvas.height;
+      const maxHz = 3200;
+      ctx.fillStyle = '#070A10';
+      ctx.fillRect(0, 0, w, h);
+
+      // 500 Hz grid lines
+      ctx.strokeStyle = 'rgba(148, 163, 184, 0.14)';
+      ctx.lineWidth = 1;
+      for (let hz = 500; hz < maxHz; hz += 500) {
+        const x = Math.round((hz / maxHz) * w) + 0.5;
+        ctx.beginPath();
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, h);
+        ctx.stroke();
+      }
+
+      const snap = snapshot || {};
+      const rxS = (this.getTargetRx() === 'B' ? snap.rxB : snap.rxA) || {};
+      const mode = rxS.mode;
+      const bwHz = Number(rxS.bwHz) || 2700;
+
+      // Passband & CW APF overlay
+      if (mode === 3 || mode === 7) {
+        const pitch = Number(snap.cwPitchHz) || 500;
+        const x1 = Math.max(0, ((pitch - bwHz * 0.5) / maxHz) * w);
+        const x2 = Math.min(w, ((pitch + bwHz * 0.5) / maxHz) * w);
+        ctx.fillStyle = 'rgba(56, 189, 248, 0.12)';
+        ctx.fillRect(x1, 0, Math.max(2, x2 - x1), h);
+        if (rxS.apfOn) {
+          const apfWidths = [30, 50, 150];
+          const aw = apfWidths[rxS.apfBwIdx || 0] || 50;
+          const ax1 = Math.max(0, ((pitch - aw * 0.5) / maxHz) * w);
+          const ax2 = Math.min(w, ((pitch + aw * 0.5) / maxHz) * w);
+          ctx.fillStyle = 'rgba(16, 185, 129, 0.28)';
+          ctx.fillRect(ax1, 0, Math.max(2, ax2 - ax1), h);
+        }
+      } else {
+        const x1 = (300 / maxHz) * w;
+        const x2 = Math.min(w, ((300 + bwHz) / maxHz) * w);
+        ctx.fillStyle = 'rgba(56, 189, 248, 0.10)';
+        ctx.fillRect(x1, 0, Math.max(2, x2 - x1), h);
+      }
+
+      if (rxS.notchOn && rxS.notchHz > 0 && rxS.notchHz <= maxHz) {
+        const nx = (rxS.notchHz / maxHz) * w;
+        ctx.save();
+        ctx.strokeStyle = 'rgba(245, 158, 11, 0.75)';
+        ctx.setLineDash([3, 3]);
+        ctx.beginPath();
+        ctx.moveTo(nx, 0);
+        ctx.lineTo(nx, h);
+        ctx.stroke();
+        ctx.restore();
+      }
+
+      if (!this.audio || typeof this.audio.getAfSpectrum !== 'function') return;
+      const spec = this.audio.getAfSpectrum(maxHz);
+      const bins =
+        Array.isArray(spec) || ArrayBuffer.isView(spec)
+          ? spec
+          : spec && spec.binsDb
+            ? spec.binsDb
+            : spec && spec.bins
+              ? spec.bins
+              : null;
+      if (!bins || bins.length < 2) return;
+
+      let hasNeg = false;
+      for (let i = 0; i < bins.length; i++) {
+        if (bins[i] < 0) {
+          hasNeg = true;
+          break;
+        }
+      }
+
+      ctx.beginPath();
+      for (let i = 0; i < bins.length; i++) {
+        const x = (i / (bins.length - 1)) * w;
+        const raw = bins[i];
+        const norm = hasNeg ? Math.max(0, Math.min(1, (raw + 96) / 96)) : Math.max(0, Math.min(1, raw));
+        const y = h - 4 - norm * (h - 10);
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      }
+      ctx.strokeStyle = '#38BDF8';
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+
+      ctx.lineTo(w, h);
+      ctx.lineTo(0, h);
+      ctx.closePath();
+      ctx.fillStyle = 'rgba(56, 189, 248, 0.18)';
+      ctx.fill();
+    }
+
+    destroy() {
+      if (this._afScopeTimer) {
+        clearInterval(this._afScopeTimer);
+        this._afScopeTimer = null;
+      }
+      if (typeof this._unsubBookmarks === 'function') {
+        this._unsubBookmarks();
+        this._unsubBookmarks = null;
+      }
+      if (this._wavBlobUrl) {
+        URL.revokeObjectURL(this._wavBlobUrl);
+        this._wavBlobUrl = null;
+      }
+    }
+
     selectDesktopTab(tabId) {
       if (!this._panes[tabId] || tabId === 'tune') return;
       this._activeDesktopTab = tabId;
@@ -1268,6 +1737,10 @@
 
       if (this._refs.subSwitch) this._refs.subSwitch.sync(snapshot.subRxEnabled);
       if (this._refs.linkSwitch) this._refs.linkSwitch.sync(snapshot.vfoLinked);
+      if (this._refs.divSwitch) {
+        this._refs.divSwitch.sync(snapshot.diversityEnabled);
+        this._refs.divSwitch.btn.disabled = snapshot.hasSubRx === false;
+      }
 
       // Bands
       if (this._refs.bandBtns) {
@@ -1320,6 +1793,7 @@
       }
       if (this._refs.attenSlider) this._refs.attenSlider.sync(rxS.attenDb ?? 0);
       if (this._refs.rfGainSlider) this._refs.rfGainSlider.sync(rxS.rfGainDb ?? 0);
+      if (this._refs.squelchSlider) this._refs.squelchSlider.sync(rxS.squelch ?? 0);
       if (this._refs.agcBtns) {
         const agc = Number(rxS.agc ?? 1);
         for (const m of Object.keys(this._refs.agcBtns)) {
@@ -1332,6 +1806,22 @@
       if (this._refs.nrSlider) this._refs.nrSlider.sync(rxS.nrLevel ?? 4);
       if (this._refs.nmSwitch) this._refs.nmSwitch.sync(rxS.notchOn);
       if (this._refs.nmSlider) this._refs.nmSlider.sync(rxS.notchHz ?? 750);
+
+      if (this._refs.ritSwitch) this._refs.ritSwitch.sync(rxS.ritOn);
+      if (this._refs.ritOffsetSlider) this._refs.ritOffsetSlider.sync(rxS.ritOffsetHz ?? 0);
+      const isCwMode = rxS.mode === 3 || rxS.mode === 7;
+      if (this._refs.apfSwitch) {
+        this._refs.apfSwitch.sync(rxS.apfOn);
+        this._refs.apfSwitch.btn.disabled = !isCwMode;
+      }
+      if (this._refs.apfBwBtns) {
+        const bwIdx = Number(rxS.apfBwIdx ?? 0);
+        for (let i = 0; i < this._refs.apfBwBtns.length; i++) {
+          const b = this._refs.apfBwBtns[i];
+          b.classList.toggle('is-active', Number(b.dataset.apfBw) === bwIdx);
+          b.disabled = !isCwMode;
+        }
+      }
 
       if (this._refs.tdSelect) {
         const desc = syncDecodeSelect(this._refs.tdSelect, rxS);
@@ -1375,6 +1865,16 @@
       if (this._refs.wbsSlider) this._refs.wbsSlider.sync(dispS.wfBlack ?? 14);
       if (this._refs.autoRefSwitch) this._refs.autoRefSwitch.sync(dispS.autoRef);
       if (this._refs.fixedTuneSwitch) this._refs.fixedTuneSwitch.sync(snapshot.fixedTune);
+      if (this._refs.freezeSwitch) this._refs.freezeSwitch.sync(snapshot.panFrozen);
+      if (this._refs.fpsSlider) this._refs.fpsSlider.sync(snapshot.panFps ?? 20);
+      if (this._refs.panNbBtns) {
+        const pnb = Number(dispS.panNbMode ?? 0);
+        for (let i = 0; i < this._refs.panNbBtns.length; i++) {
+          const b = this._refs.panNbBtns[i];
+          b.classList.toggle('is-active', Number(b.dataset.panNb) === pnb);
+        }
+      }
+      if (this._refs.panNbLevelSlider) this._refs.panNbLevelSlider.sync(dispS.panNbLevel ?? 0);
       if (this._refs.dpmBtns) {
         const dpm = snapshot.dualPanMode === 1 ? 1 : snapshot.dualPanMode === 2 ? 2 : 0;
         const noSub = snapshot.hasSubRx === false;
@@ -1401,6 +1901,17 @@
           : '';
       }
       if (this._refs.peakHoldSwitch) this._refs.peakHoldSwitch.sync(this.getPeakHold());
+      if (this._refs.dsmBtns) {
+        const dsm = Number(snapshot.displayMode ?? 1);
+        for (let i = 0; i < this._refs.dsmBtns.length; i++) {
+          const b = this._refs.dsmBtns[i];
+          b.classList.toggle('is-active', Number(b.dataset.dsm) === dsm);
+        }
+      }
+      if (this._refs.wfhSlider) {
+        this._refs.wfhSlider.sync(snapshot.waterfallHeightPct ?? 60);
+        this._refs.wfhSlider.input.disabled = snapshot.displayMode === 0 || snapshot.displayMode === 2;
+      }
       if (this._refs.paletteBtns) {
         const pal = this.getPalette();
         for (const k of Object.keys(this._refs.paletteBtns)) {
@@ -1442,7 +1953,22 @@
         this._refs.diag.bufferMs.textContent = aDiag.started ? `${Math.round(aDiag.bufferMs || 0)} / ${aDiag.targetMs || 75} ms` : 'stopped';
         this._refs.diag.packets.textContent = String(aDiag.packetsIn ?? 0);
         this._refs.diag.underruns.textContent = `${aDiag.underruns ?? 0} / ${aDiag.seqGaps ?? 0}`;
+        const tel = snapshot.telemetry || {};
+        this._refs.diag.supply.textContent =
+          tel.supplyVolts != null
+            ? `${tel.supplyVolts.toFixed(1)} V${tel.supplyAmps != null ? ` · ${tel.supplyAmps.toFixed(2)} A` : ''}`
+            : '—';
+        const cpuParts = [];
+        if (tel.cpuTempC != null) cpuParts.push(`CPU ${tel.cpuTempC.toFixed(1)}°C`);
+        if (tel.fpTempC != null) cpuParts.push(`FP ${tel.fpTempC.toFixed(1)}°C`);
+        this._refs.diag.cpuTemp.textContent = cpuParts.length ? cpuParts.join(' · ') : '—';
+        const paParts = [];
+        if (tel.paTempC != null) paParts.push(`PA ${tel.paTempC.toFixed(1)}°C`);
+        if (tel.lpaTempC != null) paParts.push(`LPA ${tel.lpaTempC.toFixed(1)}°C`);
+        this._refs.diag.paTemp.textContent = paParts.length ? paParts.join(' · ') : '—';
       }
+
+      this._drawAfScope(snapshot);
 
       if (this._refs.safetyNote) {
         const gStats = this.gate && this.gate.getStats ? this.gate.getStats() : { blockedCatCount: 0, blockedBinaryCount: 0 };

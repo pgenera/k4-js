@@ -239,6 +239,25 @@
         }
       }
 
+      const bookmarks = K4.BookmarkStore ? K4.BookmarkStore.list() : [];
+      for (let i = 0; i < bookmarks.length; i++) {
+        const bm = bookmarks[i];
+        const mhzStr = (bm.freqHz / 1e6).toFixed(4);
+        if (
+          !lower ||
+          bm.label.toLowerCase().includes(lower) ||
+          String(bm.freqHz).includes(lower) ||
+          mhzStr.includes(lower)
+        ) {
+          items.push({
+            title: bm.label,
+            sub: `${mhzStr} MHz · Recall saved bookmark`,
+            tag: 'BOOKMARK',
+            run: () => this._recallBookmark(bm),
+          });
+        }
+      }
+
       for (let i = 0; i < DEFAULT_PRESETS.length; i++) {
         const p = DEFAULT_PRESETS[i];
         if (p.title.toLowerCase().includes(lower) || p.query.toLowerCase().includes(lower)) {
@@ -252,6 +271,21 @@
       }
 
       return items;
+    }
+
+    _recallBookmark(bm) {
+      if (!bm || !this.client) return;
+      const rx = typeof this.getTargetRx === 'function' ? this.getTargetRx() : 'A';
+      this.client.tune(rx, bm.freqHz, { optimistically: true });
+      if (bm.mode != null) {
+        this.client.setMode(rx, bm.mode, bm.dataSubMode || 0);
+      }
+      if (bm.bwHz != null && typeof this.client.setFilter === 'function') {
+        this.client.setFilter(rx, { bwHz: bm.bwHz });
+      }
+      if (typeof this.onNotify === 'function') {
+        this.onNotify(`Recalled ${bm.label} (${(bm.freqHz / 1e6).toFixed(4)} MHz)`, 'info');
+      }
     }
 
     _runCommandString(str) {
@@ -470,6 +504,103 @@
           sub: 'Control receiver stereo audio output',
           tag: 'AUDIO',
           run: () => this.onToggleAudio(lower === 'mute' ? true : (lower === 'unmute' ? false : undefined)),
+        };
+      }
+
+      // Save VFO bookmark
+      const bmMatch = expr.match(/^(?:save|bookmark)\s+(.+)$/i);
+      if (bmMatch && K4.BookmarkStore && this.state) {
+        const label = bmMatch[1].trim();
+        return {
+          title: `Bookmark "${label}"`,
+          sub: 'Save current VFO frequency, mode & filter',
+          tag: 'BOOKMARK',
+          run: () => {
+            const snap = this.state.getSnapshot();
+            const rx = targetRx;
+            const rxS = rx === 'B' ? snap.rxB : snap.rxA;
+            K4.BookmarkStore.add({
+              label,
+              freqHz: rxS.freqHz,
+              mode: rxS.mode,
+              dataSubMode: rxS.dataSubMode || 0,
+              bwHz: rxS.bwHz,
+            });
+            if (typeof this.onNotify === 'function') {
+              this.onNotify(`Saved bookmark "${label}"`, 'success');
+            }
+          },
+        };
+      }
+
+      // Panadapter Freeze
+      if (lower === 'freeze' || lower === 'unfreeze') {
+        const freezeOn = lower === 'freeze';
+        return {
+          title: freezeOn ? 'Freeze Panadapter (#FRZ1)' : 'Unfreeze Panadapter (#FRZ0)',
+          sub: 'Pause or resume spectrum & waterfall frames',
+          tag: 'PAN',
+          run: () => {
+            const snap = this.state ? this.state.getSnapshot() : {};
+            const dispRx =
+              K4.CatCodec && typeof K4.CatCodec.resolveDisplayRx === 'function'
+                ? K4.CatCodec.resolveDisplayRx(snap, targetRx)
+                : snap.dualPanMode === 1
+                  ? 'B'
+                  : 'A';
+            this.client.setDisplay(dispRx, { panFrozen: freezeOn });
+          },
+        };
+      }
+
+      // RIT commands
+      if (lower === 'rit on' || lower === 'rit off') {
+        const on = lower === 'rit on';
+        return {
+          title: on ? `Enable RIT (VFO ${targetRx})` : `Disable RIT (VFO ${targetRx})`,
+          sub: 'Toggle Receiver Incremental Tuning on target VFO',
+          tag: 'RIT',
+          run: () => this.client.setRit(targetRx, { on }),
+        };
+      }
+      if (lower === 'rit clear' || lower === 'rc') {
+        return {
+          title: `Clear RIT Offset (RC ${targetRx})`,
+          sub: 'Zero RIT offset on target VFO',
+          tag: 'RIT',
+          run: () => this.client.clearRit(targetRx),
+        };
+      }
+      const ritHzMatch = lower.match(/^rit\s+([+-]?\d+)$/);
+      if (ritHzMatch) {
+        const offsetHz = parseInt(ritHzMatch[1], 10);
+        return {
+          title: `Set RIT ${offsetHz >= 0 ? '+' : ''}${offsetHz} Hz (VFO ${targetRx})`,
+          sub: 'Enable RIT and set offset on target VFO',
+          tag: 'RIT',
+          run: () => this.client.setRit(targetRx, { on: true, offsetHz }),
+        };
+      }
+
+      // CW APF
+      if (lower === 'apf on' || lower === 'apf off') {
+        const on = lower === 'apf on';
+        return {
+          title: on ? `Enable CW APF (VFO ${targetRx})` : `Disable CW APF (VFO ${targetRx})`,
+          sub: 'Toggle CW Audio Peak Filter on target VFO',
+          tag: 'DSP',
+          run: () => this.client.setApf(targetRx, { on }),
+        };
+      }
+
+      // Diversity RX
+      if (lower === 'div on' || lower === 'div off' || lower === 'diversity on' || lower === 'diversity off') {
+        const on = lower.endsWith('on');
+        return {
+          title: on ? 'Enable Diversity RX (DV1)' : 'Disable Diversity RX (DV0)',
+          sub: 'Lock VFO B to VFO A phase-coherent RX',
+          tag: 'RX',
+          run: () => this.client.setDiversity(on),
         };
       }
 

@@ -77,6 +77,13 @@ Return `{ kind, rx, ... }` (`rx` is `'A'` or `'B'` when receiver-scoped, `null` 
 - `#DPM`: `0|1|2` (`0` = 1x Main A, `1` = 1x Sub B, `2` = 2x Dual) -> `{ kind: 'dualPan', rx: null, dualPanMode }`
 - `#MP` / `#MP$`: `0|1` (or `-1` such as `#MP-1;` / `#MP$-1;` when unavailable -> `{ kind: 'miniPan', rx, miniPan: false, miniPanAvailable: false }`) -> `{ kind: 'miniPan', rx, miniPan, miniPanAvailable }`. Note real K4 continues streaming `0x03` Mini-PAN frames even when `#MP0;` is OFF, so display visibility MUST follow CAT `miniPan` state rather than packet arrival.
 - `#FRZ`: `0|1` -> `{ kind: 'panFrozen', rx: null, panFrozen: v === 1 }`
+- `#FPS`: `nn` (`1..30`) -> `{ kind: 'panFps', rx: null, fps }`
+- `#NB` / `#NB$`: `0|1|2` (`Off`/`On`/`Auto`) -> `{ kind: 'panNb', rx, mode }`
+- `#NBL` / `#NBL$`: `0..14` -> `{ kind: 'panNbLevel', rx, level }`
+- `#DSM`: `0|1|2` (`0`/`2` = Spectrum Only, `1` = Spec + Waterfall) -> `{ kind: 'displayMode', rx: null, mode }`
+- `#WFH`: `nnn` (`010..090` percent waterfall height) -> `{ kind: 'waterfallHeight', rx: null, pct }`
+- `RC` / `RC$`: RIT clear echo -> `{ kind: 'ritClear', rx }`
+- `SI*` (`SIFP`, `SICP`, `SIRF`, `SIDA`, `SIDD`, `SIDU`, `SIRC`): key-value hardware telemetry (`SIFPVS:13.80,IS:1.66,...,TF:25.4;`, `SICPT1:45.2,...;`, `SIRF...LT:...,PT:...;`, `SIDA...T:31.2;`) -> `{ kind: 'systemInfo', module, fields }` or `{ kind: 'systemInfoSub', module, enabled }`
 - `#FXT` (global; `#FXT$;` returns `#FXT?;`): `0|1` -> `{ kind: 'fixedTune', rx: null, fixedTune: v === 1 }`
 - `TD` / `TD$`: `TDmtl;` / `TD$mtl;` (`m` mode `0..4`, `t` threshold `0..9`, `l` lines `0..1`) -> `{ kind: 'textDecode', rx, mode, threshold, lines, enabled: mode > 0 }`. On real K4 `R40.B1`, `TD > 0` works only in CW (`MD3`), CW-R (`MD7`), FSK-D (`MD6/9+DT2`), and PSK-D (`MD6/9+DT3`); attempting `TD` in incompatible modes such as `DATA-A` (`MD6+DT0`) replies `ER12:SET command incompatible with target VFO's mode.;`.
 - `MX`: string in `['A.B','AB.AB','A.-A','A.AB','AB.B','AB.A','B.AB','B.B','B.A','A.A']` -> `{ kind: 'audioMix', rx: null, mix }`
@@ -128,6 +135,13 @@ Return `{ kind, rx, ... }` (`rx` is `'A'` or `'B'` when receiver-scoped, `null` 
 - `rit(rx, on)`: `'RT' + (rx === 'B' ? '$' : '') + (on ? '1' : '0') + ';'`
 - `ritOffset(rx, hz)`: clamps `hz` to `[-9999, 9999]` (default `0` if non-finite) and returns `'RO' + (rx === 'B' ? '$' : '') + (v < 0 ? '-' : '+') + String(Math.abs(v)).padStart(4, '0') + ';'`
 - `freezePan(on)`: `'#FRZ' + (on ? '1' : '0') + ';'`
+- `panFps(fps)`: `'#FPS' + String(clamp(Math.round(fps), 1, 30)).padStart(2, '0') + ';'`
+- `panNb(rx, mode)`: `'#NB' + (rx === 'B' ? '$' : '') + clamp(Math.round(mode), 0, 2) + ';'`
+- `panNbLevel(rx, level)`: `'#NBL' + (rx === 'B' ? '$' : '') + clamp(Math.round(level), 0, 14) + ';'`
+- `displayMode(mode)`: `'#DSM' + (Number(mode) === 0 || Number(mode) === 2 ? '0' : '1') + ';'`
+- `waterfallHeight(pct)`: `'#WFH' + String(clamp(Math.round(pct), 10, 90)).padStart(3, '0') + ';'`
+- `ritClear(rx)`: `'RC' + (rx === 'B' ? '$' : '') + ';'`
+- `systemInfoSub(module, on)`: `'SI' + module.toUpperCase() + (on ? '1' : '0') + ';'`
 - `fixedTune(on)`: `'#FXT' + (on ? '1' : '0') + ';'`
 - `diversity(on)`: `'DV' + (on ? '1' : '0') + ';'`
 - `audioMix(mix)`: `'MX' + mix + ';'` (validates against `AUDIO_MIX_MODES`)
@@ -142,7 +156,8 @@ Default RX state (`createDefaultRxState(defaultFreqHz)`):
 - Top-level fields:
   - `connection`: `{ status: 'disconnected'|'connecting'|'authenticating'|'connected'|'error', wsUrl: '', subprotocol: '', authStatus: 'none'|'authenticating'|'authenticated'|'rejected', error: null, rttMs: null, radioId: '', serial: '' }`
   - `operatingPolicy: 'rx-only'`
-  - `cwPitchHz: 500`, `subRxEnabled: false`, `hasSubRx: true`, `optionModules: ''` (`hasSubRx` reflects `'S'` option in `OM`), `splitEnabled: false`, `vfoLinked: false`, `diversityEnabled: false`, `activeTxVfo: 'A'`, `panAvg: 4`, `dualPanMode: 0`, `panFrozen: false`, `fixedTune: false`, `audioMix: 'A.B'`, `encodeMode: 1`, `streamingLatency: 2`
+  - `cwPitchHz: 500`, `subRxEnabled: false`, `hasSubRx: true`, `optionModules: ''` (`hasSubRx` reflects `'S'` option in `OM`), `splitEnabled: false`, `vfoLinked: false`, `diversityEnabled: false`, `activeTxVfo: 'A'`, `panAvg: 4`, `panFps: 20`, `dualPanMode: 0`, `displayMode: 1`, `waterfallHeightPct: 60`, `panFrozen: false`, `fixedTune: false`, `audioMix: 'A.B'`, `encodeMode: 1`, `streamingLatency: 2`, `telemetry: { supplyVolts, supplyAmps, fpTempC, cpuTempC, paTempC, lpaTempC, dapTempC, updatedAt }` (plus per-RX `cor`, `panNbMode`, `panNbLevel`).
+  - `Client` exposes `setRit`, `clearRit`, `setApf`, `setSquelch`, `setDiversity`, and `setDisplay` support for `panFrozen`, `panFps`, `displayMode`, `waterfallHeightPct`, `panNbMode`, `panNbLevel`.
   - `decodedText: []` (array of `{ id, rx, text, timestamp }`, max 200 entries; empty `TB000;`/`TB$000;` payloads ignored)
   - `band`: `rxA.band` (derived via `bandForFreq` / `K4.BANDS`)
 - `applyParsedCat(parsed)` updates all mapped per-RX and top-level fields (including `fixedTune`, `hasSubRx`/`optionModules`, `textDecode*`, `adcOverflow`, `ifCenterHz`, `ritOn`, `ritOffsetHz`, `diversityEnabled`, and `panFrozen`; mirroring global `#SCL`/`#WBS`/`#AR` values across both `rxA` and `rxB`) and emits `'change'` with `(snapshot, changedKey)`.

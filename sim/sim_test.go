@@ -700,3 +700,48 @@ func TestWave2RefAutoRefTextDecodeAndDpmMp(t *testing.T) {
 		t.Fatalf("#DPM transitions = %q", rep)
 	}
 }
+
+func TestItems1And2CATTelemetryFreezeAndOverflow(t *testing.T) {
+	r := NewRadio()
+
+	// 1. RC / RC$ clears RIT offset
+	if rep, _ := r.HandleCAT("RT1;RO+0250;RC;RO$;RC$;", 0.0); rep != "RT1;RO+0250;RO+0000;RO$+0000;RO$+0000;" {
+		t.Fatalf("RIT RC/RC$ = %q", rep)
+	}
+	r.HandleCAT("RO$-0120;RC$;", 0.0)
+	if rep, _ := r.HandleCAT("RO$;", 0.0); rep != "RO$+0000;" {
+		t.Fatalf("RO$ after RC$ = %q, want RO$+0000;", rep)
+	}
+
+	// 2. DV1 enables SubRX and copies VFO A mode/bw/is/freq to VFO B
+	r.HandleCAT("FA00014074000;MD2;BW0240;IS0150;DV1;", 0.0)
+	rxA, rxB, subRx, _, _, _, _ := r.Snapshot()
+	if !subRx || rxB.FreqHz != rxA.FreqHz || rxB.Mode != ModeUSB || rxB.BwHz != 2400 {
+		t.Fatalf("DV1 copy A->B mismatch: subRx=%v rxA=%+v rxB=%+v", subRx, rxA, rxB)
+	}
+
+	// 3. OV / OV$ transitions when Preamp 2 + 0 dB Atten + 0 dB RF Gain
+	if rep, _ := r.HandleCAT("PA21;RA000;RG00;OV;", 0.0); !strings.HasSuffix(rep, "OV10;") {
+		t.Fatalf("PA21 OV expected OV10;, got %q", rep)
+	}
+	if rep, _ := r.HandleCAT("PA00;OV;", 0.0); rep != "PA00;OV00;" {
+		t.Fatalf("PA00 OV expected OV00;, got %q", rep)
+	}
+
+	// 4. #FPS, #NB/#NBL, #DSM, #WFH, #FRZ
+	if rep, _ := r.HandleCAT("#FPS15;#FPS;#NB2;#NB$1;#NBL7;#NBL$12;#DSM0;#DSM;#WFH025;#WFH;#FRZ1;#FRZ$;", 0.0); rep != "#FPS15;#FPS15;#NB2;#NB$1;#NBL7;#NBL$12;#DSM0;#DSM0;#WFH025;#WFH025;#FRZ1;#FRZ?;" {
+		t.Fatalf("panadapter Item 1 cmds = %q", rep)
+	}
+
+	// 5. SI* hardware telemetry subscriptions (FP, RF, DA) under AI4 emit immediately and periodically
+	r.HandleCAT("AI4;", 1.0)
+	siRep, _ := r.HandleCAT("SIFP1;SIRF1;SIDA1;", 1.0)
+	for _, want := range []string{"SIFPVS:", "SICPT1:", "SIRFV8:", "SIDAV5:"} {
+		if !strings.Contains(siRep, want) {
+			t.Fatalf("expected %q in SI reply %q", want, siRep)
+		}
+	}
+	if rep := r.PeriodicSystemInfoCAT(2.5); !strings.Contains(rep, "SIFPVS:") || !strings.Contains(rep, "SIDAV5:") {
+		t.Fatalf("PeriodicSystemInfoCAT = %q", rep)
+	}
+}
