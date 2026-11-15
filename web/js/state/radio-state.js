@@ -394,7 +394,7 @@
         encodeMode: this._state.encodeMode,
         streamingLatency: this._state.streamingLatency,
         telemetry: Object.assign({}, this._state.telemetry),
-        decodedText: this._state.decodedText.slice(),
+        decodedText: this._state.decodedText.map((d) => ({ ...d })),
         band: this._state.band,
       };
     }
@@ -1226,12 +1226,52 @@
             }
             return false;
           }
-          this._state.decodedText.push({
-            id: ++this._nextTextId,
-            rx: parsed.rx || 'A',
-            text: parsed.text,
-            timestamp: Date.now(),
-          });
+          const rx = parsed.rx || 'A';
+          const now = Date.now();
+          const norm = String(parsed.text).replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+          const parts = norm.split('\n');
+
+          let latestEntry = null;
+          for (let i = this._state.decodedText.length - 1; i >= 0; i--) {
+            if (this._state.decodedText[i].rx === rx) {
+              latestEntry = this._state.decodedText[i];
+              break;
+            }
+          }
+
+          if (parts[0].length > 0) {
+            if (latestEntry && !latestEntry.closed && latestEntry.text.length < 600) {
+              latestEntry.text += parts[0];
+              latestEntry.timestamp = now;
+            } else {
+              latestEntry = {
+                id: ++this._nextTextId,
+                rx,
+                text: parts[0],
+                timestamp: now,
+                closed: false,
+              };
+              this._state.decodedText.push(latestEntry);
+            }
+          }
+
+          if (parts.length > 1) {
+            if (latestEntry) {
+              latestEntry.closed = true;
+            }
+            for (let k = 1; k < parts.length; k++) {
+              if (parts[k].length > 0) {
+                this._state.decodedText.push({
+                  id: ++this._nextTextId,
+                  rx,
+                  text: parts[k],
+                  timestamp: now,
+                  closed: k < parts.length - 1,
+                });
+              }
+            }
+          }
+
           if (this._state.decodedText.length > MAX_DECODED_TEXT) {
             this._state.decodedText.splice(
               0,
