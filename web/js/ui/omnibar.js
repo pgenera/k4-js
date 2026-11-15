@@ -308,12 +308,17 @@
           hz *= 1000;
         }
         hz = Math.max(6000, Math.min(368000, Math.round(hz)));
+        const snap = this.state.getSnapshot ? this.state.getSnapshot() : this.state;
+        const dispRx =
+          K4.CatCodec && typeof K4.CatCodec.resolveDisplayRx === 'function'
+            ? K4.CatCodec.resolveDisplayRx(snap, targetRx)
+            : targetRx;
         return {
           title: `Panadapter Span ${Math.round(hz / 1000)} kHz`,
-          sub: `Set VFO ${targetRx} spectrum span (#SPN)`,
+          sub: `Set PAN ${dispRx} spectrum span (#SPN)`,
           tag: `${Math.round(hz / 1000)} kHz`,
           run: () => {
-            this.client.setDisplay(targetRx, { panSpanHz: hz });
+            this.client.setDisplay(dispRx, { panSpanHz: hz });
           },
         };
       }

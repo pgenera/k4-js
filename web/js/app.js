@@ -136,18 +136,20 @@
       this._hudDualBtn.title = 'Toggle Dual Panadapter (#DPM)';
       this._hudDualBtn.addEventListener('click', () => {
         const snap = this._getSnapshot();
+        if (snap.hasSubRx === false) return;
         const next = snap.dualPanMode === 2 ? 0 : 2;
-        this.client.setDisplay(this._targetRx, { dualPanMode: next });
+        this.client.setDisplay(this._dispRx(snap), { dualPanMode: next });
       });
       group.appendChild(this._hudDualBtn);
 
-      this._hudLoupeBtn = el('button', 'k4-hud-btn', 'Loupe');
+      this._hudLoupeBtn = el('button', 'k4-hud-btn', 'Loupe A');
       this._hudLoupeBtn.type = 'button';
-      this._hudLoupeBtn.title = 'Toggle Mini-Pan Loupe (#MP)';
+      this._hudLoupeBtn.title = 'Toggle Mini-Pan Loupe (#MP / #MP$)';
       this._hudLoupeBtn.addEventListener('click', () => {
         const snap = this._getSnapshot();
-        const rxS = this._targetRx === 'B' ? snap.rxB : snap.rxA;
-        this.client.setDisplay(this._targetRx, { miniPan: !(rxS && rxS.miniPan) });
+        const loupeRx = this._resolveLoupeRx(snap);
+        const rxS = loupeRx === 'B' ? snap.rxB : snap.rxA;
+        this.client.setDisplay(loupeRx, { miniPan: !(rxS && rxS.miniPan) });
       });
       group.appendChild(this._hudLoupeBtn);
 
@@ -169,6 +171,22 @@
       tHead.appendChild(tSum);
 
       const tActs = el('div', 'k4-ticker-actions');
+      this._tickerDecodeSelect = el('select', 'k4-ticker-select');
+      this._tickerDecodeSelect.dataset.testid = 'ticker-td-select';
+      this._tickerDecodeSelect.setAttribute('aria-label', 'Text Decode Mode');
+      const stopTickerEvt = (e) => e.stopPropagation();
+      this._tickerDecodeSelect.addEventListener('click', stopTickerEvt);
+      this._tickerDecodeSelect.addEventListener('mousedown', stopTickerEvt);
+      this._tickerDecodeSelect.addEventListener('pointerdown', stopTickerEvt);
+      this._tickerDecodeSelect.addEventListener('change', () => {
+        if (typeof this.client.setTextDecode === 'function') {
+          this.client.setTextDecode(this._targetRx, {
+            mode: Number(this._tickerDecodeSelect.value),
+          });
+        }
+      });
+      tActs.appendChild(this._tickerDecodeSelect);
+
       const clearBtn = el('button', 'k4-ticker-btn', 'Clear');
       clearBtn.type = 'button';
       clearBtn.addEventListener('click', (e) => {
@@ -557,9 +575,31 @@
       }
     }
 
+    _dispRx(snap) {
+      return K4.CatCodec && typeof K4.CatCodec.resolveDisplayRx === 'function'
+        ? K4.CatCodec.resolveDisplayRx(snap, this._targetRx)
+        : snap && snap.dualPanMode === 2
+        ? this._targetRx
+        : snap && snap.dualPanMode === 1
+        ? 'B'
+        : 'A';
+    }
+
+    _resolveLoupeRx(snap) {
+      const rxB = snap && snap.rxB;
+      return this._targetRx === 'B' &&
+        snap &&
+        snap.subRxEnabled &&
+        rxB &&
+        rxB.miniPanAvailable !== false
+        ? 'B'
+        : 'A';
+    }
+
     _stepSpan(dir) {
       const snap = this._getSnapshot();
-      const rxS = (this._targetRx === 'B' ? snap.rxB : snap.rxA) || {};
+      const dispRx = this._dispRx(snap);
+      const rxS = (dispRx === 'B' ? snap.rxB : snap.rxA) || {};
       const cur = Number(rxS.panSpanHz) || 48000;
       let bestIdx = 0;
       let bestDiff = Infinity;
@@ -571,7 +611,7 @@
         }
       }
       const nextIdx = Math.max(0, Math.min(SPAN_STEPS_HZ.length - 1, bestIdx + dir));
-      this.client.setDisplay(this._targetRx, { panSpanHz: SPAN_STEPS_HZ[nextIdx] });
+      this.client.setDisplay(dispRx, { panSpanHz: SPAN_STEPS_HZ[nextIdx] });
     }
 
     _toggleTicker() {
@@ -735,17 +775,30 @@
 
       // Floating Panadapter HUD
       const rxS = (this._targetRx === 'B' ? snap.rxB : snap.rxA) || {};
+      const dispRx = this._dispRx(snap);
+      const dispS = (dispRx === 'B' ? snap.rxB : snap.rxA) || {};
+      const loupeRx = this._resolveLoupeRx(snap);
+      const loupeS = (loupeRx === 'B' ? snap.rxB : snap.rxA) || {};
       this._hudTargetBtn.textContent = `Tune: VFO ${this._targetRx}`;
       this._hudTargetBtn.classList.toggle('is-cyan', this._targetRx === 'A');
       this._hudTargetBtn.classList.toggle('is-amber', this._targetRx === 'B');
       this._hudStepBtn.textContent = `Step: ${rxS.stepHz >= 1000 ? `${rxS.stepHz / 1000}k` : `${rxS.stepHz || 100} Hz`}`;
-      this._hudSpanReadout.textContent = `${Math.round((rxS.panSpanHz || 48000) / 1000)} kHz`;
-      const isDual = snap.dualPanMode === 2;
-      this._hudDualBtn.textContent = isDual ? '2x' : '1x';
-      this._hudDualBtn.classList.toggle('is-active', isDual);
-      this._hudLoupeBtn.classList.toggle('is-active', Boolean(rxS.miniPan));
+      this._hudSpanReadout.textContent = `${Math.round((dispS.panSpanHz || 48000) / 1000)} kHz`;
+      const dpm = snap.dualPanMode === 1 ? 1 : snap.dualPanMode === 2 ? 2 : 0;
+      this._hudDualBtn.textContent = dpm === 2 ? '2x' : dpm === 1 ? '1xB' : '1x';
+      this._hudDualBtn.classList.toggle('is-active', dpm === 2);
+      this._hudDualBtn.disabled = snap.hasSubRx === false;
+      this._hudDualBtn.title =
+        snap.hasSubRx === false
+          ? 'Requires Sub-RX option (OM lacks S)'
+          : 'Toggle Dual Panadapter (#DPM)';
+      this._hudLoupeBtn.textContent = `Loupe ${loupeRx}`;
+      this._hudLoupeBtn.classList.toggle('is-active', Boolean(loupeS.miniPan));
 
       // Decoded Text Ticker (TB$)
+      if (this._tickerDecodeSelect && typeof K4.syncDecodeSelect === 'function') {
+        K4.syncDecodeSelect(this._tickerDecodeSelect, rxS);
+      }
       this._renderDecodedText(snap.decodedText);
 
       // Inspector & Mobile Sheets

@@ -53,12 +53,16 @@
       apfBwIdx: 0,
       sMeterDbm: -115,
       panSpanHz: 48000,
-      panRefDbm: -50,
+      panRefDbm: -110,
       panScaleDb: 80,
       wfBlack: 14,
       autoRef: false,
       miniPan: false,
       miniPanAvailable: true,
+      textDecodeMode: 0,
+      textDecodeThreshold: 0,
+      textDecodeLines: 1,
+      textDecodeEnabled: false,
       panCenterHz: defaultFreqHz,
       panTierKHz: 48,
       noiseFloorDbm: -120,
@@ -100,6 +104,9 @@
       panAvg: 4,
       dualPanMode: 0,
       panFrozen: false,
+      fixedTune: false,
+      hasSubRx: true,
+      optionModules: '',
       audioMix: 'A.B',
       encodeMode: 1,
       streamingLatency: 2,
@@ -159,6 +166,9 @@
         panAvg: this._state.panAvg,
         dualPanMode: this._state.dualPanMode,
         panFrozen: this._state.panFrozen,
+        fixedTune: this._state.fixedTune,
+        hasSubRx: this._state.hasSubRx,
+        optionModules: this._state.optionModules,
         audioMix: this._state.audioMix,
         encodeMode: this._state.encodeMode,
         streamingLatency: this._state.streamingLatency,
@@ -413,7 +423,9 @@
           return true;
 
         case 'panScale':
-          this.updateRx(parsed.rx, { panScaleDb: parsed.scaleDb }, `${rxKey}.panScaleDb`);
+          this._state.rxA.panScaleDb = parsed.scaleDb;
+          this._state.rxB.panScaleDb = parsed.scaleDb;
+          this._emitChange('panScaleDb');
           return true;
 
         case 'panAvg':
@@ -422,11 +434,39 @@
           return true;
 
         case 'wfBlack':
-          this.updateRx(parsed.rx, { wfBlack: parsed.wfBlack }, `${rxKey}.wfBlack`);
+          this._state.rxA.wfBlack = parsed.wfBlack;
+          this._state.rxB.wfBlack = parsed.wfBlack;
+          this._emitChange('wfBlack');
           return true;
 
         case 'autoRef':
-          this.updateRx(parsed.rx, { autoRef: parsed.autoRef }, `${rxKey}.autoRef`);
+          this._state.rxA.autoRef = parsed.autoRef;
+          this._state.rxB.autoRef = parsed.autoRef;
+          this._emitChange('autoRef');
+          return true;
+
+        case 'fixedTune':
+          this._state.fixedTune = Boolean(parsed.fixedTune);
+          this._emitChange('fixedTune');
+          return true;
+
+        case 'optionModule':
+          this._state.optionModules = parsed.optionModules || '';
+          this._state.hasSubRx = Boolean(parsed.hasSubRx);
+          this._emitChange('optionModules');
+          return true;
+
+        case 'textDecode':
+          this.updateRx(
+            parsed.rx,
+            {
+              textDecodeMode: parsed.mode,
+              textDecodeThreshold: parsed.threshold,
+              textDecodeLines: parsed.lines,
+              textDecodeEnabled: Boolean(parsed.enabled),
+            },
+            `${rxKey}.textDecode`
+          );
           return true;
 
         case 'dualPan':

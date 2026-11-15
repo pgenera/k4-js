@@ -83,6 +83,10 @@
       this._ws = null;
       this._connGen = 0;
       this._pingTimer = null;
+      this._tbPollTimer = null;
+      if (this.state && typeof this.state.on === 'function') {
+        this.state.on('change', () => this._syncTbPolling());
+      }
       this._bootstrapTimer = null;
       this._bootstrapSent = false;
       this._pendingEmMode = 1;
@@ -165,7 +169,45 @@
       }
     }
 
+    _stopTbPolling() {
+      if (this._tbPollTimer !== null) {
+        clearInterval(this._tbPollTimer);
+        this._tbPollTimer = null;
+      }
+    }
+
+    _syncTbPolling() {
+      if (!isWsOpen(this._ws) || !this.state) {
+        this._stopTbPolling();
+        return;
+      }
+      const snap = this.state.getSnapshot();
+      const aOn = Boolean(snap.rxA && snap.rxA.textDecodeMode > 0);
+      const bOn = Boolean(snap.rxB && snap.rxB.textDecodeMode > 0);
+      if (!aOn && !bOn) {
+        this._stopTbPolling();
+        return;
+      }
+      if (this._tbPollTimer !== null) return;
+      this._tbPollTimer = setInterval(() => {
+        if (!isWsOpen(this._ws) || !this.state) {
+          this._stopTbPolling();
+          return;
+        }
+        const s = this.state.getSnapshot();
+        let q = '';
+        if (s.rxA && s.rxA.textDecodeMode > 0) q += 'TB;';
+        if (s.rxB && s.rxB.textDecodeMode > 0) q += 'TB$;';
+        if (q) {
+          this.sendCat(q);
+        } else {
+          this._stopTbPolling();
+        }
+      }, 350);
+    }
+
     _stopKeepalive() {
+      this._stopTbPolling();
       if (this._pingTimer !== null) {
         clearInterval(this._pingTimer);
         this._pingTimer = null;
@@ -184,8 +226,9 @@
       const bootstrapCat =
         `RDY;K41;ER1;AI5;EM${emMode};SL${slTier};` +
         'FA;FB;MD;MD$;DT;DT$;BW;BW$;IS;IS$;CW;VT;VT$;LK;LK$;SB;FT;SMH;SMH$;' +
-        '#SPN;#SPN$;#REF;#REF$;#SCL;#AVG;#WBS;#AR;#DPM;#MP;#MP$;MX;';
+        '#SPN;#SPN$;#REF;#REF$;#SCL;#AVG;#WBS;#AR;#DPM;#MP;#MP$;#FXT;TD;TD$;MX;';
       this.sendCat(bootstrapCat);
+      this._syncTbPolling();
 
       this._pingTimer = setInterval(() => {
         if (gen !== this._connGen || !isWsOpen(this._ws)) {
@@ -738,7 +781,9 @@
       const target = rx === 'B' ? 'B' : 'A';
       const cmds = [];
       const rxPatch = {};
+      const globalDisplayPatch = {};
       const topPatch = {};
+      let sentArm = false;
 
       const spanVal = patch.panSpanHz !== undefined ? patch.panSpanHz : patch.spanHz;
       if (spanVal !== undefined) {
@@ -749,6 +794,15 @@
 
       const refVal = patch.panRefDbm !== undefined ? patch.panRefDbm : patch.refDbm;
       if (refVal !== undefined) {
+        if (patch.autoRef !== true) {
+          const curA = this.state.getRx('A');
+          const curB = this.state.getRx('B');
+          if (curA.autoRef || curB.autoRef) {
+            cmds.push(K4.CatCodec.builders.autoRef(false));
+            globalDisplayPatch.autoRef = false;
+            sentArm = true;
+          }
+        }
         const v = Math.round(clamp(Number(refVal), -160, 20));
         rxPatch.panRefDbm = v;
         cmds.push(K4.CatCodec.builders.panRef(target, v));
@@ -757,8 +811,8 @@
       const scaleVal = patch.panScaleDb !== undefined ? patch.panScaleDb : patch.scaleDb;
       if (scaleVal !== undefined) {
         const v = Math.round(clamp(Number(scaleVal), 10, 150));
-        rxPatch.panScaleDb = v;
-        cmds.push(K4.CatCodec.builders.panScale(target, v));
+        globalDisplayPatch.panScaleDb = v;
+        cmds.push(K4.CatCodec.builders.panScale(v));
       }
 
       const avgVal = patch.panAvg !== undefined ? patch.panAvg : patch.avg;
@@ -770,14 +824,23 @@
 
       if (patch.wfBlack !== undefined) {
         const v = Math.round(clamp(Number(patch.wfBlack), 5, 30));
-        rxPatch.wfBlack = v;
-        cmds.push(K4.CatCodec.builders.wfBlack(target, v));
+        globalDisplayPatch.wfBlack = v;
+        cmds.push(K4.CatCodec.builders.wfBlack(v));
       }
 
       if (patch.autoRef !== undefined) {
         const v = Boolean(patch.autoRef);
-        rxPatch.autoRef = v;
-        cmds.push(K4.CatCodec.builders.autoRef(target, v));
+        globalDisplayPatch.autoRef = v;
+        if (v) {
+          cmds.push(K4.CatCodec.builders.autoRef(true));
+          cmds.push(K4.CatCodec.builders.autoRefOneShot());
+          cmds.push('#REF;#REF$;');
+        } else {
+          if (!sentArm) {
+            cmds.push(K4.CatCodec.builders.autoRef(false));
+          }
+          cmds.push('#REF;#REF$;');
+        }
       }
 
       if (patch.dualPanMode !== undefined) {
@@ -786,20 +849,72 @@
         cmds.push(K4.CatCodec.builders.dualPan(v));
       }
 
+      if (patch.fixedTune !== undefined) {
+        const v = Boolean(patch.fixedTune);
+        topPatch.fixedTune = v;
+        cmds.push(K4.CatCodec.builders.fixedTune(v));
+      }
+
       if (patch.miniPan !== undefined) {
         const v = Boolean(patch.miniPan);
         rxPatch.miniPan = v;
         cmds.push(K4.CatCodec.builders.miniPan(target, v));
+        cmds.push(`#MP${target === 'B' ? '$' : ''};`);
       }
 
       if (Object.keys(rxPatch).length > 0) {
         this.state.updateRx(target, rxPatch, target === 'B' ? 'rxB.display' : 'rxA.display');
+      }
+      if (Object.keys(globalDisplayPatch).length > 0) {
+        this.state.updateRx('A', globalDisplayPatch, 'display');
+        this.state.updateRx('B', globalDisplayPatch, 'display');
       }
       if (Object.keys(topPatch).length > 0) {
         this.state.update(topPatch, 'display');
       }
 
       return this.sendCat(cmds.join(''));
+    }
+
+    /**
+     * Trigger one-shot Auto-Reference (#AR1) and re-query both #REF values.
+     */
+    applyAutoRefNow() {
+      return this.sendCat(K4.CatCodec.builders.autoRefOneShot() + '#REF;#REF$;');
+    }
+
+    /**
+     * Configure CW / DATA text decode (TD / TD$) and immediately poll TD/TB.
+     * @param {'A'|'B'} rx
+     * @param {{ mode?: number, threshold?: number, lines?: number }} opts
+     */
+    setTextDecode(rx, opts = {}) {
+      const target = rx === 'B' ? 'B' : 'A';
+      const cur = this.state.getRx(target);
+      const mode = Math.round(
+        clamp(Number(opts.mode !== undefined ? opts.mode : cur.textDecodeMode || 0), 0, 4)
+      );
+      const threshold = Math.round(
+        clamp(Number(opts.threshold !== undefined ? opts.threshold : cur.textDecodeThreshold || 0), 0, 9)
+      );
+      const fallbackLines = mode > 0 ? Math.max(1, cur.textDecodeLines || 1) : 0;
+      const lines = Math.round(
+        clamp(Number(opts.lines !== undefined ? opts.lines : fallbackLines), 0, 4)
+      );
+      const cmd = K4.CatCodec.builders.textDecode(target, mode, threshold, lines);
+      const dollar = target === 'B' ? '$' : '';
+      this.state.updateRx(
+        target,
+        {
+          textDecodeMode: mode,
+          textDecodeThreshold: threshold,
+          textDecodeLines: lines,
+          textDecodeEnabled: mode > 0,
+        },
+        target === 'B' ? 'rxB.textDecode' : 'rxA.textDecode'
+      );
+      this._syncTbPolling();
+      return this.sendCat(`${cmd}TD${dollar};TB${dollar};`);
     }
 
     /**

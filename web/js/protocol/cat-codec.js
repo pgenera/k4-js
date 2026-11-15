@@ -196,6 +196,10 @@
       const v = parseIntStrict(arg);
       return v === null ? null : { kind: 'panFrozen', rx: null, panFrozen: v === 1 };
     }),
+    makeGlobalParser('#FXT', (arg) => {
+      const v = parseIntStrict(arg);
+      return v === null ? null : { kind: 'fixedTune', rx: null, fixedTune: v === 1 };
+    }),
     makeGlobalParser('PONG', (arg) => {
       const t = arg.trim();
       if (!t) return { kind: 'pong', rx: null, epoch: null };
@@ -314,6 +318,8 @@
     makeRxParser('AP', (arg, rx) => parseApf(arg, rx)),
     makeRxParser('BN$', (arg, rx) => parseBand(arg, rx)),
     makeRxParser('BN', (arg, rx) => parseBand(arg, rx)),
+    makeRxParser('TD$', (arg, rx) => parseTextDecode(arg, rx)),
+    makeRxParser('TD', (arg, rx) => parseTextDecode(arg, rx)),
     makeRxParser('OV$', (arg, rx) => parseAdcOverflow(arg, rx)),
     makeRxParser('OV', (arg, rx) => parseAdcOverflow(arg, rx)),
     makeRxParser('FI$', (arg, rx) => {
@@ -448,6 +454,22 @@
     if (v === null) return null;
     const dBm = -127 + (v * 114) / 42;
     return { kind: 'smeterBars', rx, bars: v, dBm };
+  }
+
+  function parseTextDecode(arg, rx) {
+    const t = arg.trim();
+    if (!/^\d{1,3}$/.test(t)) return null;
+    const mode = parseInt(t[0], 10);
+    const threshold = t.length >= 2 ? parseInt(t[1], 10) : 0;
+    const lines = t.length >= 3 ? parseInt(t[2], 10) : 1;
+    return {
+      kind: 'textDecode',
+      rx,
+      mode,
+      threshold,
+      lines,
+      enabled: mode > 0,
+    };
   }
 
   function parseStep(arg, rx) {
@@ -677,17 +699,23 @@
     panRef(rx, refDbm) {
       return '#REF' + rxDollar(rx) + Math.round(clamp(Number(refDbm), -160, 20)) + ';';
     },
-    panScale(rx, scaleDb) {
-      return '#SCL' + rxDollar(rx) + Math.round(clamp(Number(scaleDb), 10, 150)) + ';';
+    panScale(rxOrScale, maybeScale) {
+      const scaleDb = maybeScale !== undefined ? maybeScale : rxOrScale;
+      return '#SCL' + Math.round(clamp(Number(scaleDb), 10, 150)) + ';';
     },
     panAvg(avg) {
       return '#AVG' + String(clamp(Math.round(Number(avg)), 1, 20)).padStart(2, '0') + ';';
     },
-    wfBlack(rx, wbs) {
-      return '#WBS' + rxDollar(rx) + Math.round(clamp(Number(wbs), 5, 30)) + ';';
+    wfBlack(rxOrWbs, maybeWbs) {
+      const wbs = maybeWbs !== undefined ? maybeWbs : rxOrWbs;
+      return '#WBS' + Math.round(clamp(Number(wbs), 5, 30)) + ';';
     },
-    autoRef(rx, on) {
-      return '#AR' + rxDollar(rx) + (on ? 'A' : 'M') + ';';
+    autoRef(rxOrOn, maybeOn) {
+      const on = maybeOn !== undefined ? maybeOn : rxOrOn;
+      return '#AR' + (on ? 'A' : 'M') + ';';
+    },
+    autoRefOneShot() {
+      return '#AR1;';
     },
     dualPan(mode) {
       return '#DPM' + clamp(Math.round(Number(mode)), 0, 2) + ';';
@@ -721,6 +749,13 @@
     fixedTune(on) {
       return '#FXT' + (on ? '1' : '0') + ';';
     },
+    textDecode(rx, mode = 0, threshold = 0, lines = undefined) {
+      const m = Math.round(clamp(Number(mode) || 0, 0, 4));
+      const t = Math.round(clamp(Number(threshold) || 0, 0, 9));
+      const fallbackLines = m > 0 ? 1 : 0;
+      const l = Math.round(clamp(Number(lines !== undefined ? lines : fallbackLines), 0, 4));
+      return `TD${rxDollar(rx)}${m}${t}${l};`;
+    },
     diversity(on) {
       return 'DV' + (on ? '1' : '0') + ';';
     },
@@ -750,10 +785,65 @@
   K4.BANDS = BANDS;
   K4.AUDIO_MIX_MODES = AUDIO_MIX_MODES;
 
+  /**
+   * Resolve which RX panadapter slice ('A' or 'B') is currently shown in Spectrum Geometry / HUD.
+   * Single-Pan modes (0 = Main A, 1 = Sub B) route display controls to the visible pan;
+   * Dual-Pan mode (2) routes to targetRx.
+   */
+  function resolveDisplayRx(snapshot, targetRx) {
+    if (snapshot && snapshot.dualPanMode === 2) {
+      return targetRx === 'B' ? 'B' : 'A';
+    }
+    return snapshot && snapshot.dualPanMode === 1 ? 'B' : 'A';
+  }
+
+  /**
+   * Describe valid TD text-decode options for the receiver's current MD / DT mode.
+   */
+  function describeTextDecode(rxState) {
+    const mode = rxState && Number.isFinite(rxState.mode) ? rxState.mode : 0;
+    const dt = rxState && Number.isFinite(rxState.dataSubMode) ? rxState.dataSubMode : 0;
+    if (mode === 3 || mode === 7) {
+      return {
+        kind: 'cw',
+        supported: true,
+        thresholdSupported: true,
+        reason: null,
+        options: [
+          { mode: 0, label: 'Decode: OFF' },
+          { mode: 2, label: 'CW 8-45 WPM' },
+          { mode: 3, label: 'CW 8-60 WPM' },
+          { mode: 4, label: 'CW 8-90 WPM' },
+        ],
+      };
+    }
+    if ((mode === 6 || mode === 9) && (dt === 2 || dt === 3)) {
+      return {
+        kind: 'data',
+        supported: true,
+        thresholdSupported: false,
+        reason: null,
+        options: [
+          { mode: 0, label: 'Decode: OFF' },
+          { mode: 1, label: 'DATA ON' },
+        ],
+      };
+    }
+    return {
+      kind: 'unsupported',
+      supported: false,
+      thresholdSupported: false,
+      reason: 'Requires CW, CW-R, FSK-D, or PSK-D mode',
+      options: [{ mode: 0, label: 'Decode: N/A' }],
+    };
+  }
+
   K4.CatCodec = {
     splitFrames,
     parseCommand,
     sUnitForDbm,
+    resolveDisplayRx,
+    describeTextDecode,
     builders,
   };
 })();

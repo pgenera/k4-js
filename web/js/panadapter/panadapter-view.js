@@ -21,7 +21,7 @@
         notchOn: false,
         notchHz: 750,
         panSpanHz: 48000,
-        panRefDbm: -50,
+        panRefDbm: -110,
         panScaleDb: 80,
         wfBlack: 14,
         miniPan: false,
@@ -39,7 +39,7 @@
         notchOn: false,
         notchHz: 750,
         panSpanHz: 48000,
-        panRefDbm: -50,
+        panRefDbm: -110,
         panScaleDb: 80,
         wfBlack: 14,
         miniPan: false,
@@ -85,13 +85,21 @@
         B: this._createPaneState(),
       };
 
-      this._miniPan = {
-        active: false,
-        rx: 'A',
-        centerFreqHz: 14074000,
-        spanKHz: 10,
-        dbmBins: null,
-        rawDbmScratch: new Float32Array(1024),
+      this._miniPanByRx = {
+        A: {
+          rx: 'A',
+          centerFreqHz: 14074000,
+          spanKHz: 10,
+          dbmBins: null,
+          rawDbmScratch: new Float32Array(1024),
+        },
+        B: {
+          rx: 'B',
+          centerFreqHz: 14025000,
+          spanKHz: 10,
+          dbmBins: null,
+          rawDbmScratch: new Float32Array(1024),
+        },
       };
 
       container.dataset.renderer = this._renderer.type;
@@ -159,14 +167,19 @@
 
     _onStateChange(snap) {
       if (this._destroyed || !snap) return;
-      const mpA = Boolean(snap.rxA && snap.rxA.miniPan);
-      const mpB = Boolean(snap.rxB && snap.rxB.miniPan);
-      if (!mpA && !mpB) {
-        this._miniPan.active = false;
-      } else {
-        this._miniPan.active = true;
-      }
       this._scheduleRender();
+    }
+
+    _activeMiniPanRx(snap) {
+      const rxA = (snap && snap.rxA) || {};
+      const rxB = (snap && snap.rxB) || {};
+      const aOn = Boolean(rxA.miniPan);
+      const bOn = Boolean(
+        snap && snap.subRxEnabled && rxB.miniPan && rxB.miniPanAvailable !== false
+      );
+      if (!aOn && !bOn) return null;
+      if (aOn && bOn) return this._targetRx === 'B' ? 'B' : 'A';
+      return bOn ? 'B' : 'A';
     }
 
     _scheduleRender() {
@@ -205,7 +218,7 @@
           : Number.isFinite(rxSnap.panCenterHz)
           ? rxSnap.panCenterHz
           : rxSnap.freqHz;
-        const refDbm = Number.isFinite(rxSnap.panRefDbm) ? rxSnap.panRefDbm : -50;
+        const refDbm = Number.isFinite(rxSnap.panRefDbm) ? rxSnap.panRefDbm : -110;
         const scaleDb = Number.isFinite(rxSnap.panScaleDb) ? rxSnap.panScaleDb : 80;
         const wfBlack = Number.isFinite(rxSnap.wfBlack) ? rxSnap.wfBlack : 14;
         const noiseFloorDbm = Number.isFinite(p.noiseFloorDbm)
@@ -228,13 +241,23 @@
         };
       };
 
+      const mpRx = this._activeMiniPanRx(snapshot);
       return {
         snapshot,
         panes: {
           A: buildPaneFrame('A', rxA),
           B: buildPaneFrame('B', rxB),
         },
-        miniPan: this._miniPan,
+        miniPanByRx: this._miniPanByRx,
+        miniPan: mpRx
+          ? Object.assign({ active: true }, this._miniPanByRx[mpRx])
+          : {
+              active: false,
+              rx: 'A',
+              centerFreqHz: 14074000,
+              spanKHz: 10,
+              dbmBins: null,
+            },
         targetRx: this._targetRx,
         dualPanMode: Number.isFinite(snapshot.dualPanMode)
           ? snapshot.dualPanMode
@@ -301,7 +324,7 @@
       const wfRow = K4.WaterfallRowMapper.mapRow(
         res.avgDbm,
         {
-          refDbm: Number.isFinite(rxSnap.panRefDbm) ? rxSnap.panRefDbm : -50,
+          refDbm: Number.isFinite(rxSnap.panRefDbm) ? rxSnap.panRefDbm : -110,
           scaleDb: Number.isFinite(rxSnap.panScaleDb) ? rxSnap.panScaleDb : 80,
           wfBlack: Number.isFinite(rxSnap.wfBlack) ? rxSnap.wfBlack : 14,
         },
@@ -319,28 +342,37 @@
 
     pushMiniPanPacket(pkt) {
       if (this._destroyed || !pkt || !pkt.bins || pkt.bins.length === 0) return;
+      const rx = pkt.rx === 'B' ? 'B' : 'A';
+      const buf = this._miniPanByRx[rx];
       const n = pkt.bins.length;
-      if (this._miniPan.rawDbmScratch.length < n) {
-        this._miniPan.rawDbmScratch = new Float32Array(n);
+      if (buf.rawDbmScratch.length < n) {
+        buf.rawDbmScratch = new Float32Array(n);
       }
       const dbm = K4.SpectrumScale.decodeMiniPanBins(
         pkt.bins,
-        this._miniPan.rawDbmScratch
+        buf.rawDbmScratch
       ).subarray(0, n);
 
-      this._miniPan.active = true;
-      this._miniPan.rx = pkt.rx === 'B' ? 'B' : 'A';
-      this._miniPan.centerFreqHz = Number.isFinite(pkt.centerFreqHz)
+      buf.centerFreqHz = Number.isFinite(pkt.centerFreqHz)
         ? pkt.centerFreqHz
-        : this._miniPan.centerFreqHz;
+        : buf.centerFreqHz;
       const rawSpanKHz = Number.isFinite(pkt.spanKHz)
         ? pkt.spanKHz
         : pkt.sampleRateKHz;
-      this._miniPan.spanKHz =
+      buf.spanKHz =
         Number.isFinite(rawSpanKHz) && rawSpanKHz > 0 ? rawSpanKHz : 10;
-      this._miniPan.dbmBins = dbm;
+      buf.dbmBins = dbm;
 
-      this._scheduleRender();
+      const snap = this._getSnapshot();
+      const rxSnap = rx === 'B' ? snap.rxB : snap.rxA;
+      const mpEnabled = Boolean(
+        rxSnap &&
+          rxSnap.miniPan &&
+          (rx === 'A' || (snap.subRxEnabled && rxSnap.miniPanAvailable !== false))
+      );
+      if (mpEnabled) {
+        this._scheduleRender();
+      }
     }
 
     setTargetRx(rx) {
@@ -402,7 +434,7 @@
         targetRx: this._targetRx,
         palette: this._palette,
         peakHold: this._peakHold,
-        miniPanActive: this._miniPan.active,
+        miniPanActive: Boolean(this._activeMiniPanRx(snap)),
       };
     }
 

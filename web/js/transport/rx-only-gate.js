@@ -154,6 +154,8 @@
     '#DSM',
     '#HDM',
     '#HDS',
+    '#HDSM',
+    '#SPM',
     '#UNM',
     '#NBL',
     '#SFL',

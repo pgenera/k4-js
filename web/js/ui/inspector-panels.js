@@ -38,6 +38,7 @@
     { id: 'thermal', label: 'Thermal' },
     { id: 'viridis', label: 'Viridis' },
     { id: 'cyan', label: 'Cyan' },
+    { id: 'k4', label: 'K4 Classic' },
   ];
   const LATENCY_MS = [35, 60, 75, 95, 115, 140, 180, 240];
 
@@ -157,6 +158,41 @@
       },
     };
   }
+
+  function syncDecodeSelect(selectEl, rxState) {
+    const desc =
+      K4.CatCodec && typeof K4.CatCodec.describeTextDecode === 'function'
+        ? K4.CatCodec.describeTextDecode(rxState)
+        : {
+            supported: false,
+            thresholdSupported: false,
+            reason: 'Decode unavailable',
+            options: [{ mode: 0, label: 'Decode: N/A' }],
+          };
+    const sig = desc.options.map((o) => `${o.mode}:${o.label}`).join('|');
+    if (selectEl.dataset.sig !== sig) {
+      selectEl.textContent = '';
+      for (let i = 0; i < desc.options.length; i++) {
+        const opt = document.createElement('option');
+        opt.value = String(desc.options[i].mode);
+        opt.textContent = desc.options[i].label;
+        selectEl.appendChild(opt);
+      }
+      selectEl.dataset.sig = sig;
+    }
+    const modeNum =
+      rxState && Number.isFinite(rxState.textDecodeMode) ? rxState.textDecodeMode : 0;
+    const hasOpt = desc.options.some((o) => o.mode === modeNum);
+    const targetVal = String(hasOpt ? modeNum : 0);
+    if (document.activeElement !== selectEl && selectEl.value !== targetVal) {
+      selectEl.value = targetVal;
+    }
+    selectEl.disabled = !desc.supported;
+    selectEl.title = desc.reason || 'Text Decode Mode (TD / TD$)';
+    return desc;
+  }
+
+  K4.syncDecodeSelect = syncDecodeSelect;
 
   class InspectorPanels {
     constructor(opts) {
@@ -634,13 +670,70 @@
       dspCard.appendChild(this._refs.nmSlider.row);
 
       pane.appendChild(dspCard);
+
+      const tdCard = makeCard('CW / DATA Text Decode (TD)');
+      const tdRow = el('div', 'k4-decode-row');
+      const tdSelect = document.createElement('select');
+      tdSelect.className = 'k4-select';
+      tdSelect.dataset.testid = 'dsp-td-select';
+      tdSelect.setAttribute('aria-label', 'Text Decode Mode');
+      tdSelect.addEventListener('change', () => {
+        if (typeof this.client.setTextDecode === 'function') {
+          this.client.setTextDecode(this.getTargetRx(), { mode: Number(tdSelect.value) });
+        }
+      });
+      tdRow.appendChild(tdSelect);
+      this._refs.tdSelect = tdSelect;
+
+      const tdThreshSelect = document.createElement('select');
+      tdThreshSelect.className = 'k4-select';
+      tdThreshSelect.dataset.testid = 'dsp-td-thresh';
+      tdThreshSelect.setAttribute('aria-label', 'CW Decode Threshold');
+      const autoOpt = document.createElement('option');
+      autoOpt.value = '0';
+      autoOpt.textContent = 'Thr: AUTO';
+      tdThreshSelect.appendChild(autoOpt);
+      for (let t = 1; t <= 9; t++) {
+        const opt = document.createElement('option');
+        opt.value = String(t);
+        opt.textContent = `Thr: ${t}`;
+        tdThreshSelect.appendChild(opt);
+      }
+      tdThreshSelect.addEventListener('change', () => {
+        if (typeof this.client.setTextDecode === 'function') {
+          this.client.setTextDecode(this.getTargetRx(), {
+            threshold: Number(tdThreshSelect.value),
+          });
+        }
+      });
+      tdRow.appendChild(tdThreshSelect);
+      this._refs.tdThreshSelect = tdThreshSelect;
+      tdCard.appendChild(tdRow);
+
+      this._refs.tdNote = el('div', 'k4-decode-note', 'Requires CW, CW-R, FSK-D, or PSK-D mode');
+      tdCard.appendChild(this._refs.tdNote);
+      pane.appendChild(tdCard);
+
       return pane;
+    }
+
+    _dispRx(snapshot) {
+      const s = snapshot || this._snap();
+      return K4.CatCodec && K4.CatCodec.resolveDisplayRx
+        ? K4.CatCodec.resolveDisplayRx(s, this.getTargetRx())
+        : s.dualPanMode === 2
+        ? this.getTargetRx()
+        : s.dualPanMode === 1
+        ? 'B'
+        : 'A';
     }
 
     _buildDisplayPane() {
       const pane = el('div', 'k4-panel-pane');
 
-      const spanCard = makeCard('Spectrum Geometry');
+      const panBadge = el('span', 'k4-pane-badge', 'PAN A');
+      this._refs.dispBadge = panBadge;
+      const spanCard = makeCard('Spectrum Geometry', panBadge);
       const spanGrid = el('div', 'k4-pill-grid');
       this._refs.spanBtns = [];
       for (let i = 0; i < SPAN_PRESETS.length; i++) {
@@ -648,7 +741,7 @@
         const btn = el('button', 'k4-choice-pill', `${hz / 1000}k`);
         btn.type = 'button';
         btn.addEventListener('click', () => {
-          this.client.setDisplay(this.getTargetRx(), { panSpanHz: hz });
+          this.client.setDisplay(this._dispRx(), { panSpanHz: hz });
         });
         spanGrid.appendChild(btn);
         this._refs.spanBtns.push({ hz, btn });
@@ -663,7 +756,7 @@
         value: 48,
         formatValue: (v) => `${v} kHz`,
         onInput: (v) => {
-          this.client.setDisplay(this.getTargetRx(), { panSpanHz: v * 1000 });
+          this.client.setDisplay(this._dispRx(), { panSpanHz: v * 1000 });
         },
       });
       spanCard.appendChild(this._refs.spanSlider.row);
@@ -671,12 +764,12 @@
       this._refs.refSlider = makeSliderRow({
         label: 'Reference (#REF)',
         min: -160,
-        max: 20,
+        max: 0,
         step: 1,
-        value: -50,
+        value: -110,
         formatValue: (v) => `${v} dBm`,
         onInput: (v) => {
-          this.client.setDisplay(this.getTargetRx(), { panRefDbm: v });
+          this.client.setDisplay(this._dispRx(), { panRefDbm: v });
         },
       });
       spanCard.appendChild(this._refs.refSlider.row);
@@ -689,7 +782,7 @@
         value: 80,
         formatValue: (v) => `${v} dB`,
         onInput: (v) => {
-          this.client.setDisplay(this.getTargetRx(), { panScaleDb: v });
+          this.client.setDisplay(this._dispRx(), { panScaleDb: v });
         },
       });
       spanCard.appendChild(this._refs.scaleSlider.row);
@@ -702,7 +795,7 @@
         value: 4,
         formatValue: (v) => `${v} frames`,
         onInput: (v) => {
-          this.client.setDisplay(this.getTargetRx(), { panAvg: v });
+          this.client.setDisplay(this._dispRx(), { panAvg: v });
         },
       });
       spanCard.appendChild(this._refs.avgSlider.row);
@@ -715,38 +808,82 @@
         value: 14,
         formatValue: (v) => String(v),
         onInput: (v) => {
-          this.client.setDisplay(this.getTargetRx(), { wfBlack: v });
+          this.client.setDisplay(this._dispRx(), { wfBlack: v });
         },
       });
       spanCard.appendChild(this._refs.wbsSlider.row);
 
       this._refs.autoRefSwitch = makeSwitchRow('Auto-Reference (#AR)', () => {
-        const rx = this.getTargetRx();
+        const rx = this._dispRx();
         const s = this._rxSnap(rx);
         this.client.setDisplay(rx, { autoRef: !s.autoRef });
       });
       spanCard.appendChild(this._refs.autoRefSwitch.row);
+
+      const actRow = el('div', 'k4-pill-grid k4-pill-grid--2');
+      const centerBtn = el('button', 'k4-choice-pill', 'Center on VFO (FC)');
+      centerBtn.type = 'button';
+      centerBtn.addEventListener('click', () => {
+        const rx = this._dispRx();
+        const b = this._builders();
+        this._sendCat(b.centerPan ? b.centerPan(rx) : rx === 'B' ? 'FC$;' : 'FC;');
+      });
+      const arNowBtn = el('button', 'k4-choice-pill', 'Auto-Ref Now (#AR1)');
+      arNowBtn.type = 'button';
+      arNowBtn.addEventListener('click', () => {
+        if (typeof this.client.applyAutoRefNow === 'function') {
+          this.client.applyAutoRefNow();
+        } else {
+          const b = this._builders();
+          this._sendCat((b.autoRefOneShot ? b.autoRefOneShot() : '#AR1;') + '#REF;#REF$;');
+        }
+      });
+      actRow.appendChild(centerBtn);
+      actRow.appendChild(arNowBtn);
+      spanCard.appendChild(actRow);
+
+      this._refs.fixedTuneSwitch = makeSwitchRow('Fixed Tune (#FXT)', () => {
+        const s = this._snap();
+        this.client.setDisplay(this._dispRx(), { fixedTune: !s.fixedTune });
+      });
+      spanCard.appendChild(this._refs.fixedTuneSwitch.row);
+
       pane.appendChild(spanCard);
 
       const layoutCard = makeCard('Panadapter Layout & LUT');
       const dpmGroup = el('div', 'k4-seg-group');
-      const dpmSingle = el('button', 'k4-seg-btn', '1x Single Pan');
-      dpmSingle.type = 'button';
-      dpmSingle.addEventListener('click', () => this.client.setDisplay(this.getTargetRx(), { dualPanMode: 0 }));
-      const dpmDual = el('button', 'k4-seg-btn', '2x Dual Split');
+      const dpmMain = el('button', 'k4-seg-btn', '1x Main (A)');
+      dpmMain.type = 'button';
+      dpmMain.addEventListener('click', () =>
+        this.client.setDisplay(this._dispRx(), { dualPanMode: 0 })
+      );
+      const dpmSub = el('button', 'k4-seg-btn is-amber', '1x Sub (B)');
+      dpmSub.type = 'button';
+      dpmSub.addEventListener('click', () =>
+        this.client.setDisplay(this._dispRx(), { dualPanMode: 1 })
+      );
+      const dpmDual = el('button', 'k4-seg-btn', '2x Dual');
       dpmDual.type = 'button';
-      dpmDual.addEventListener('click', () => this.client.setDisplay(this.getTargetRx(), { dualPanMode: 2 }));
-      dpmGroup.appendChild(dpmSingle);
+      dpmDual.addEventListener('click', () =>
+        this.client.setDisplay(this._dispRx(), { dualPanMode: 2 })
+      );
+      dpmGroup.appendChild(dpmMain);
+      dpmGroup.appendChild(dpmSub);
       dpmGroup.appendChild(dpmDual);
       layoutCard.appendChild(dpmGroup);
-      this._refs.dpmBtns = { 0: dpmSingle, 2: dpmDual };
+      this._refs.dpmBtns = { 0: dpmMain, 1: dpmSub, 2: dpmDual };
 
-      this._refs.miniPanSwitch = makeSwitchRow('Mini-Pan Loupe (#MP)', () => {
-        const rx = this.getTargetRx();
-        const s = this._rxSnap(rx);
-        this.client.setDisplay(rx, { miniPan: !s.miniPan });
+      this._refs.miniPanASwitch = makeSwitchRow('Mini-Pan VFO A (#MP)', () => {
+        const s = this._rxSnap('A');
+        this.client.setDisplay('A', { miniPan: !s.miniPan });
       });
-      layoutCard.appendChild(this._refs.miniPanSwitch.row);
+      layoutCard.appendChild(this._refs.miniPanASwitch.row);
+
+      this._refs.miniPanBSwitch = makeSwitchRow('Mini-Pan VFO B (#MP$)', () => {
+        const s = this._rxSnap('B');
+        this.client.setDisplay('B', { miniPan: !s.miniPan });
+      });
+      layoutCard.appendChild(this._refs.miniPanBSwitch.row);
 
       this._refs.peakHoldSwitch = makeSwitchRow('Peak Hold Trace', () => {
         this.onSetPeakHold(!this.getPeakHold());
@@ -1196,8 +1333,35 @@
       if (this._refs.nmSwitch) this._refs.nmSwitch.sync(rxS.notchOn);
       if (this._refs.nmSlider) this._refs.nmSlider.sync(rxS.notchHz ?? 750);
 
-      // Display controls
-      const spanHz = Number(rxS.panSpanHz) || 48000;
+      if (this._refs.tdSelect) {
+        const desc = syncDecodeSelect(this._refs.tdSelect, rxS);
+        if (this._refs.tdThreshSelect) {
+          this._refs.tdThreshSelect.disabled = !desc.thresholdSupported;
+          const thrVal = String(rxS.textDecodeThreshold ?? 0);
+          if (
+            document.activeElement !== this._refs.tdThreshSelect &&
+            this._refs.tdThreshSelect.value !== thrVal
+          ) {
+            this._refs.tdThreshSelect.value = thrVal;
+          }
+        }
+        if (this._refs.tdNote) {
+          this._refs.tdNote.textContent = desc.supported
+            ? rxS.textDecodeMode > 0
+              ? 'Decoding active (TB polling)'
+              : 'Ready for CW / DATA decode'
+            : desc.reason;
+        }
+      }
+
+      // Display controls (routed to the visible display RX when Single-Pan)
+      const dispRx = this._dispRx(snapshot);
+      const dispS = (dispRx === 'B' ? snapshot.rxB : snapshot.rxA) || {};
+      if (this._refs.dispBadge) {
+        this._refs.dispBadge.textContent = `PAN ${dispRx}`;
+        this._refs.dispBadge.classList.toggle('is-amber', dispRx === 'B');
+      }
+      const spanHz = Number(dispS.panSpanHz) || 48000;
       if (this._refs.spanBtns) {
         for (let i = 0; i < this._refs.spanBtns.length; i++) {
           const { hz, btn } = this._refs.spanBtns[i];
@@ -1205,17 +1369,37 @@
         }
       }
       if (this._refs.spanSlider) this._refs.spanSlider.sync(Math.round(spanHz / 1000));
-      if (this._refs.refSlider) this._refs.refSlider.sync(rxS.panRefDbm ?? -50);
-      if (this._refs.scaleSlider) this._refs.scaleSlider.sync(rxS.panScaleDb ?? 80);
+      if (this._refs.refSlider) this._refs.refSlider.sync(dispS.panRefDbm ?? -110);
+      if (this._refs.scaleSlider) this._refs.scaleSlider.sync(dispS.panScaleDb ?? 80);
       if (this._refs.avgSlider) this._refs.avgSlider.sync(snapshot.panAvg ?? 4);
-      if (this._refs.wbsSlider) this._refs.wbsSlider.sync(rxS.wfBlack ?? 14);
-      if (this._refs.autoRefSwitch) this._refs.autoRefSwitch.sync(rxS.autoRef);
+      if (this._refs.wbsSlider) this._refs.wbsSlider.sync(dispS.wfBlack ?? 14);
+      if (this._refs.autoRefSwitch) this._refs.autoRefSwitch.sync(dispS.autoRef);
+      if (this._refs.fixedTuneSwitch) this._refs.fixedTuneSwitch.sync(snapshot.fixedTune);
       if (this._refs.dpmBtns) {
-        const dpm = snapshot.dualPanMode === 2 ? 2 : 0;
+        const dpm = snapshot.dualPanMode === 1 ? 1 : snapshot.dualPanMode === 2 ? 2 : 0;
+        const noSub = snapshot.hasSubRx === false;
         this._refs.dpmBtns[0].classList.toggle('is-active', dpm === 0);
+        this._refs.dpmBtns[1].classList.toggle('is-active', dpm === 1);
         this._refs.dpmBtns[2].classList.toggle('is-active', dpm === 2);
+        this._refs.dpmBtns[1].disabled = noSub;
+        this._refs.dpmBtns[2].disabled = noSub;
+        const subTip = noSub ? 'Requires Sub-RX option (OM lacks S)' : '';
+        this._refs.dpmBtns[1].title = subTip;
+        this._refs.dpmBtns[2].title = subTip;
       }
-      if (this._refs.miniPanSwitch) this._refs.miniPanSwitch.sync(rxS.miniPan);
+      const rxAState = snapshot.rxA || {};
+      const rxBState = snapshot.rxB || {};
+      if (this._refs.miniPanASwitch) this._refs.miniPanASwitch.sync(rxAState.miniPan);
+      if (this._refs.miniPanBSwitch) {
+        this._refs.miniPanBSwitch.sync(rxBState.miniPan);
+        const mpBDisabled = !snapshot.subRxEnabled || rxBState.miniPanAvailable === false;
+        this._refs.miniPanBSwitch.btn.disabled = mpBDisabled;
+        this._refs.miniPanBSwitch.btn.title = mpBDisabled
+          ? !snapshot.subRxEnabled
+            ? 'Enable Sub-RX (SB1) first'
+            : 'Mini-Pan VFO B unavailable (#MP$-1)'
+          : '';
+      }
       if (this._refs.peakHoldSwitch) this._refs.peakHoldSwitch.sync(this.getPeakHold());
       if (this._refs.paletteBtns) {
         const pal = this.getPalette();

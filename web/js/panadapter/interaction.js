@@ -54,9 +54,9 @@
       this._pinchLastSentSpanHz = 0;
       this._pinchRx = 'A';
 
-      this._lastPanSendMs = 0;
-      this._lastEdgeSendMs = 0;
-      this._lastPinchSendMs = 0;
+      this._lastPanSendMs = -1e9;
+      this._lastEdgeSendMs = -1e9;
+      this._lastPinchSendMs = -1e9;
       this._lastRightHandledMs = -1e9;
 
       this._onPointerDown = this._handlePointerDown.bind(this);
@@ -402,8 +402,7 @@
           this._pinchStartDist = this._pinchDist();
           this._pinchStartSpanHz = hit ? hit.userSpanHz : 48000;
           this._pinchLastSentSpanHz = this._pinchStartSpanHz;
-          this._pinchRx =
-            hit && hit.paneRx === 'B' ? 'B' : this.view.getTargetRx();
+          this._pinchRx = hit && hit.paneRx === 'B' ? 'B' : 'A';
         } else if (this._touches.size === 1) {
           this._wasPinched = false;
           this._dragMode = 'pan';
@@ -627,16 +626,17 @@
       const hit = this._hitTest(xPx, yPx);
       if (!hit) return;
 
-      const rx =
-        hit.paneRx === 'B' || e.shiftKey ? 'B' : this.view.getTargetRx();
-
       if (e.ctrlKey || e.metaKey || hit.inAxis) {
+        const spanRx = hit.paneRx === 'B' ? 'B' : 'A';
         const curIdx = nearestSpanIndex(hit.userSpanHz);
         const dir = e.deltaY < 0 ? -1 : 1;
         const nextIdx = clamp(curIdx + dir, 0, SPAN_LADDER_HZ.length - 1);
-        this._sendSpan(rx, SPAN_LADDER_HZ[nextIdx]);
+        this._sendSpan(spanRx, SPAN_LADDER_HZ[nextIdx]);
         return;
       }
+
+      const rx =
+        hit.paneRx === 'B' || e.shiftKey ? 'B' : this.view.getTargetRx();
 
       const delta =
         Math.abs(e.deltaX) > Math.abs(e.deltaY) ? -e.deltaX : e.deltaY;

@@ -763,6 +763,29 @@
   border-color: var(--border-medium);
 }
 
+.k4-ticker-select {
+  height: 20px;
+  max-width: 112px;
+  padding: 0 4px;
+  border-radius: var(--radius-xs);
+  border: 1px solid var(--border-hairline);
+  background: var(--bg-control);
+  color: var(--text-secondary);
+  font-size: 10px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.k4-ticker-select:hover:not(:disabled) {
+  color: var(--text-primary);
+  border-color: var(--border-medium);
+}
+
+.k4-ticker-select:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
 .k4-ticker-body {
   color-scheme: dark;
   scrollbar-width: thin;
@@ -897,6 +920,46 @@
   letter-spacing: 0.05em;
   text-transform: uppercase;
   color: var(--text-muted);
+}
+
+.k4-pane-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--accent-vfo-a-border);
+  background: var(--accent-vfo-a-soft);
+  color: var(--accent-vfo-a);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.k4-pane-badge.is-amber {
+  border-color: var(--accent-vfo-b-border);
+  background: var(--accent-vfo-b-soft);
+  color: var(--accent-vfo-b);
+}
+
+.k4-seg-btn:disabled,
+.k4-choice-pill:disabled,
+.k4-switch-btn:disabled,
+.k4-select:disabled {
+  opacity: 0.42;
+  cursor: not-allowed;
+}
+
+.k4-decode-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px;
+  align-items: center;
+}
+
+.k4-decode-note {
+  font-size: 11px;
+  color: var(--text-dim);
 }
 
 .k4-seg-group {

@@ -344,26 +344,28 @@
     assertApprox(afterClear.avgDbm[0], -80, 1e-4, 'PowerAverager.clear resets history');
 
     // WaterfallRowMapper reserves 0 for blank rows, mapping valid bins to 1..255
-    const wfRow = K4.WaterfallRowMapper.mapRow(new Float32Array([-200, -50, 0]), {
-      refDbm: -50,
+    // Bottom-referenced K4 #REF convention: lowDbm = refDbm - scaleDb * (wbs / 40)
+    const wfRow = K4.WaterfallRowMapper.mapRow(new Float32Array([-200, -110, -58, 0]), {
+      refDbm: -110,
       scaleDb: 80,
       wfBlack: 14,
     });
     assertEqual(wfRow[0], 1, 'Waterfall min bin mapped to 1 (never 0)');
-    assertEqual(wfRow[1], 255, 'Waterfall ref bin mapped to 255');
-    assertEqual(wfRow[2], 255, 'Waterfall clipped max bin mapped to 255');
+    assertEqual(wfRow[1], 90, 'Waterfall bottom ref bin (-110 dBm at WBS=14) maps above floor');
+    assertEqual(wfRow[2], 255, 'Waterfall top bin (-58 dBm) mapped to 255');
+    assertEqual(wfRow[3], 255, 'Waterfall clipped max bin mapped to 255');
 
     // Varying WBS (wfBlack 5 vs 30) shifts black-level floor while staying within 1..255
-    const sampleBins = new Float32Array([-200, -75, -55, 0]);
-    const wfWbs5 = K4.WaterfallRowMapper.mapRow(sampleBins, { refDbm: -50, scaleDb: 80, wfBlack: 5 });
-    const wfWbs30 = K4.WaterfallRowMapper.mapRow(sampleBins, { refDbm: -50, scaleDb: 80, wfBlack: 30 });
+    const sampleBins = new Float32Array([-200, -135, -100, 0]);
+    const wfWbs5 = K4.WaterfallRowMapper.mapRow(sampleBins, { refDbm: -110, scaleDb: 80, wfBlack: 5 });
+    const wfWbs30 = K4.WaterfallRowMapper.mapRow(sampleBins, { refDbm: -110, scaleDb: 80, wfBlack: 30 });
     assertEqual(wfWbs5[0], 1, 'WBS=5 clamps floor bin to 1');
     assertEqual(wfWbs30[0], 1, 'WBS=30 clamps floor bin to 1');
     assertEqual(wfWbs5[3], 255, 'WBS=5 clamps max bin to 255');
     assertEqual(wfWbs30[3], 255, 'WBS=30 clamps max bin to 255');
-    assertEqual(wfWbs5[1], 1, 'WBS=5 maps -75 dBm (below -60 floor) to 1');
-    assert(wfWbs30[1] > wfWbs5[1] && wfWbs30[1] < 255, 'WBS=30 widens dynamic range at -75 dBm');
-    assert(wfWbs30[2] > wfWbs5[2] && wfWbs30[2] < 255, 'WBS=30 raises normalized brightness at -55 dBm');
+    assertEqual(wfWbs5[1], 1, 'WBS=5 maps -135 dBm (below -120 floor) to 1');
+    assert(wfWbs30[1] > wfWbs5[1] && wfWbs30[1] < 255, 'WBS=30 widens dynamic range at -135 dBm');
+    assert(wfWbs30[2] > wfWbs5[2] && wfWbs30[2] < 255, 'WBS=30 raises normalized brightness at -100 dBm');
   });
 
   // 7. Audio: PcmDecoder at odd byte offset 7 (EM1 S16LE & EM0 S32LE) + mixStereoSample
@@ -1016,6 +1018,308 @@
       assert(filterEdits.length >= 1, 'Edge drag (>5px) applies filter edit');
     } finally {
       interaction.destroy();
+    }
+  });
+
+  // 15. Wave 2: Global #SCL/#WBS/#AR, #FXT, #ARM before manual #REF, and #HDSM/#SPM gate
+  test('Wave 2: global #SCL/#WBS/#AR, #FXT, #ARM before #REF, and RxOnlyGate #HDSM/#SPM', () => {
+    const K4 = globalThis.K4;
+
+    assertEqual(K4.CatCodec.builders.panScale(50), '#SCL50;', '1-arg global panScale');
+    assertEqual(K4.CatCodec.builders.panScale('B', 60), '#SCL60;', '2-arg compat panScale strips $');
+    assertEqual(K4.CatCodec.builders.wfBlack(11), '#WBS11;', '1-arg global wfBlack');
+    assertEqual(K4.CatCodec.builders.wfBlack('B', 14), '#WBS14;', '2-arg compat wfBlack strips $');
+    assertEqual(K4.CatCodec.builders.autoRef(true), '#ARA;', '1-arg global autoRef ON');
+    assertEqual(K4.CatCodec.builders.autoRef('B', false), '#ARM;', '2-arg compat autoRef OFF strips $');
+    assertEqual(K4.CatCodec.builders.autoRefOneShot(), '#AR1;', 'builder autoRefOneShot');
+
+    const fxt = K4.CatCodec.parseCommand('#FXT1;');
+    assertEqual(fxt && fxt.kind, 'fixedTune', '#FXT1 kind');
+    assertEqual(fxt && fxt.fixedTune, true, '#FXT1 fixedTune true');
+
+    const state = new K4.RadioState();
+    assertEqual(state.getSnapshot().rxA.panRefDbm, -110, 'Default rxA panRefDbm is -110');
+    assertEqual(state.getSnapshot().rxB.panRefDbm, -110, 'Default rxB panRefDbm is -110');
+
+    for (const frame of K4.CatCodec.splitFrames('#SCL50;#WBS11;#ARA;#FXT1;OMAP;')) {
+      const p = K4.CatCodec.parseCommand(frame);
+      if (p) state.applyParsedCat(p);
+    }
+    let snap = state.getSnapshot();
+    assertEqual(snap.rxA.panScaleDb, 50, 'Global #SCL50 updates rxA.panScaleDb');
+    assertEqual(snap.rxB.panScaleDb, 50, 'Global #SCL50 updates rxB.panScaleDb');
+    assertEqual(snap.rxA.wfBlack, 11, 'Global #WBS11 updates rxA.wfBlack');
+    assertEqual(snap.rxB.wfBlack, 11, 'Global #WBS11 updates rxB.wfBlack');
+    assertEqual(snap.rxA.autoRef, true, 'Global #ARA updates rxA.autoRef');
+    assertEqual(snap.rxB.autoRef, true, 'Global #ARA updates rxB.autoRef');
+    assertEqual(snap.fixedTune, true, '#FXT1 sets fixedTune true');
+    assertEqual(snap.hasSubRx, false, 'OMAP clears hasSubRx');
+    assertEqual(snap.optionModules, 'AP', 'OMAP stores optionModules');
+
+    state.applyParsedCat(K4.CatCodec.parseCommand('OMAPS;'));
+    assertEqual(state.getSnapshot().hasSubRx, true, 'OMAPS sets hasSubRx true');
+
+    const client = new K4.Client({ state });
+    try {
+      const refWhileAuto = client.setDisplay('A', { panRefDbm: -108 });
+      assertEqual(refWhileAuto.sanitized, '#ARM;#REF-108;', 'Manual #REF while Auto-Ref active prepends #ARM;');
+      snap = state.getSnapshot();
+      assertEqual(snap.rxA.autoRef, false, 'Manual #REF clears rxA.autoRef');
+      assertEqual(snap.rxB.autoRef, false, 'Manual #REF clears rxB.autoRef');
+
+      assertEqual(
+        client.setDisplay('A', { autoRef: true }).sanitized,
+        '#ARA;#AR1;#REF;#REF$;',
+        'autoRef:true sends #ARA;#AR1;#REF;#REF$;'
+      );
+      assertEqual(
+        client.setDisplay('A', { autoRef: false }).sanitized,
+        '#ARM;#REF;#REF$;',
+        'autoRef:false sends #ARM;#REF;#REF$;'
+      );
+      assertEqual(
+        client.applyAutoRefNow().sanitized,
+        '#AR1;#REF;#REF$;',
+        'applyAutoRefNow sends #AR1;#REF;#REF$;'
+      );
+      assertEqual(
+        client.setDisplay('A', { miniPan: true }).sanitized,
+        '#MP1;#MP;',
+        'miniPan A sends #MP1;#MP;'
+      );
+      assertEqual(
+        client.setDisplay('B', { miniPan: true }).sanitized,
+        '#MP$1;#MP$;',
+        'miniPan B sends #MP$1;#MP$;'
+      );
+    } finally {
+      client._stopKeepalive();
+    }
+
+    const gate = new K4.RxOnlyGate('rx-only');
+    const allowRes = gate.inspectCat('#HDSM1;#SPM0;#AR1;#FXT1;TD201;TB;');
+    assertDeepEqual(allowRes.blocked, [], 'RxOnlyGate allows #HDSM, #SPM, #AR1, #FXT, TD, TB');
+    assertEqual(allowRes.allowed.length, 6, 'All 6 Wave 2 commands allowed');
+    const blockRes = gate.inspectCat('#TX1;#CAL1;');
+    assertEqual(blockRes.allowed.length, 0, 'RxOnlyGate still blocks #TX1 and #CAL1');
+  });
+
+  // 16. Wave 2: Single-Pan dispRx routing, pinch/wheel hit.paneRx, Mini-Pan non-flicker, and k4 LUT
+  test('Wave 2: Single-Pan dispRx routing, Mini-Pan non-flicker, and k4 LUT', () => {
+    const K4 = globalThis.K4;
+
+    assertEqual(K4.CatCodec.resolveDisplayRx({ dualPanMode: 0 }, 'B'), 'A', 'Single-Pan Main resolves B->A');
+    assertEqual(K4.CatCodec.resolveDisplayRx({ dualPanMode: 1 }, 'A'), 'B', 'Single-Pan Sub resolves A->B');
+    assertEqual(K4.CatCodec.resolveDisplayRx({ dualPanMode: 2 }, 'B'), 'B', 'Dual-Pan preserves targetRx B');
+
+    // Interaction: wheel span zoom & pinch must target hit.paneRx even if targetRx is B
+    const listeners = {};
+    const surface = {
+      style: {},
+      getBoundingClientRect: () => ({ left: 0, top: 0, width: 800, height: 320 }),
+      addEventListener: (t, fn) => { listeners[t] = fn; },
+      removeEventListener: (t, fn) => { if (listeners[t] === fn) delete listeners[t]; },
+      setPointerCapture: () => {},
+      releasePointerCapture: () => {},
+    };
+    const spanCalls = [];
+    const snapshot = {
+      cwPitchHz: 500,
+      dualPanMode: 0,
+      subRxEnabled: true,
+      rxA: { freqHz: 14074000, mode: 2, bwHz: 2400, ifShiftHz: 1500, panCenterHz: 14074000, panSpanHz: 48000, stepHz: 100 },
+      rxB: { freqHz: 14025000, mode: 3, bwHz: 500, ifShiftHz: 500, panCenterHz: 14025000, panSpanHz: 96000, stepHz: 100 },
+    };
+    const viewStub = {
+      getTargetRx: () => 'B',
+      getFrameState: () => ({ snapshot, dualPanMode: 0, panes: { A: { panCenterHz: 14074000, userSpanHz: 48000 } } }),
+      setHoverState: () => {},
+      setLastClickFreqHz: () => {},
+    };
+    const rendererStub = {
+      getLayouts: () => [{ rx: 'A', paneRect: { x: 0, y: 0, w: 800, h: 320 }, specRect: { x: 0, y: 0, w: 800, h: 180 }, axisRect: { x: 0, y: 180, w: 800, h: 24 } }],
+    };
+    const interaction = new K4.PanadapterInteraction({
+      surface,
+      renderer: rendererStub,
+      view: viewStub,
+      state: { getSnapshot: () => snapshot },
+      client: { setDisplay: (rx, patch) => spanCalls.push({ rx, patch }) },
+    });
+    try {
+      listeners.wheel({
+        preventDefault: () => {},
+        clientX: 400,
+        clientY: 100,
+        deltaX: 0,
+        deltaY: -100,
+        ctrlKey: true,
+        metaKey: false,
+        shiftKey: false,
+        altKey: false,
+      });
+      assertEqual(spanCalls.length, 1, 'ctrl+wheel emits setDisplay');
+      assertEqual(spanCalls[0].rx, 'A', 'ctrl+wheel zooms visible pane A even when targetRx is B');
+
+      listeners.pointerdown({ type: 'pointerdown', pointerId: 11, pointerType: 'touch', button: 0, clientX: 300, clientY: 100 });
+      listeners.pointerdown({ type: 'pointerdown', pointerId: 12, pointerType: 'touch', button: 0, clientX: 500, clientY: 100 });
+      listeners.pointermove({ type: 'pointermove', pointerId: 12, pointerType: 'touch', button: 0, clientX: 700, clientY: 100 });
+      listeners.pointerup({ type: 'pointerup', pointerId: 11, pointerType: 'touch', button: 0, clientX: 300, clientY: 100 });
+      listeners.pointerup({ type: 'pointerup', pointerId: 12, pointerType: 'touch', button: 0, clientX: 700, clientY: 100 });
+      assert(spanCalls.length >= 2 && spanCalls[spanCalls.length - 1].rx === 'A', 'Pinch zooms visible pane A even when targetRx is B');
+    } finally {
+      interaction.destroy();
+    }
+
+    // Mini-Pan non-flicker gating
+    const host = document.createElement('div');
+    host.style.width = '640px';
+    host.style.height = '320px';
+    document.body.appendChild(host);
+    const mpState = new K4.RadioState();
+    const view = new K4.PanadapterView({ container: host, state: mpState, renderer: '2d' });
+    try {
+      const mpPktA = { type: 3, rx: 'A', centerFreqHz: 14074000, spanKHz: 10, bins: new Uint8Array([20, 40, 60, 80]) };
+      view.pushMiniPanPacket(mpPktA);
+      view._renderNow(false);
+      assertEqual(view.getMetrics().miniPanActive, false, '0x03 packets do not activate Mini-Pan when #MP0');
+      assertEqual(view.getFrameState().miniPan.active, false, 'FrameState miniPan.active stays false when #MP0');
+      const mpBox = host.querySelector('.k4-minipan-box');
+      assertEqual(mpBox && mpBox.style.display, 'none', 'Mini-Pan canvas stays hidden when #MP0');
+
+      mpState.applyParsedCat(K4.CatCodec.parseCommand('#MP1;'));
+      view._renderNow(false);
+      assertEqual(view.getMetrics().miniPanActive, true, 'Mini-Pan activates when #MP1');
+      assertEqual(view.getFrameState().miniPan.dbmBins.length, 4, 'Buffered 0x03 bins shown immediately on #MP1');
+      assert(mpBox && mpBox.style.display !== 'none', 'Mini-Pan canvas becomes visible on #MP1');
+
+      for (const f of K4.CatCodec.splitFrames('#MP0;#MP$1;')) {
+        mpState.applyParsedCat(K4.CatCodec.parseCommand(f));
+      }
+      assertEqual(view.getMetrics().miniPanActive, false, 'Mini-Pan B gated when subRxEnabled=false');
+      for (const f of K4.CatCodec.splitFrames('SB1;#MP$-1;')) {
+        mpState.applyParsedCat(K4.CatCodec.parseCommand(f));
+      }
+      assertEqual(view.getMetrics().miniPanActive, false, 'Mini-Pan B gated when #MP$-1');
+    } finally {
+      view.destroy();
+      host.remove();
+    }
+
+    // K4 Classic LUT
+    assert(K4.WaterfallLuts.list().includes('k4'), 'k4 LUT registered');
+    assertEqual(K4.WaterfallLuts.DEFAULT, 'obsidian', 'Obsidian remains default LUT');
+    assertEqual(K4.WaterfallLuts.LABELS.k4, 'K4 Classic', 'k4 LUT label is K4 Classic');
+    const k4Lut = K4.WaterfallLuts.get('k4');
+    assertEqual(k4Lut[0], 9, 'k4 LUT index 0 R=9');
+    assertEqual(k4Lut[1], 11, 'k4 LUT index 0 G=11');
+    assertEqual(k4Lut[2], 16, 'k4 LUT index 0 B=16');
+    assertEqual(k4Lut[255 * 4], 255, 'k4 LUT top bin R=255');
+    assertEqual(k4Lut[255 * 4 + 1], 0, 'k4 LUT top bin G=0');
+  });
+
+  // 17. Wave 2: TD/TD$ text decode, empty TB000, conditional TB polling, and InspectorPanels dispRx/OM
+  test('Wave 2: TD/TD$ text decode, TB000 ignore, conditional TB polling, and InspectorPanels', () => {
+    const K4 = globalThis.K4;
+
+    const tdA = K4.CatCodec.parseCommand('TD020;');
+    assertEqual(tdA && tdA.kind, 'textDecode', 'TD020 kind');
+    assertEqual(tdA && tdA.mode, 0, 'TD020 mode 0');
+    assertEqual(tdA && tdA.threshold, 2, 'TD020 threshold 2');
+    assertEqual(tdA && tdA.lines, 0, 'TD020 lines 0');
+    assertEqual(tdA && tdA.enabled, false, 'TD020 enabled false');
+
+    const tdB = K4.CatCodec.parseCommand('TD$201;');
+    assertEqual(tdB && tdB.rx, 'B', 'TD$201 rx B');
+    assertEqual(tdB && tdB.mode, 2, 'TD$201 mode 2');
+    assertEqual(tdB && tdB.enabled, true, 'TD$201 enabled true');
+
+    const state = new K4.RadioState();
+    for (const cmd of ['TD020;', 'TD$201;', 'TB000;', 'TB$000;']) {
+      state.applyParsedCat(K4.CatCodec.parseCommand(cmd));
+    }
+    const snap = state.getSnapshot();
+    assertEqual(snap.decodedText.length, 0, 'Empty TB000;/TB$000; do not append decodedText');
+    assertEqual(snap.rxB.textDecodeEnabled, true, 'rxB.textDecodeEnabled true');
+
+    assertEqual(K4.CatCodec.describeTextDecode({ mode: 3, dataSubMode: 0 }).supported, true, 'CW supports decode');
+    assertEqual(K4.CatCodec.describeTextDecode({ mode: 7, dataSubMode: 0 }).thresholdSupported, true, 'CW-R supports threshold');
+    assertEqual(K4.CatCodec.describeTextDecode({ mode: 6, dataSubMode: 2 }).supported, true, 'FSK-D supports decode');
+    assertEqual(K4.CatCodec.describeTextDecode({ mode: 9, dataSubMode: 3 }).supported, true, 'PSK-D supports decode');
+    assertEqual(K4.CatCodec.describeTextDecode({ mode: 6, dataSubMode: 0 }).supported, false, 'DATA-A disables decode (ER12 on HW)');
+    assertEqual(K4.CatCodec.describeTextDecode({ mode: 2, dataSubMode: 0 }).supported, false, 'USB disables decode');
+
+    const sentFrames = [];
+    const client = new K4.Client({ state });
+    try {
+      client._ws = { readyState: 1, send: (pkt) => sentFrames.push(pkt) };
+      state.applyParsedCat(K4.CatCodec.parseCommand('TD$020;'));
+      assertEqual(client._tbPollTimer, null, 'No TB poll timer when TD=0 on both RX');
+
+      const resOn = client.setTextDecode('A', { mode: 2, threshold: 3, lines: 1 });
+      assertEqual(resOn.sanitized, 'TD231;TD;TB;', 'setTextDecode A sends TD231;TD;TB;');
+      assert(client._tbPollTimer !== null, 'Enabling TD starts 350ms TB poll timer');
+
+      const resOff = client.setTextDecode('A', { mode: 0 });
+      assertEqual(resOff.sanitized, 'TD030;TD;TB;', 'setTextDecode OFF preserves threshold & sets mode 0');
+      assertEqual(client._tbPollTimer, null, 'Disabling TD stops TB poll timer');
+
+      client.setTextDecode('B', { mode: 1 });
+      assert(client._tbPollTimer !== null, 'Enabling TD$ starts TB poll timer');
+      state.applyParsedCat(K4.CatCodec.parseCommand('TD$000;'));
+      assertEqual(client._tbPollTimer, null, 'Incoming TD$000 stops TB poll timer');
+    } finally {
+      client._ws = null;
+      client._stopKeepalive();
+    }
+
+    // InspectorPanels dispRx & OM hasSubRx checks
+    const drawer = document.createElement('div');
+    const mobileNav = document.createElement('div');
+    const sheet = document.createElement('div');
+    document.body.appendChild(drawer);
+    document.body.appendChild(mobileNav);
+    document.body.appendChild(sheet);
+    const inspCalls = [];
+    const inspState = new K4.RadioState();
+    for (const c of ['OMAP;', '#SPN24000;', '#SPN$96000;', '#REF-112;', '#REF$-95;']) {
+      inspState.applyParsedCat(K4.CatCodec.parseCommand(c));
+    }
+    const inspector = new K4.InspectorPanels({
+      drawerEl: drawer,
+      mobileNavEl: mobileNav,
+      mobileSheetEl: sheet,
+      state: inspState,
+      client: { setDisplay: (rx, patch) => inspCalls.push({ rx, patch }) },
+      gate: new K4.RxOnlyGate('rx-only'),
+      getTargetRx: () => 'B',
+      getPalette: () => 'obsidian',
+      getPeakHold: () => false,
+    });
+    try {
+      inspector.selectDesktopTab('display');
+      let s = inspState.getSnapshot();
+      inspector.update(s);
+      assertEqual(inspector._refs.dispBadge.textContent, 'PAN A', 'Single-Pan Main shows PAN A badge even when targetRx=B');
+      assertEqual(inspector._refs.dpmBtns[1].disabled, true, '1x Sub (B) disabled when OM lacks S');
+      assertEqual(inspector._refs.dpmBtns[2].disabled, true, '2x Dual disabled when OM lacks S');
+      assert(inspector._refs.refSlider.row.textContent.includes('-112 dBm'), 'Spectrum Geometry shows PAN A #REF (-112), not B (-95)');
+      inspector._refs.spanBtns[0].btn.click();
+      assertEqual(inspCalls[0].rx, 'A', 'Span preset button routes to dispRx A');
+
+      for (const c of ['OMAPS;', '#DPM1;']) {
+        inspState.applyParsedCat(K4.CatCodec.parseCommand(c));
+      }
+      s = inspState.getSnapshot();
+      inspector.update(s);
+      assertEqual(inspector._refs.dpmBtns[1].disabled, false, '1x Sub (B) enabled when OM includes S');
+      assertEqual(inspector._refs.dispBadge.textContent, 'PAN B', 'Single-Pan Sub (#DPM1) shows PAN B badge');
+      inspector._refs.spanBtns[0].btn.click();
+      assertEqual(inspCalls[1].rx, 'B', 'Span preset button routes to dispRx B in #DPM1');
+    } finally {
+      drawer.remove();
+      mobileNav.remove();
+      sheet.remove();
     }
   });
 

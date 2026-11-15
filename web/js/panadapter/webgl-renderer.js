@@ -359,7 +359,7 @@ void main() {
           ? pane.refDbm
           : Number.isFinite(primaryRxState.panRefDbm)
           ? primaryRxState.panRefDbm
-          : -50;
+          : -110;
       const scaleDb =
         pane && Number.isFinite(pane.scaleDb) && pane.scaleDb > 0
           ? pane.scaleDb
@@ -367,8 +367,8 @@ void main() {
 
       const viewLeftHz = panCenterHz - userSpanHz * 0.5;
       const viewRightHz = panCenterHz + userSpanHz * 0.5;
-      const minDbm = refDbm - scaleDb;
-      const maxDbm = refDbm;
+      const minDbm = refDbm;
+      const maxDbm = refDbm + scaleDb;
 
       const { paneRect, specRect, axisRect, wfRect } = layout;
 
@@ -886,19 +886,23 @@ void main() {
     sansFont,
   }) {
     if (!miniPanBox || !miniCtx) return;
-    const mp = frameState && frameState.miniPan;
     const rxA = snapshot.rxA || {};
     const rxB = snapshot.rxB || {};
-    const enabled = Boolean(
-      (mp && mp.active) || rxA.miniPan || rxB.miniPan
+    const aAvail = Boolean(rxA.miniPan);
+    const subAvail = Boolean(
+      snapshot.subRxEnabled && rxB.miniPan && rxB.miniPanAvailable !== false
     );
+    const enabled = aAvail || subAvail;
 
     if (!enabled) {
       miniPanBox.style.display = 'none';
       return;
     }
 
-    const rx = (mp && mp.rx) || (rxB.miniPan ? 'B' : 'A');
+    const targetRx = frameState && frameState.targetRx === 'B' ? 'B' : 'A';
+    const rx = aAvail && subAvail ? targetRx : subAvail ? 'B' : 'A';
+    const byRx = frameState && frameState.miniPanByRx;
+    const mp = (byRx && byRx[rx]) || (frameState && frameState.miniPan);
     const dualPanMode = frameState ? frameState.dualPanMode : 0;
     const subRxEnabled = Boolean(snapshot.subRxEnabled);
     let targetLayout = layouts && layouts[0];
@@ -1034,9 +1038,10 @@ void main() {
     ctx.fillText(spanKHz + ' kHz', boxW - 8, headerH / 2 + 0.5);
 
     // Mini-pan dBm scale
-    const refDbm = Number.isFinite(rxState.panRefDbm) ? rxState.panRefDbm : -50;
+    const refDbm = Number.isFinite(rxState.panRefDbm) ? rxState.panRefDbm : -110;
     const scaleDb = Number.isFinite(rxState.panScaleDb) ? rxState.panScaleDb : 80;
-    const maxDbm = refDbm;
+    const minDbm = refDbm;
+    const maxDbm = refDbm + scaleDb;
 
     // Grid
     ctx.strokeStyle = 'rgba(148, 163, 184, 0.12)';
@@ -1480,7 +1485,7 @@ void main() {
       }
 
       const crop = K4.SpectrumGeometry.computeCrop(pane.userSpanHz, pane.tierKHz);
-      const maxDbm = pane.refDbm;
+      const minDbm = Number.isFinite(pane.refDbm) ? pane.refDbm : -110;
       const scaleDb = Math.max(10, pane.scaleDb || 80);
 
       this._setScissorRect(specRect, devW, devH);
@@ -1496,7 +1501,7 @@ void main() {
         const uTier = i / (n - 1);
         const uView = (uTier - crop.leftRatio) / crop.spanRatio;
         const ndcX = uView * 2.0 - 1.0;
-        const yNorm = clamp((bins[i] - (maxDbm - scaleDb)) / scaleDb, 0, 1);
+        const yNorm = clamp((bins[i] - minDbm) / scaleDb, 0, 1);
         const ndcY = yNorm * 2.0 - 1.0;
 
         const base = i * 6;
@@ -1526,9 +1531,9 @@ void main() {
         const u1 = ((iNext / (n - 1)) - crop.leftRatio) / crop.spanRatio;
         const u = ((i / (n - 1)) - crop.leftRatio) / crop.spanRatio;
 
-        const yNormPrev = clamp((bins[iPrev] - (maxDbm - scaleDb)) / scaleDb, 0, 1);
-        const yNormNext = clamp((bins[iNext] - (maxDbm - scaleDb)) / scaleDb, 0, 1);
-        const yNorm = clamp((bins[i] - (maxDbm - scaleDb)) / scaleDb, 0, 1);
+        const yNormPrev = clamp((bins[iPrev] - minDbm) / scaleDb, 0, 1);
+        const yNormNext = clamp((bins[iNext] - minDbm) / scaleDb, 0, 1);
+        const yNorm = clamp((bins[i] - minDbm) / scaleDb, 0, 1);
 
         const px = u * wCss;
         const py = (1 - yNorm) * hCss;
@@ -1866,8 +1871,9 @@ void main() {
       const ctx = this.ctx;
       const n = bins.length;
       const crop = K4.SpectrumGeometry.computeCrop(pane.userSpanHz, pane.tierKHz);
-      const maxDbm = pane.refDbm;
+      const minDbm = Number.isFinite(pane.refDbm) ? pane.refDbm : -110;
       const scaleDb = Math.max(10, pane.scaleDb || 80);
+      const maxDbm = minDbm + scaleDb;
 
       ctx.save();
       ctx.beginPath();

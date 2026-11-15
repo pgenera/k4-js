@@ -329,7 +329,7 @@
         outUint8 && outUint8.length >= n ? outUint8 : new Uint8Array(n);
       if (n === 0) return out;
 
-      const highDbm = Number.isFinite(opts.refDbm) ? opts.refDbm : -50;
+      const refDbm = Number.isFinite(opts.refDbm) ? opts.refDbm : -110;
       const rawScale =
         Number.isFinite(opts.scaleDb) && opts.scaleDb > 0 ? opts.scaleDb : 80;
       const spanDb = clamp(rawScale, 10, 150);
@@ -337,9 +337,8 @@
         Number.isFinite(opts.wfBlack) && opts.wfBlack >= 5 && opts.wfBlack <= 30
           ? opts.wfBlack
           : 14;
-      const lowDbm = highDbm - spanDb * (wbs / 40.0);
-      const range = Math.max(1.0, highDbm - lowDbm);
-      const invRange = 1.0 / range;
+      const lowDbm = refDbm - spanDb * (wbs / 40.0);
+      const invRange = 1.0 / Math.max(1.0, spanDb);
 
       for (let i = 0; i < n; i++) {
         const val = avgDbmBins[i];

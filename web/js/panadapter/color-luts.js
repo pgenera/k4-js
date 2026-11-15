@@ -70,18 +70,31 @@
     [1.0, [224, 242, 254]],
   ]);
 
-  const NAMES = ['obsidian', 'thermal', 'viridis', 'cyan'];
+  const k4 = buildLut([
+    [0.0, [0, 0, 0]],
+    [1 / 7, [0, 0, 65]],
+    [2 / 7, [0, 0, 170]],
+    [3 / 7, [0, 200, 200]],
+    [4 / 7, [0, 200, 0]],
+    [5 / 7, [255, 255, 0]],
+    [6 / 7, [255, 80, 0]],
+    [1.0, [255, 0, 0]],
+  ]);
+
+  const NAMES = ['obsidian', 'thermal', 'viridis', 'cyan', 'k4'];
   const LABELS = {
     obsidian: 'Obsidian',
     thermal: 'Thermal',
     viridis: 'Viridis',
     cyan: 'Cyan',
+    k4: 'K4 Classic',
   };
   const luts = {
     obsidian,
     thermal,
     viridis,
     cyan,
+    k4,
   };
 
   function has(name) {
@@ -105,6 +118,7 @@
     thermal,
     viridis,
     cyan,
+    k4,
     has,
     get,
     list,
