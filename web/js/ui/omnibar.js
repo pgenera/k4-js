@@ -419,15 +419,15 @@
         };
       }
 
-      const loupeMatch = lower.match(/^(?:minipan|loupe)(?:\s+(on|off))?$/);
+      const loupeMatch = lower.match(/^(?:mini-?pan|loupe)(?:\s+(on|off))?$/);
       if (loupeMatch) {
         const snap = this.state.getSnapshot ? this.state.getSnapshot() : this.state;
         const rxS = targetRx === 'B' ? snap.rxB : snap.rxA;
         const next = loupeMatch[1] ? loupeMatch[1] === 'on' : !(rxS && rxS.miniPan);
         return {
-          title: `Mini-Pan Loupe ${next ? 'ON' : 'OFF'} (VFO ${targetRx})`,
+          title: `Mini-Pan ${next ? 'ON' : 'OFF'} (VFO ${targetRx})`,
           sub: `Send #MP${targetRx === 'B' ? '$' : ''}${next ? '1' : '0'};`,
-          tag: next ? 'LOUPE ON' : 'LOUPE OFF',
+          tag: next ? 'MINI-PAN ON' : 'MINI-PAN OFF',
           run: () => {
             this.client.setDisplay(targetRx, { miniPan: next });
           },

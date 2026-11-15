@@ -45,11 +45,11 @@
   const LATENCY_MS = [35, 60, 75, 95, 115, 140, 180, 240];
 
   const SENSOR_META = [
-    { key: 'vs', label: 'Supply Voltage (VS)', stripLabel: 'VS', unit: 'V', warnMin: 11.8, critMin: 11.2, color: '#38BDF8', decimals: 2 },
-    { key: 'is', label: 'Current / Peak (IS)', stripLabel: 'IS', unit: 'A', warnMax: 21.0, minFloor: 0, color: '#F59E0B', decimals: 1 },
-    { key: 'pt', label: 'PA Heatsink (PT)', stripLabel: 'PA TEMP', unit: '°C', warnMax: 60, critMax: 75, color: '#F97316', decimals: 1 },
-    { key: 'lt', label: 'LPA / Driver (LT)', unit: '°C', warnMax: 60, critMax: 75, color: '#FB923C', decimals: 1 },
-    { key: 'tf', label: 'Front Panel (TF)', unit: '°C', warnMax: 55, critMax: 70, color: '#A78BFA', decimals: 1 },
+    { key: 'vs', label: 'Supply Voltage', stripLabel: 'VS', unit: 'V', warnMin: 11.8, critMin: 11.2, color: '#38BDF8', decimals: 2 },
+    { key: 'is', label: 'Current / Peak', stripLabel: 'IS', unit: 'A', warnMax: 21.0, minFloor: 0, color: '#F59E0B', decimals: 1 },
+    { key: 'pt', label: 'PA Heatsink', stripLabel: 'PA TEMP', unit: '°C', warnMax: 60, critMax: 75, color: '#F97316', decimals: 1 },
+    { key: 'lt', label: 'LPA / Driver', unit: '°C', warnMax: 60, critMax: 75, color: '#FB923C', decimals: 1 },
+    { key: 'tf', label: 'Front Panel', unit: '°C', warnMax: 55, critMax: 70, color: '#A78BFA', decimals: 1 },
     { key: 'sys', label: 'CPU / DAP / DUC', unit: '°C', warnMax: 70, critMax: 85, color: '#34D399', decimals: 1 },
     { key: 'fwd', label: 'RF Forward Power', unit: 'W', minFloor: 0, color: '#22D3EE', decimals: 1 },
     { key: 'swr', label: 'Antenna SWR', stripLabel: 'SWR', unit: ':1', warnMax: 1.5, critMax: 2.5, minFloor: 1.0, color: '#F43F5E', decimals: 2 },
@@ -425,7 +425,7 @@
       rxCard.appendChild(targetGroup);
       this._refs.targetBtns = { A: btnA, B: btnB };
 
-      const subRow = makeSwitchRow('Sub Receiver (SB)', () => {
+      const subRow = makeSwitchRow('Sub Receiver', () => {
         const next = !this._snap().subRxEnabled;
         if (typeof this.client.setSubRx === 'function') {
           this.client.setSubRx(next);
@@ -437,7 +437,7 @@
       rxCard.appendChild(subRow.row);
       this._refs.subSwitch = subRow;
 
-      const linkRow = makeSwitchRow('Link VFOs (LN)', () => {
+      const linkRow = makeSwitchRow('Link VFOs', () => {
         const next = !this._snap().vfoLinked;
         if (this.state && typeof this.state.update === 'function') {
           this.state.update({ vfoLinked: next }, 'vfoLinked');
@@ -447,7 +447,7 @@
       rxCard.appendChild(linkRow.row);
       this._refs.linkSwitch = linkRow;
 
-      const divRow = makeSwitchRow('Diversity RX (DV)', () => {
+      const divRow = makeSwitchRow('Diversity RX', () => {
         const next = !this._snap().diversityEnabled;
         if (typeof this.client.setDiversity === 'function') {
           this.client.setDiversity(next);
@@ -575,7 +575,7 @@
       };
 
       this._refs.bwSlider = makeSliderRow({
-        label: 'Width (BW)',
+        label: 'Width',
         min: 50,
         max: 5000,
         step: 50,
@@ -597,7 +597,7 @@
       filterCard.appendChild(bwPresetGrid);
 
       this._refs.isSlider = makeSliderRow({
-        label: 'IF Shift (IS)',
+        label: 'IF Shift',
         min: 0,
         max: 5000,
         step: 50,
@@ -608,7 +608,7 @@
       filterCard.appendChild(this._refs.isSlider.row);
 
       this._refs.cwPitchSlider = makeSliderRow({
-        label: 'CW Pitch (CW)',
+        label: 'CW Pitch',
         min: 250,
         max: 950,
         step: 10,
@@ -626,7 +626,7 @@
       pane.appendChild(filterCard);
 
       const rfCard = makeCard('RF Front-End & AGC');
-      rfCard.appendChild(el('span', 'k4-slider-label', 'Preamp (PA)'));
+      rfCard.appendChild(el('span', 'k4-slider-label', 'Preamp'));
       const paGroup = el('div', 'k4-seg-group');
       this._refs.paBtns = {};
       const paOpts = [
@@ -652,7 +652,7 @@
       rfCard.appendChild(paGroup);
 
       this._refs.attenSlider = makeSliderRow({
-        label: 'Attenuator (RA)',
+        label: 'Attenuator',
         min: 0,
         max: 21,
         step: 3,
@@ -670,7 +670,7 @@
       rfCard.appendChild(this._refs.attenSlider.row);
 
       this._refs.rfGainSlider = makeSliderRow({
-        label: 'RF Gain (RG)',
+        label: 'RF Gain',
         min: -60,
         max: 0,
         step: 1,
@@ -689,7 +689,7 @@
       rfCard.appendChild(this._refs.rfGainSlider.row);
 
       this._refs.squelchSlider = makeSliderRow({
-        label: 'Squelch (SQ)',
+        label: 'Squelch',
         min: 0,
         max: 40,
         step: 1,
@@ -707,7 +707,7 @@
       this._refs.squelchSlider.input.dataset.testid = 'squelch-slider';
       rfCard.appendChild(this._refs.squelchSlider.row);
 
-      rfCard.appendChild(el('span', 'k4-slider-label', 'AGC (GT)'));
+      rfCard.appendChild(el('span', 'k4-slider-label', 'AGC'));
       const agcGroup = el('div', 'k4-seg-group');
       this._refs.agcBtns = {};
       const agcOpts = [
@@ -734,7 +734,7 @@
       pane.appendChild(rfCard);
 
       const dspCard = makeCard('Noise & Notch DSP');
-      this._refs.nbSwitch = makeSwitchRow('Noise Blanker (NB)', () => {
+      this._refs.nbSwitch = makeSwitchRow('Noise Blanker', () => {
         const rx = this.getTargetRx();
         const s = this._rxSnap(rx);
         const b = this._builders();
@@ -765,7 +765,7 @@
       });
       dspCard.appendChild(this._refs.nbSlider.row);
 
-      this._refs.nrSwitch = makeSwitchRow('Noise Reduction (NR)', () => {
+      this._refs.nrSwitch = makeSwitchRow('Noise Reduction', () => {
         const rx = this.getTargetRx();
         const s = this._rxSnap(rx);
         const nextOn = !s.nrOn;
@@ -864,7 +864,7 @@
       this._refs.nrSlider.input.dataset.testid = 'nr-slider';
       dspCard.appendChild(this._refs.nrSlider.row);
 
-      this._refs.nmSwitch = makeSwitchRow('Manual Notch (NM)', () => {
+      this._refs.nmSwitch = makeSwitchRow('Manual Notch', () => {
         const rx = this.getTargetRx();
         const s = this._rxSnap(rx);
         const b = this._builders();
@@ -898,7 +898,7 @@
       pane.appendChild(dspCard);
 
       const ritApfCard = makeCard('RIT & CW Peaking');
-      this._refs.ritSwitch = makeSwitchRow('RIT (RT)', () => {
+      this._refs.ritSwitch = makeSwitchRow('RIT', () => {
         const rx = this.getTargetRx();
         const s = this._rxSnap(rx);
         this.client.setRit(rx, { on: !s.ritOn });
@@ -907,7 +907,7 @@
       ritApfCard.appendChild(this._refs.ritSwitch.row);
 
       this._refs.ritOffsetSlider = makeSliderRow({
-        label: 'RIT Offset (RO)',
+        label: 'RIT Offset',
         min: -3000,
         max: 3000,
         step: 10,
@@ -922,7 +922,7 @@
       const ritDeltas = [-50, -10, 0, 10, 50];
       for (let i = 0; i < ritDeltas.length; i++) {
         const delta = ritDeltas[i];
-        const btn = el('button', 'k4-seg-btn', delta === 0 ? 'Clear (RC)' : `${delta > 0 ? '+' : ''}${delta}`);
+        const btn = el('button', 'k4-seg-btn', delta === 0 ? 'Clear' : `${delta > 0 ? '+' : ''}${delta}`);
         btn.type = 'button';
         if (delta === 0) {
           btn.dataset.testid = 'rit-clear-btn';
@@ -938,7 +938,7 @@
       }
       ritApfCard.appendChild(ritQuick);
 
-      this._refs.apfSwitch = makeSwitchRow('CW Audio Peak Filter (AP)', () => {
+      this._refs.apfSwitch = makeSwitchRow('CW Audio Peak Filter', () => {
         const rx = this.getTargetRx();
         const s = this._rxSnap(rx);
         this.client.setApf(rx, { on: !s.apfOn });
@@ -1043,7 +1043,7 @@
       spanCard.appendChild(spanGrid);
 
       this._refs.spanSlider = makeSliderRow({
-        label: 'Span (#SPN)',
+        label: 'Span',
         min: 6,
         max: 368,
         step: 1,
@@ -1060,7 +1060,7 @@
       spanCard.appendChild(this._refs.spanSlider.row);
 
       this._refs.refSlider = makeSliderRow({
-        label: 'Reference (#REF)',
+        label: 'Reference',
         min: -160,
         max: 0,
         step: 1,
@@ -1073,7 +1073,7 @@
       spanCard.appendChild(this._refs.refSlider.row);
 
       this._refs.scaleSlider = makeSliderRow({
-        label: 'Scale (#SCL)',
+        label: 'Scale',
         min: 10,
         max: 150,
         step: 5,
@@ -1086,7 +1086,7 @@
       spanCard.appendChild(this._refs.scaleSlider.row);
 
       this._refs.avgSlider = makeSliderRow({
-        label: 'Averaging (#AVG)',
+        label: 'Averaging',
         min: 1,
         max: 20,
         step: 1,
@@ -1099,7 +1099,7 @@
       spanCard.appendChild(this._refs.avgSlider.row);
 
       this._refs.wbsSlider = makeSliderRow({
-        label: 'Waterfall Black (#WBS)',
+        label: 'Waterfall Black',
         min: 5,
         max: 30,
         step: 1,
@@ -1111,7 +1111,7 @@
       });
       spanCard.appendChild(this._refs.wbsSlider.row);
 
-      this._refs.autoRefSwitch = makeSwitchRow('Auto-Reference (#AR)', () => {
+      this._refs.autoRefSwitch = makeSwitchRow('Auto-Reference', () => {
         const rx = this._dispRx();
         const s = this._rxSnap(rx);
         this.client.setDisplay(rx, { autoRef: !s.autoRef });
@@ -1119,7 +1119,7 @@
       spanCard.appendChild(this._refs.autoRefSwitch.row);
 
       const actRow = el('div', 'k4-pill-grid k4-pill-grid--2');
-      const centerBtn = el('button', 'k4-choice-pill', 'Center on VFO (FC)');
+      const centerBtn = el('button', 'k4-choice-pill', 'Center on VFO');
       centerBtn.type = 'button';
       centerBtn.addEventListener('click', () => {
         const rx = this._dispRx();
@@ -1130,7 +1130,7 @@
           this._sendCat(b.centerPan ? b.centerPan(rx) : rx === 'B' ? 'FC$;' : 'FC;');
         }
       });
-      const arNowBtn = el('button', 'k4-choice-pill', 'Auto-Ref Now (#AR1)');
+      const arNowBtn = el('button', 'k4-choice-pill', 'Auto-Ref Now');
       arNowBtn.type = 'button';
       arNowBtn.addEventListener('click', () => {
         if (typeof this.client.applyAutoRefNow === 'function') {
@@ -1144,14 +1144,14 @@
       actRow.appendChild(arNowBtn);
       spanCard.appendChild(actRow);
 
-      this._refs.fixedTuneSwitch = makeSwitchRow('Fixed Tune (#FXT)', () => {
+      this._refs.fixedTuneSwitch = makeSwitchRow('Fixed Tune', () => {
         if (this.panadapter) this.panadapter._autoFixedTuneFromDrag = false;
         const s = this._snap();
         this.client.setDisplay(this._dispRx(), { fixedTune: !s.fixedTune });
       });
       spanCard.appendChild(this._refs.fixedTuneSwitch.row);
 
-      this._refs.freezeSwitch = makeSwitchRow('Freeze Waterfall (#FRZ)', () => {
+      this._refs.freezeSwitch = makeSwitchRow('Freeze Waterfall', () => {
         const s = this._snap();
         this.client.setDisplay(this._dispRx(s), { panFrozen: !s.panFrozen });
       });
@@ -1159,7 +1159,7 @@
       spanCard.appendChild(this._refs.freezeSwitch.row);
 
       this._refs.fpsSlider = makeSliderRow({
-        label: 'Frame Rate (#FPS)',
+        label: 'Frame Rate',
         min: 5,
         max: 30,
         step: 1,
@@ -1170,7 +1170,7 @@
       this._refs.fpsSlider.input.dataset.testid = 'fps-slider';
       spanCard.appendChild(this._refs.fpsSlider.row);
 
-      spanCard.appendChild(el('span', 'k4-slider-label', 'Pan DDC Blanker (#NB)'));
+      spanCard.appendChild(el('span', 'k4-slider-label', 'Pan DDC Blanker'));
       const panNbSeg = el('div', 'k4-seg-group');
       const panNbModes = [
         [0, 'Off'],
@@ -1190,7 +1190,7 @@
       spanCard.appendChild(panNbSeg);
 
       this._refs.panNbLevelSlider = makeSliderRow({
-        label: 'Pan NB Level (#NBL)',
+        label: 'Pan NB Level',
         min: 0,
         max: 14,
         step: 1,
@@ -1226,13 +1226,13 @@
       layoutCard.appendChild(dpmGroup);
       this._refs.dpmBtns = { 0: dpmMain, 1: dpmSub, 2: dpmDual };
 
-      this._refs.miniPanASwitch = makeSwitchRow('Mini-Pan VFO A (#MP)', () => {
+      this._refs.miniPanASwitch = makeSwitchRow('Mini-Pan VFO A', () => {
         const s = this._rxSnap('A');
         this.client.setDisplay('A', { miniPan: !s.miniPan });
       });
       layoutCard.appendChild(this._refs.miniPanASwitch.row);
 
-      this._refs.miniPanBSwitch = makeSwitchRow('Mini-Pan VFO B (#MP$)', () => {
+      this._refs.miniPanBSwitch = makeSwitchRow('Mini-Pan VFO B', () => {
         const s = this._rxSnap('B');
         this.client.setDisplay('B', { miniPan: !s.miniPan });
       });
@@ -1257,7 +1257,7 @@
       }
       layoutCard.appendChild(palGrid);
 
-      layoutCard.appendChild(el('span', 'k4-slider-label', 'Display Mode (#DSM)'));
+      layoutCard.appendChild(el('span', 'k4-slider-label', 'Display Mode'));
       const dsmSeg = el('div', 'k4-seg-group');
       const specWfBtn = el('button', 'k4-seg-btn', 'Spec + WF');
       specWfBtn.type = 'button';
@@ -1281,7 +1281,7 @@
       this._refs.dsmBtns = [specWfBtn, specOnlyBtn];
 
       this._refs.wfhSlider = makeSliderRow({
-        label: 'Waterfall Split (#WFH)',
+        label: 'Waterfall Split',
         min: 20,
         max: 80,
         step: 5,
@@ -1430,7 +1430,7 @@
       });
       audioCard.appendChild(this._refs.balanceSlider.row);
 
-      audioCard.appendChild(el('span', 'k4-slider-label', 'Channel Mix (MX)'));
+      audioCard.appendChild(el('span', 'k4-slider-label', 'Channel Mix'));
       const mixGrid = el('div', 'k4-pill-grid k4-pill-grid--5');
       this._refs.mixBtns = {};
       for (let i = 0; i < MIX_OPTIONS.length; i++) {
@@ -1447,7 +1447,7 @@
       audioCard.appendChild(mixGrid);
 
       this._refs.slSlider = makeSliderRow({
-        label: 'Latency Tier (SL)',
+        label: 'Latency Tier',
         min: 0,
         max: 7,
         step: 1,
@@ -1460,15 +1460,15 @@
       });
       audioCard.appendChild(this._refs.slSlider.row);
 
-      const emLabel = el('span', 'k4-slider-label', 'Encode Mode (EM)');
+      const emLabel = el('span', 'k4-slider-label', 'Encode Mode');
       audioCard.appendChild(emLabel);
       const emSelect = document.createElement('select');
       emSelect.className = 'k4-select';
       const opusOk = Boolean(K4.OpusPacketDecoder && K4.OpusPacketDecoder.isSupported && K4.OpusPacketDecoder.isSupported());
       const emChoices = [
-        { val: '1', label: 'PCM S16LE 12k (EM1)' },
-        { val: '0', label: 'PCM 24-bit 12k (EM0)' },
-        { val: '3', label: opusOk ? 'Opus 48k Stereo (EM3)' : 'Opus (EM3 — unavailable on file://)' },
+        { val: '1', label: 'PCM S16LE 12k' },
+        { val: '0', label: 'PCM 24-bit 12k' },
+        { val: '3', label: opusOk ? 'Opus 48k Stereo' : 'Opus (unavailable on file://)' },
       ];
       for (let i = 0; i < emChoices.length; i++) {
         const opt = document.createElement('option');
@@ -1856,7 +1856,7 @@
       }
       const testToggleBtn = el('button', 'k4-seg-btn k4-test-switch', 'TEST');
       testToggleBtn.type = 'button';
-      testToggleBtn.title = 'K4 [TEST] switch (TS1/TS0): toggle TX Test mode without altering PC output power';
+      testToggleBtn.title = 'K4 TEST mode: toggle off-air TX Test without altering RF power setting';
       testToggleBtn.addEventListener('click', () => this.onToggleTxTest());
       postureGroup.appendChild(testToggleBtn);
       statusCard.appendChild(postureGroup);
@@ -1877,7 +1877,7 @@
       metaRow.appendChild(vfoRow);
 
       const totRow = el('div', 'k4-diag-row');
-      totRow.appendChild(el('span', 'k4-diag-key', 'TX Timeout (TOT)'));
+      totRow.appendChild(el('span', 'k4-diag-key', 'TX Timeout'));
       const txTotVal = el('span', 'k4-diag-val', '3:00');
       totRow.appendChild(txTotVal);
       metaRow.appendChild(totRow);
@@ -1885,7 +1885,7 @@
       this._refs.txVfoVal = txVfoVal;
       this._refs.txTotVal = txTotVal;
 
-      const splitSwitch = makeSwitchRow('Split TX on VFO B (FT)', () => {
+      const splitSwitch = makeSwitchRow('Split TX on VFO B', () => {
         const next = !this._snap().splitEnabled;
         if (typeof this.client.setSplit === 'function') {
           this.client.setSplit(next);
@@ -1917,7 +1917,7 @@
       splitMacroRow.appendChild(panicBtn);
       statusCard.appendChild(splitMacroRow);
 
-      const xitSwitch = makeSwitchRow('XIT Offset (XT)', () => {
+      const xitSwitch = makeSwitchRow('XIT Offset', () => {
         const snap = this._snap();
         const next = !snap.xitEnabled;
         if (typeof this.client.setXit === 'function') {
@@ -1974,7 +1974,7 @@
 
       const antRow = el('div', 'k4-slider-row');
       const antHead = el('div', 'k4-slider-head');
-      antHead.appendChild(el('span', 'k4-slider-label', 'TX Antenna (AN)'));
+      antHead.appendChild(el('span', 'k4-slider-label', 'TX Antenna'));
       antRow.appendChild(antHead);
       const antSelect = document.createElement('select');
       antSelect.className = 'k4-select';
@@ -1998,13 +1998,13 @@
       this._refs.txAntennaSelect = antSelect;
 
       const atuModeSeg = el('div', 'k4-seg-group');
-      const bypassBtn = el('button', 'k4-seg-btn', 'BYPASS (AT1)');
+      const bypassBtn = el('button', 'k4-seg-btn', 'BYPASS');
       bypassBtn.type = 'button';
       bypassBtn.addEventListener('click', () => {
         if (typeof this.client.setAtuMode === 'function') this.client.setAtuMode(1);
         else this._sendCat('AT1;');
       });
-      const autoBtn = el('button', 'k4-seg-btn', 'AUTO (AT2)');
+      const autoBtn = el('button', 'k4-seg-btn', 'AUTO');
       autoBtn.type = 'button';
       autoBtn.addEventListener('click', () => {
         if (typeof this.client.setAtuMode === 'function') this.client.setAtuMode(2);
@@ -2094,7 +2094,7 @@
       this._refs.pwrRangeBtns = { L: rangeLBtn, H: rangeHBtn };
 
       const pwrSlider = makeSliderRow({
-        label: 'RF Power (PC)',
+        label: 'RF Power',
         min: 0.1,
         max: 10,
         step: 0.1,
@@ -2114,7 +2114,7 @@
       this._refs.txPowerSlider = pwrSlider;
 
       const mgSlider = makeSliderRow({
-        label: 'Mic Gain (MG)',
+        label: 'Mic Gain',
         min: 0,
         max: 80,
         step: 1,
@@ -2129,7 +2129,7 @@
       this._refs.txMgSlider = mgSlider;
 
       const cpSlider = makeSliderRow({
-        label: 'Speech Comp (CP)',
+        label: 'Speech Comp',
         min: 0,
         max: 30,
         step: 1,
@@ -2144,7 +2144,7 @@
       this._refs.txCpSlider = cpSlider;
 
       const mlSlider = makeSliderRow({
-        label: 'TX Monitor (ML)',
+        label: 'TX Monitor',
         min: 0,
         max: 100,
         step: 1,
@@ -2160,7 +2160,7 @@
       this._refs.txMlSlider = mlSlider;
 
       const miRow = el('div', 'k4-slider-row');
-      miRow.appendChild(el('div', 'k4-slider-head')).appendChild(el('span', 'k4-slider-label', 'Mic Input (MI)'));
+      miRow.appendChild(el('div', 'k4-slider-head')).appendChild(el('span', 'k4-slider-label', 'Mic Input'));
       const miSelect = document.createElement('select');
       miSelect.className = 'k4-select';
       const miLabels = ['0 · Front Mic', '1 · Rear Mic', '2 · Line In', '3 · Front + Line', '4 · USB Audio'];
@@ -2179,7 +2179,7 @@
       pwrCard.appendChild(miRow);
       this._refs.txMiSelect = miSelect;
 
-      const voxSwitch = makeSwitchRow('VOX (VX)', () => {
+      const voxSwitch = makeSwitchRow('VOX', () => {
         const snap = this._snap();
         const rx = snap.activeTxVfo === 'B' ? (snap.rxB || {}) : (snap.rxA || {});
         const mode = Number(rx.mode) || 2;
@@ -2227,10 +2227,10 @@
         this._msgBank = this._msgBank === 2 ? 1 : 2;
         this.update(this._snap());
       });
-      const stopMsgBtn = el('button', 'k4-btn', 'STOP (PB0)');
+      const stopMsgBtn = el('button', 'k4-btn', 'STOP');
       stopMsgBtn.type = 'button';
       stopMsgBtn.dataset.testid = 'msg-stop-btn';
-      stopMsgBtn.title = 'Cancel DVR / CW message playback (PB0;)';
+      stopMsgBtn.title = 'Cancel DVR / CW message playback';
       stopMsgBtn.addEventListener('click', () => {
         if (typeof this.client.playDvr === 'function') this.client.playDvr(0);
         else this._sendCat('PB0;');
@@ -2431,7 +2431,7 @@
 
       const tbWrap = el('div', 'k4-tx-vu-wrap');
       const tbHead = el('div', 'k4-slider-head');
-      tbHead.appendChild(el('span', 'k4-slider-label', 'Keyer TX Queue (TB)'));
+      tbHead.appendChild(el('span', 'k4-slider-label', 'Keyer TX Queue'));
       const tbVal = el('span', 'k4-slider-val', '0 chars');
       tbHead.appendChild(tbVal);
       const tbTrack = el('div', 'k4-tb-track');
@@ -2444,7 +2444,7 @@
       this._refs.tbFill = tbFill;
 
       const ksSlider = makeSliderRow({
-        label: 'CW Speed (KS)',
+        label: 'CW Speed',
         min: 8,
         max: 100,
         step: 1,
@@ -2459,7 +2459,7 @@
       this._refs.cwKsSlider = ksSlider;
 
       const kpSlider = makeSliderRow({
-        label: 'Keyer Weight (KP)',
+        label: 'Keyer Weight',
         min: 90,
         max: 125,
         step: 1,
@@ -2557,11 +2557,11 @@
         return { tile, val };
       };
       this._refs.sensors = {
-        vs: makeSensorTile('vs', 'Supply Voltage (VS)'),
-        is: makeSensorTile('is', 'Current / Peak (IS)'),
-        pt: makeSensorTile('pt', 'PA Heatsink (PT)'),
-        lt: makeSensorTile('lt', 'LPA / Driver (LT)'),
-        tf: makeSensorTile('tf', 'Front Panel (TF)'),
+        vs: makeSensorTile('vs', 'Supply Voltage'),
+        is: makeSensorTile('is', 'Current / Peak'),
+        pt: makeSensorTile('pt', 'PA Heatsink'),
+        lt: makeSensorTile('lt', 'LPA / Driver'),
+        tf: makeSensorTile('tf', 'Front Panel'),
         sys: makeSensorTile('sys', 'CPU / DAP / DUC'),
         fwd: makeSensorTile('fwd', 'RF Forward Power'),
         swr: makeSensorTile('swr', 'Antenna SWR'),
@@ -2925,7 +2925,7 @@
         if (this._refs.tdNote) {
           this._refs.tdNote.textContent = desc.supported
             ? rxS.textDecodeMode > 0
-              ? 'Decoding active (TB polling)'
+              ? 'Decoding active'
               : 'Ready for CW / DATA decode'
             : desc.reason;
         }
@@ -2972,8 +2972,8 @@
         this._refs.dpmBtns[2].classList.toggle('is-active', dpm === 2);
         this._refs.dpmBtns[1].disabled = false;
         this._refs.dpmBtns[2].disabled = false;
-        this._refs.dpmBtns[1].title = 'Single Pan VFO B (#DPM1;)';
-        this._refs.dpmBtns[2].title = 'Dual Panadapter VFO A + B (#DPM2;)';
+        this._refs.dpmBtns[1].title = 'Single Pan VFO B';
+        this._refs.dpmBtns[2].title = 'Dual Panadapter VFO A + B';
       }
       const rxAState = snapshot.rxA || {};
       const rxBState = snapshot.rxB || {};
@@ -2984,8 +2984,8 @@
         this._refs.miniPanBSwitch.btn.disabled = mpBDisabled;
         this._refs.miniPanBSwitch.btn.title = mpBDisabled
           ? !snapshot.subRxEnabled
-            ? 'Enable Sub-RX (SB1) first'
-            : 'Mini-Pan VFO B unavailable (#MP$-1)'
+            ? 'Enable Sub-RX first'
+            : 'Mini-Pan VFO B unavailable'
           : '';
       }
       if (this._refs.peakHoldSwitch) this._refs.peakHoldSwitch.sync(this.getPeakHold());
@@ -3153,7 +3153,7 @@
           b.dataset.state = 'tuning';
           this._refs.txStatusBadge.textContent = 'ATU';
         } else if (txActive && isTest) {
-          b.textContent = 'K4 TX Test (TS1) ACTIVE — RF inhibited, ALC/keyer live (PC unchanged)';
+          b.textContent = 'K4 TX Test ACTIVE — RF inhibited, ALC/keyer live (RF power unchanged)';
           b.dataset.state = 'tuning';
           this._refs.txStatusBadge.textContent = 'TX Test';
         } else if (txActive) {
@@ -3161,7 +3161,7 @@
           b.dataset.state = 'warn';
           this._refs.txStatusBadge.textContent = 'TX ON';
         } else if (posture === 'tx-armed' && isTest) {
-          b.textContent = 'TX Test (TS1) active while TX Ready — RF output inhibited';
+          b.textContent = 'TX Test active while TX Ready — RF output inhibited';
           b.dataset.state = 'tuning';
           this._refs.txStatusBadge.textContent = 'TX Test';
         } else if (posture === 'tx-armed') {
@@ -3169,7 +3169,7 @@
           b.dataset.state = 'matched';
           this._refs.txStatusBadge.textContent = 'TX READY';
         } else if (posture === 'tx-test' || isTest) {
-          b.textContent = 'K4 TX Test (TS1) — Off-air audio, ALC & keyer check (PC unchanged)';
+          b.textContent = 'K4 TX Test — Off-air audio, ALC & keyer check (RF power unchanged)';
           b.dataset.state = 'tuning';
           this._refs.txStatusBadge.textContent = 'TX Test';
         } else {
@@ -3235,7 +3235,7 @@
         const am = Number(snapshot.atuMode);
         const searchHot = Number(snapshot.atuSearchWindowUntil) > Date.now();
         if (snapshot.hasAtu === false || am === 0) {
-          st.textContent = 'KAT4 internal ATU not detected (AT0)';
+          st.textContent = 'KAT4 internal ATU not detected';
           st.dataset.state = 'idle';
         } else if (atuTuning) {
           st.textContent = `KAT4 ${snapshot.atuTuneKind === 4 ? 'Full Search' : 'Tuning'}... SWR ${swr.toFixed(2)}:1`;
@@ -3244,14 +3244,14 @@
           st.textContent = 'Press FULL SEARCH within 5s for wide L/C search';
           st.dataset.state = 'warn';
         } else if (am === 1) {
-          st.textContent = 'KAT4 Bypassed (AT1)';
+          st.textContent = 'KAT4 Bypassed';
           st.dataset.state = 'idle';
         } else if (snapshot.atuMatchedSwr) {
           const mFreq = snapshot.atuLastTunedFreqHz ? `${(snapshot.atuLastTunedFreqHz / 1e6).toFixed(3)} MHz` : 'active band';
           st.textContent = `Matched ${Number(snapshot.atuMatchedSwr).toFixed(2)}:1 @ ${mFreq}`;
           st.dataset.state = 'matched';
         } else {
-          st.textContent = 'KAT4 Auto Ready (AT2)';
+          st.textContent = 'KAT4 Auto Ready';
           st.dataset.state = 'idle';
         }
       }
@@ -3306,7 +3306,7 @@
           const slot = bankOffset + item.idx;
           const isPlaying = activeSlot === slot;
           item.btn.classList.toggle('is-active', isPlaying);
-          item.btn.title = `Play K4 Message M${item.idx} (PB${slot};)`;
+          item.btn.title = `Play K4 Message M${item.idx}`;
         }
         if (this._refs.msgStopBtn) {
           this._refs.msgStopBtn.classList.toggle('is-active', activeSlot > 0);

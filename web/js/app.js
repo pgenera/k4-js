@@ -226,7 +226,7 @@
       this._hudCenterBtn.type = 'button';
       this._hudCenterBtn.dataset.testid = 'hud-center-btn';
       this._hudCenterBtn.hidden = true;
-      this._hudCenterBtn.title = 'Re-center zoomed panadapter viewport on VFO (FC)';
+      this._hudCenterBtn.title = 'Re-center zoomed panadapter viewport on VFO';
       this._hudCenterBtn.addEventListener('click', () => {
         const snap = this._getSnapshot();
         const dispRx = this._dispRx(snap);
@@ -240,7 +240,7 @@
 
       this._hudDualBtn = el('button', 'k4-hud-btn', '1x');
       this._hudDualBtn.type = 'button';
-      this._hudDualBtn.title = 'Toggle Dual Panadapter (#DPM)';
+      this._hudDualBtn.title = 'Toggle Dual Panadapter';
       this._hudDualBtn.addEventListener('click', () => {
         const snap = this._getSnapshot();
         const next = snap.dualPanMode === 2 ? 0 : 2;
@@ -248,9 +248,9 @@
       });
       group.appendChild(this._hudDualBtn);
 
-      this._hudLoupeBtn = el('button', 'k4-hud-btn', 'Loupe A');
+      this._hudLoupeBtn = el('button', 'k4-hud-btn', 'Mini-Pan A');
       this._hudLoupeBtn.type = 'button';
-      this._hudLoupeBtn.title = 'Toggle Mini-Pan Loupe (#MP / #MP$)';
+      this._hudLoupeBtn.title = 'Toggle Mini-Pan';
       this._hudLoupeBtn.addEventListener('click', () => {
         const snap = this._getSnapshot();
         const loupeRx = this._resolveLoupeRx(snap);
@@ -262,7 +262,7 @@
       this._hudFreezeBtn = el('button', 'k4-hud-btn', 'Freeze');
       this._hudFreezeBtn.type = 'button';
       this._hudFreezeBtn.dataset.testid = 'hud-freeze-btn';
-      this._hudFreezeBtn.title = 'Freeze/Unfreeze Panadapter (#FRZ)';
+      this._hudFreezeBtn.title = 'Freeze/Unfreeze Panadapter';
       this._hudFreezeBtn.addEventListener('click', () => {
         const snap = this._getSnapshot();
         this.client.setDisplay(this._dispRx(snap), { panFrozen: !snap.panFrozen });
@@ -932,7 +932,7 @@
           this.client.setTxPosture('tx-test');
         }
         this._syncTxMicStandby('tx-test');
-        this.toast('TX Test ON (TS1) — RF output inhibited', 'info');
+        this.toast('TX Test ON — RF output inhibited', 'info');
         this._render();
         return;
       }
@@ -957,7 +957,7 @@
           this.client.setTxTest(true);
         }
         this._syncTxMicStandby('tx-test');
-        this.toast('TX Test ON (TS1) — RF output inhibited', 'info');
+        this.toast('TX Test ON — RF output inhibited', 'info');
         this._render();
         return;
       }
@@ -968,7 +968,7 @@
           this.client.setTxTest(false);
         }
         this._syncTxMicStandby('rx-only');
-        this.toast('TX Test OFF (TS0) — Receive-only active', 'info');
+        this.toast('TX Test OFF — Receive-only active', 'info');
         this._render();
         return;
       }
@@ -979,7 +979,7 @@
       }
       this._syncTxMicStandby(posture);
       this.toast(
-        next ? 'TX Test ON (TS1) — RF output inhibited' : 'TX Test OFF (TS0) — TX READY',
+        next ? 'TX Test ON — RF output inhibited' : 'TX Test OFF — TX READY',
         'info'
       );
       this._render();
@@ -1569,8 +1569,8 @@
       this._hudDualBtn.textContent = dpm === 2 ? '2x' : dpm === 1 ? '1xB' : '1x';
       this._hudDualBtn.classList.toggle('is-active', dpm === 2);
       this._hudDualBtn.disabled = false;
-      this._hudDualBtn.title = 'Toggle Dual Panadapter (#DPM)';
-      this._hudLoupeBtn.textContent = `Loupe ${loupeRx}`;
+      this._hudDualBtn.title = 'Toggle Dual Panadapter';
+      this._hudLoupeBtn.textContent = `Mini-Pan ${loupeRx}`;
       this._hudLoupeBtn.classList.toggle('is-active', Boolean(loupeS.miniPan));
       this._hudFreezeBtn.textContent = snap.panFrozen ? 'Frozen' : 'Freeze';
       this._hudFreezeBtn.classList.toggle('is-active', Boolean(snap.panFrozen));

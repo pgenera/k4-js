@@ -134,16 +134,16 @@
       const emLbl = document.createElement('label');
       emLbl.className = 'k4-label';
       emLbl.htmlFor = 'k4-codec-select';
-      emLbl.textContent = 'Audio Codec (EM)';
+      emLbl.textContent = 'Audio Codec';
       this.emSelect = document.createElement('select');
       this.emSelect.id = 'k4-codec-select';
       this.emSelect.className = 'k4-select';
       const opusSupported = Boolean(K4.OpusPacketDecoder && K4.OpusPacketDecoder.isSupported && K4.OpusPacketDecoder.isSupported());
       const emOptions = [
         { val: 'auto', text: opusSupported ? 'Auto (Opus / PCM)' : 'Auto (PCM on file://)' },
-        { val: '1', text: 'PCM S16LE (EM1)' },
-        { val: '0', text: 'PCM 24-bit (EM0)' },
-        { val: '3', text: opusSupported ? 'Opus Stereo (EM3)' : 'Opus (EM3 — unsupported)' },
+        { val: '1', text: 'PCM S16LE' },
+        { val: '0', text: 'PCM 24-bit' },
+        { val: '3', text: opusSupported ? 'Opus Stereo' : 'Opus (unsupported)' },
       ];
       for (let i = 0; i < emOptions.length; i++) {
         const opt = document.createElement('option');
