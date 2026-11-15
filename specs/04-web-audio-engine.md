@@ -3,12 +3,12 @@
 ## 1. Wire Audio Packet Format (`0x01`)
 Header (7 bytes):
 - `[0]`: `0x01`
-- `[1]`: `ver`
+- `[1]`: `ver` (`0x01` on real K4 `R40.B1`, vs `0x00` on PAN/MiniPAN)
 - `[2]`: `seq` (`uint8`, wraps `0..255`)
-- `[3]`: `encodeMode` (`0`=24-bit in S32LE, `1`=S16LE, `2`/`3`=raw Opus)
-- `[4..5]`: `frameSamplesPerCh` (`uint16` little-endian)
-- `[6]`: `sampleRateCode` (`0` -> `12000` Hz)
-- `[7..]`: interleaved `[Main, Sub, Main, Sub, ...]` audio payload at **odd byte offset 7**.
+- `[3]`: `encodeMode` (`0`=24-bit in S32LE @ 12 kHz, `1`=S16LE @ 12 kHz, `2`/`3`=raw RFC 6716 Opus)
+- `[4..5]`: `frameSamplesPerCh` (`uint16` little-endian, expressed in **12 kHz tick units** across ALL modes: `240` = 20 ms @ `SL0`, `480` = 40 ms @ `SL2`, `720` = 60 ms @ `SL3`, `1440` = 120 ms @ `SL7`)
+- `[6]`: `sampleRateCode` (`0` -> `12000` Hz header nominal clock; note that for `EM2`/`EM3` Opus, `[6]` stays `0` in the header while the Opus bitstream inside decodes at **48000 Hz**, i.e., `4 * frameSamplesPerCh` = `960`/`1920`/`2880`/`5760` samples/ch!)
+- `[7..]`: audio payload at **odd byte offset 7** (`EM0`/`EM1` interleaved `[Main, Sub, Main, Sub, ...]`; `EM2`/`EM3` raw RFC 6716 Opus packet, with multi-frame repacketized packets such as TOC `0xbc`/`0xbd`/`0xbe` CELT fullband stereo at `SL >= 1`).
 
 **Mandatory Unaligned Rule**: NEVER construct `new Int16Array(buf, offset)` or `new Int32Array(buf, offset)` directly on offset 7 — that throws `RangeError`! Always read samples with `DataView.prototype.getInt16(pos, true)` and `DataView.prototype.getInt32(pos, true)`.
 
@@ -24,7 +24,11 @@ K4 streaming audio arrives `32×` (`~30 dB`) below full scale (`K4_GAIN_BOOST = 
 ## 3. Opus Packet Decoder (`K4.OpusPacketDecoder`)
 - `isSupported()`: checks `typeof globalThis.AudioDecoder === 'function'`. (Returns `false` on Firefox `file://`, cleanly guiding `K4.Client` to request `EM1;`!).
 - When supported, configures `new AudioDecoder({ output, error })` with `{ codec: 'opus', sampleRate: 48000, numberOfChannels: 2 }` (omitting `description` per W3C WebCodecs spec so raw RFC 6716 Opus frames decode cleanly).
-- In `output(audioData)`: extract planar/interleaved channels via `audioData.copyTo(...)`, multiply by `32.0` + `softClip`, forward `{ left, right, sampleRate: audioData.sampleRate }` to consumer callback, and ALWAYS call `audioData.close()`.
+- Real-K4 `EM2`/`EM3` Opus wire & timing details:
+  - Packets carry `ver = 1`, `sampleRateCode = 0` (`12000` Hz header nominal clock), and `frameSamplesPerCh` in 12 kHz tick units (`240` for `SL0`, `480` for `SL2`, `720` for `SL3`, `1440` for `SL7`).
+  - Payloads contain raw RFC 6716 CELT fullband stereo packets (`48000 Hz`, single- or multi-frame repacketized TOCs such as `0xbc`, `0xbd`, `0xbe`), decoding to `4 * frameSamplesPerCh` (`960`, `1920`, `2880`, or `5760`) PCM samples/ch @ `48000 Hz`.
+  - **Duration-accurate `EncodedAudioChunk` timestamps**: `decodePacket(opusBytes, meta)` advances `_timestampUs` by `Math.round((frameSamplesPerCh / sampleRate) * 1e6)` (falling back to `20000` us when metadata is omitted — yielding `20000` us @ `SL0` `240/12000`, `40000` us @ `SL2` `480/12000`, `60000` us @ `SL3` `720/12000`). `AudioEngine.pushPacket` MUST pass parsed `frameSamplesPerCh` and `sampleRate` from `K4.BinaryPackets.parseAudio(audioPkt)` so multi-frame `SL` > 0 packets do not accumulate drifting timestamps.
+- In `output(audioData)`: extract planar/interleaved channels via `audioData.copyTo(...)`, multiply by `32.0` + `softClip` (gain parity with `EM0`/`EM1` `1/32` wire scaling), forward `{ left, right, sampleRate: audioData.sampleRate }` to consumer callback, and ALWAYS call `audioData.close()`.
 
 ## 4. `AudioWorklet` & `ScriptProcessorNode` Fallback (`worklet-source.js`, `audio-engine.js`)
 - **Zero relative URL loading**: Embed processor source as a string constant `K4.WORKLET_PROCESSOR_SOURCE` in `web/js/audio/worklet-source.js` and expose `K4.createWorkletDataUrl()` returning `'data:text/javascript;base64,' + btoa(K4.WORKLET_PROCESSOR_SOURCE)` so it never fails CORS on `file://`.

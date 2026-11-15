@@ -12,14 +12,22 @@
   - `sUnitForDbm(dBm)` -> returns formatted string (`'S5'`, `'S9+15'`, etc.) and numeric `sUnits` (`<= 9` is `(dBm + 127) / 6`).
 
 ### 1.2 `K4.SpectrumGeometry`
-- **Hysteresis Span Crop**:
+- **Hysteresis Span Crop & Measured 5-Tier Switch Points**:
+  - Real K4 (`R40.B1`) switches `0x02` PAN `sampleRateKHz` across 5 tiers (`24`, `48`, `96`, `192`, `384` kHz) with measured `#SPN` hysteresis switch/hold boundaries:
+    - `<= 19 kHz` -> `24 kHz`
+    - `20..36 kHz` -> `48 kHz` (`19..20 kHz` hysteresis zone between `24` and `48`)
+    - `37..82 kHz` -> `96 kHz` (`36..37 kHz` hysteresis zone between `48` and `96`)
+    - `83..172 kHz` -> `192 kHz` (`82..83 kHz` hysteresis zone between `96` and `192`)
+    - `>= 176 kHz` -> `384 kHz` (`172..176 kHz` hysteresis zone between `192` and `384`)
   - `computeCrop(userSpanHz, tierKHz)`:
     - `tierSpanHz = Math.max(1000, tierKHz * 1000)` (`24000`, `48000`, `96000`, `192000`, `384000`)
     - `spanRatio = clamp(userSpanHz / tierSpanHz, 0.01, 1.0)`
     - `leftRatio = 0.5 * (1.0 - spanRatio)`
     - Normalized screen coordinate `u` in `[0, 1]` samples source normalized coordinate `tierU = leftRatio + u * spanRatio`.
     - Source bin index (floating) for N bins: `binF = tierU * (N - 1)`.
-- **Mode Display Center & Passband Geometry**:
+- **Mode Display Center & Passband Geometry (`0x02` PAN vs `0x03` MiniPAN)**:
+  - On `0x02` main/sub PAN, real K4 firmware keeps `centerFreqHz == FA` (or `FB` for Sub) across **all modes** (CW, CW-R, USB, LSB, DATA-A, AM, FM) under both `#FXT0;` and `#FXT1;` (`delta_hz = 0`); the UI places the CW needle/passband at `FA ± cwPitchHz` via `displayMarkerHz` and reverses that offset in `dialFreqFromClick`.
+  - On `0x03` MiniPAN, real K4 firmware itself shifts `centerFreqHz` by `±cwPitchHz` (`FA + cwPitchHz` in CW, `FA - cwPitchHz` in CW-R, `FA` otherwise) with `spanKHz = 6` in CW/CW-R and `12` in USB/LSB/DATA-A/AM/FM.
   - `displayMarkerHz(rxState, cwPitchHz)`:
     - `CW` (`mode === 3`): `rxState.freqHz + cwPitchHz`
     - `CW-R` (`mode === 7`): `rxState.freqHz - cwPitchHz`
@@ -35,6 +43,7 @@
     - `PSK-D` (`dataSubMode === 3`), `AM` (`5`), `FM` (`4`): `center = carrier`
     - `lowHz = center - bw / 2`, `highHz = center + bw / 2`.
 - **Click-to-Tune Conversion**:
+  - Note `panCenterHz`: on `0x02` PAN, real K4 firmware keeps `panCenterHz === FA` (or `FB` for Sub) across all modes (under both `#FXT0;` and `#FXT1;`), so `rfFreqFromX` yields true RF Hz directly and `dialFreqFromClick` subtracts/adds `cwPitchHz` in CW/CW-R to recover the VFO dial frequency `FA`. (By contrast, on `0x03` MiniPAN, firmware shifts `centerFreqHz` by `±cwPitchHz` with `spanKHz = 6` in CW/CW-R, `12` otherwise.)
   - `rfFreqFromX(xPx, plotLeftPx, plotWidthPx, panCenterHz, userSpanHz)`:
     - `u = clamp((xPx - plotLeftPx) / plotWidthPx, 0, 1)`
     - `return panCenterHz - userSpanHz / 2 + u * userSpanHz`

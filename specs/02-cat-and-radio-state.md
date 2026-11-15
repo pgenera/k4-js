@@ -8,7 +8,8 @@
    - Sub-RX commands insert `$` before arguments (`MD$3;`, `BW$0050;`, `#SPN$24000;`, `SMH$-091;`).
    - Matching MUST check longest prefixes first (`SMH$` -> `SMH` -> `SM$` -> `SM` -> `SB`, `#SPN$` -> `#SPN`, `MD$` -> `MD`, `BW$` -> `BW`, `IS$` -> `IS`, etc.) so `RO$` or `SMH$` never misparses as a shorter command.
 3. **`AI4` / `AI5` & `SL` Echo Quirk**:
-   - Under `AI4`, K4 does not echo SET commands back to the originating socket; also, `SL<n>;` is NEVER echoed. `K4.Client` sends `AI5;` at init AND applies immediate optimistic updates (for `SL`, tuning/filter/display controls that benefit from zero-lag feedback), while targeted SETs follow up with confirmed state from K4 AI responses.
+   - Under `AI4` (set automatically on the client session by `RDY;`), the K4 does NOT echo client SET commands back to the originating socket; sending `AI5;` enables echo of the client's own SET commands (and confirms changes via CAT).
+   - `SL;` GET returns `SL<n>;` (e.g., `SL3;`), whereas `SL<n>;` SET is silent (NEVER echoed even under `AI5`). `K4.Client` sends `RDY;...;AI5;...;` at init AND applies immediate optimistic updates (for `SL`, tuning/filter/display controls that benefit from zero-lag feedback), while targeted SETs follow up with confirmed state from K4 AI responses.
 
 ## 2. Exact Constants & Conversion Tables
 - **`K4.MODES`**:
@@ -44,20 +45,20 @@ Return `{ kind, rx, ... }` (`rx` is `'A'` or `'B'` when receiver-scoped, `null` 
 - `BW` / `BW$`: 4 digits (`x10 Hz`) -> `{ kind: 'bw', rx, bwHz: val * 10 }`
 - `IS` / `IS$`: optional leading space + 4 digits (`x10 Hz` in `K41;` / `ER1;` mode; e.g., `IS0150;` / `IS$0150;` / `IS 0150;` = `1500 Hz`) -> `{ kind: 'ifShift', rx, ifShiftHz: val * 10 }`
 - `CW`: 2 digits (`x10 Hz`) -> `{ kind: 'cwPitch', rx: null, cwPitchHz: val * 10 }`
-- `VT` / `VT$`: `nm` (step index `0..6`, optional mode digit) -> `{ kind: 'step', rx, stepIdx, stepHz: STEP_HZ_TABLE[stepIdx] }`
+- `VT` / `VT$`: `nm` (1-digit step index `0..6` + mode digit `m`, e.g., `VT16;`, `VT$13;` on real K4 `R40.B1`) -> `{ kind: 'step', rx, stepIdx, stepHz: STEP_HZ_TABLE[stepIdx] }`
 - `LK` / `LK$`: `0|1` -> `{ kind: 'lock', rx, locked: val === 1 }`
 - `BN` / `BN$`: 1–2 digits (zero-padded to 2 digits) -> `{ kind: 'band', rx, bn }`
 - `PA` / `PA$`: `PA[n]m` (`preamp: 0..3`, `on: 0|1`; 1-digit form maps `'1'` -> `preamp: 1`) -> `{ kind: 'preamp', rx, preamp: on ? n : 0, preampOn: on }`
 - `RA` / `RA$`: `RA[nn]m` (`attenDb: 0..21`, `on: 0|1`; 1-digit `'1'` -> `attenDb: 6`) -> `{ kind: 'atten', rx, attenDb: on ? nn : 0, attenOn: on }`
 - `AG` / `AG$`: `nnn` (`000..060`) -> `{ kind: 'afGain', rx, afGain }`
-- `RG` / `RG$`: `-nn` or `nn` (`-60..0`) -> `{ kind: 'rfGain', rx, rfGainDb }`
+- `RG` / `RG$`: `-nn` or `nn` (`-60..0`; real K4 `R40.B1` formats `RG-00;`, `RG$-00;`, `RG-06;`) -> `{ kind: 'rfGain', rx, rfGainDb }`
 - `SQ` / `SQ$`: `nnn` (`000..040`) -> `{ kind: 'squelch', rx, squelch }`
-- `NB` / `NB$`: `NBnnm` (level `0..15`, on `0|1`) or `NBm` (on `0|1`, `nbLevel: null`) -> `{ kind: 'nb', rx, nbLevel, nbOn }`
+- `NB` / `NB$`: accepts 4-digit real K4 `R40.B1` firmware format (`NB0000;` / `NB$0000;`), Rev D4 3-digit `NBnnm` (level `0..15`, on `0|1`), or 1-digit `NBm` (on `0|1`, `nbLevel: null`) -> `{ kind: 'nb', rx, nbLevel, nbOn }`
 - `NR` / `NR$`: `NRnnm` (level `0..10`, on `0|1`) or `NRm` (`nrLevel: null`) -> `{ kind: 'nr', rx, nrLevel, nrOn }`
 - `NM` / `NM$`: `NMnnnnm` (`150..5000 Hz`, on `0|1`) or `NMm` (`notchHz: null`) -> `{ kind: 'notch', rx, notchHz, notchOn }`
 - `GT` / `GT$`: `0|1|2` (`0=OFF, 1=SLOW, 2=FAST`) -> `{ kind: 'agc', rx, agc }`
 - `AP` / `AP$`: `mb` (`on: 0|1`, `bwIdx: 0|1|2`) -> `{ kind: 'apf', rx, apfOn, apfBwIdx }`
-- `OV$` / `OV`: 1–2 binary digits (`[01]{1,2}`, e.g. `OV0;`/`OV1;` or `OVnm;`) -> `{ kind: 'adcOverflow', rx, adcOverflow: t[0] === '1', cor: t.length >= 2 ? t[1] === '1' : false }`
+- `OV$` / `OV`: 1–2 binary digits (`[01]{1,2}`, e.g., `OV00;` / `OV$00;` on real K4 `R40.B1` or 1-digit `OV0;`/`OV1;`) -> `{ kind: 'adcOverflow', rx, adcOverflow: t[0] === '1', cor: t.length >= 2 ? t[1] === '1' : false }`
 - `FI$` / `FI`: integer IF center frequency in Hz -> `{ kind: 'ifCenter', rx, ifCenterHz: v }`
 - `RT$` / `RT`: `0|1` -> `{ kind: 'rit', rx, ritOn: v === 1 }`
 - `RO$` / `RO`: signed integer offset in Hz (`-9999..+9999`) -> `{ kind: 'ritOffset', rx, ritOffsetHz: v }`
@@ -72,17 +73,24 @@ Return `{ kind, rx, ... }` (`rx` is `'A'` or `'B'` when receiver-scoped, `null` 
 - `#SCL` / `#SCL$`: int `10..150` -> `{ kind: 'panScale', rx, scaleDb }`
 - `#AVG`: int `1..20` -> `{ kind: 'panAvg', rx: null, avg }`
 - `#WBS` / `#WBS$`: int `5..30` -> `{ kind: 'wfBlack', rx, wfBlack }`
-- `#AR` / `#AR$`: either `#ARaadd+oom` (take trailing `m === '1'`) or 1-char (`A`/`M`/`0`/`1`/`9`) -> `{ kind: 'autoRef', rx, autoRef }`
+- `#AR` (global-only; `#AR$;` returns `#AR?;`): either `#ARaadd±oom;` (e.g., `#AR1206-021;` with signed offset and trailing `m === '1'`) or 1-char SET shortcut (`A`/`M`/`0`/`1`/`9`/`/`) -> `{ kind: 'autoRef', rx: null, autoRef }`
 - `#DPM`: `0|1|2` -> `{ kind: 'dualPan', rx: null, dualPanMode }`
-- `#MP` / `#MP$`: `0|1` (or `-1` -> `{ kind: 'miniPan', rx, miniPan: false, miniPanAvailable: false }`) -> `{ kind: 'miniPan', rx, miniPan, miniPanAvailable }`
+- `#MP` / `#MP$`: `0|1` (or `-1` such as `#MP$-1;` when Sub MiniPAN is unavailable -> `{ kind: 'miniPan', rx, miniPan: false, miniPanAvailable: false }`) -> `{ kind: 'miniPan', rx, miniPan, miniPanAvailable }`
 - `#FRZ`: `0|1` -> `{ kind: 'panFrozen', rx: null, panFrozen: v === 1 }`
+- `#FXT` (global; `#FXT$;` returns `#FXT?;`): `0|1` -> `{ kind: 'fixedTune', rx: null, fixedTune: v === 1 }`
 - `MX`: string in `['A.B','AB.AB','A.-A','A.AB','AB.B','AB.A','B.AB','B.B','B.A','A.A']` -> `{ kind: 'audioMix', rx: null, mix }`
 - `EM`: `0|1|2|3` -> `{ kind: 'encodeMode', rx: null, encodeMode }`
-- `SL`: `0..7` -> `{ kind: 'streamingLatency', rx: null, streamingLatency }`
-- `PING` / `PONG`: `<epoch>` -> `{ kind: 'ping' | 'pong', rx: null, epoch }`
+- `SL`: `0..7` (note `SL;` GET returns `SL3;`, whereas `SL<n>;` SET is silent) -> `{ kind: 'streamingLatency', rx: null, streamingLatency }`
+- `PING` / `PONG`: optional `<epoch>` (real K4 `R40.B1` emits bare `PONG;` with empty epoch `null`, while simulators or older targets may echo `PONG<epoch>;`) -> `{ kind: 'ping' | 'pong', rx: null, epoch }`
 - `TB` / `TB$`: `{ kind: 'decodedText', rx, txQueued, text }`
 - `ER`: `nn` or `nn:msg` -> `{ kind: 'radioError', rx: null, code, message }`
-- `ID` / `OM` / `SN`: `{ kind: 'radioId' | 'optionModule' | 'serial', rx: null, ... }`
+- `ID` / `OM` / `SN` / `RV` / `IF` / `AN` / `MEDF`:
+  - `OM`: 12-char fixed-position option string `OM APXSHML14---;` (`A`=KAT4, `P`=KPA4, `X`=XVTR, `S`=KRX4 Sub RX, `H`=HDR, `M`=K40 Mini, `L`=Linear, `1`=KPA1500, `4`=K4; e.g., `OM AP------4---;` on single-RX K4 or `OM AP-S----4---;` when KRX4 Sub RX is installed) -> `{ kind: 'optionModule', rx: null, raw, options }`
+  - `RV`: module firmware version line `RV.<mod>-<ver>;` (e.g., `RV.R-R40.B1;`) -> `{ kind: 'firmwareRevision', rx: null, module, version }`
+  - `IF`: 38-char fixed status record (`IF[fffffffffff]     [+xxxxx][r][t] [00][mm][s][n][p]1;`) -> `{ kind: 'ifInfo', rx: null, ... }`
+  - `AN`: GET-only antenna port response (`AN1;` / `AN2;`; SET remains blocked by `RxOnlyGate`) -> `{ kind: 'antenna', rx: null, antenna }`
+  - `MEDF`: menu definition frame `MEDFiiii,...;` emitted in bulk during `RDY;` snapshot (ending with `MEDF0000;`) -> parsed cleanly without unknown-frame warnings -> `{ kind: 'menuDef', rx: null, id, raw }`
+  - `ID` / `SN`: `{ kind: 'radioId' | 'serial', rx: null, ... }` (`SN00999;` / `SN00421;`).
 
 ### Builder Functions (`CatCodec.builders`)
 - `freq(rx, hz)`: `'F' + (rx === 'B' ? 'B' : 'A') + String(Math.round(clamp(hz, 100000, 54000000))).padStart(11, '0') + ';'`

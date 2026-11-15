@@ -66,14 +66,16 @@ Then open `web/index.html`, enter your K4 network password (hashed locally via S
 cd sim && go test -v -race ./...
 ```
 
+Zero external Go modules are required; on Linux CGO builds `k4sim` loads `libopus.so.0` at runtime via `dlopen` for `EM2`/`EM3` Opus streaming and automatically falls back to `EM1` S16LE PCM under `CGO_ENABLED=0` or when `libopus.so.0` is absent.
+
 ### 2. Browser Unit Tests (Zero Node, works over `file://`)
 
 Open `file:///path/to/k4-js/web/test.html` in Firefox or Chromium. Results render in the page and populate `window.__K4_TEST_RESULTS__`.
 
-### 3. Headless Firefox End-to-End Verification (Python 3 stdlib + Marionette)
+### 3. Headless Firefox & Hardware-Parity Verification (Python 3 stdlib + Marionette)
 
 ```bash
 python3 tests/e2e_verify.py
 ```
 
-Tests both `file:///path/to/k4-js/web/index.html` and `http://127.0.0.1:<port>/`, verifies auth, state hydration, live spectrum/waterfall rendering, click-to-tune (`FA` / CW `-500 Hz` offset / `Shift`+right-click `FB`), `Cmd/Ctrl+K` omnibar, `TB$` semicolon preservation, `RxOnlyGate` (`txBlockedViolations === 0`), zero console errors, and captures Desktop (`1440x900`) and Mobile (`390x844`) PNG screenshots.
+Tests both `file:///path/to/k4-js/web/index.html` and `http://127.0.0.1:<port>/`, verifies auth, state hydration (`RDY;`/`AI4`/`AI5`), live spectrum/waterfall rendering (`0x02` PAN `centerFreqHz == FA` and `0x03` MiniPAN `±cwPitchHz` shift, 5-tier `#SPN` hysteresis), click-to-tune (`FA` / CW `-500 Hz` offset / `Shift`+right-click `FB`), `Cmd/Ctrl+K` omnibar, `TB$` semicolon preservation, `RxOnlyGate` (`txBlockedViolations === 0`), zero console errors, and captures Desktop (`1440x900`) and Mobile (`390x844`) PNG screenshots. Offline regression against sanitized real-K4 (`R40.B1`) payloads can also be verified with `k4_hw_probe.py --spawn-sim` and headless WebCodecs `EM2`/`EM3` Opus replay.
