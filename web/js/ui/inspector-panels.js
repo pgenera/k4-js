@@ -151,6 +151,7 @@
     return {
       row,
       input,
+      labelEl: lbl,
       sync(nextVal) {
         const num = Number(nextVal);
         if (!Number.isFinite(num)) return;
@@ -231,7 +232,7 @@
       this.onSetPalette = opts.onSetPalette || (() => {});
       this.getPalette = opts.getPalette || (() => 'obsidian');
       this.onSetPeakHold = opts.onSetPeakHold || (() => {});
-      this.getPeakHold = opts.getPeakHold || (() => true);
+      this.getPeakHold = opts.getPeakHold || (() => false);
       this.getMouseQsyMode = opts.getMouseQsyMode || (() => 'lr');
       this.onSetMouseQsyMode = opts.onSetMouseQsyMode || (() => {});
       this.onToggleAudio = opts.onToggleAudio || (() => {});
@@ -767,32 +768,100 @@
       this._refs.nrSwitch = makeSwitchRow('Noise Reduction (NR)', () => {
         const rx = this.getTargetRx();
         const s = this._rxSnap(rx);
-        const b = this._builders();
-        const next = !s.nrOn;
-        if (this.state && typeof this.state.updateRx === 'function') {
-          this.state.updateRx(rx, { nrOn: next }, `${rx}.nrOn`);
+        const nextOn = !s.nrOn;
+        const mode = s.nrMode === 'ssnr' ? 'ssnr' : 'lms';
+        if (typeof this.client.setNr === 'function') {
+          this.client.setNr(rx, { on: nextOn, mode });
+        } else {
+          const b = this._builders();
+          const rawLvl = mode === 'ssnr' ? s.ssnrLevel : s.lmsNrLevel;
+          const defLvl = mode === 'ssnr' ? 5 : 4;
+          const maxLvl = mode === 'ssnr' ? 25 : 10;
+          const lvl = nextOn
+            ? (rawLvl > 0 ? clamp(Math.round(rawLvl), 1, maxLvl) : defLvl)
+            : clamp(Math.round(rawLvl || 0), 0, maxLvl);
+          const cmd = mode === 'ssnr'
+            ? (b.ssnr ? b.ssnr(rx, lvl, nextOn) : `NRS${rx === 'B' ? '$' : ''}${String(lvl).padStart(2, '0')}${nextOn ? '1' : '0'};`)
+            : (b.nr ? b.nr(rx, lvl, nextOn) : `NR${rx === 'B' ? '$' : ''}${String(lvl).padStart(2, '0')}${nextOn ? '1' : '0'};`);
+          this._sendCat(cmd);
         }
-        this._sendCat(b.nr ? b.nr(rx, s.nrLevel ?? 4, next) : `NR${rx === 'B' ? '$' : ''}${String(s.nrLevel ?? 4).padStart(2, '0')}${next ? '1' : '0'};`);
       });
+      this._refs.nrSwitch.btn.dataset.testid = 'nr-switch';
+      this._refs.nrSwitch.row.style.flexWrap = 'wrap';
+
+      const nrCtrlGroup = el('div', '');
+      nrCtrlGroup.style.display = 'inline-flex';
+      nrCtrlGroup.style.alignItems = 'center';
+      nrCtrlGroup.style.gap = '6px';
+      nrCtrlGroup.style.marginLeft = 'auto';
+
+      const nrModeSeg = el('div', 'k4-seg-group');
+      nrModeSeg.style.padding = '2px';
+      nrModeSeg.style.gap = '2px';
+      const makeNrModeBtn = (mode, label) => {
+        const btn = el('button', 'k4-seg-btn', label);
+        btn.type = 'button';
+        btn.dataset.testid = `nr-mode-${mode}`;
+        btn.style.minHeight = '22px';
+        btn.style.padding = '2px 7px';
+        btn.setAttribute('aria-pressed', 'false');
+        btn.addEventListener('click', () => {
+          const rx = this.getTargetRx();
+          const s = this._rxSnap(rx);
+          if (typeof this.client.setNr === 'function') {
+            this.client.setNr(rx, { mode });
+          } else {
+            const on = Boolean(s.nrOn);
+            const b = this._builders();
+            const rawLvl = mode === 'ssnr' ? s.ssnrLevel : s.lmsNrLevel;
+            const defLvl = mode === 'ssnr' ? 5 : 4;
+            const maxLvl = mode === 'ssnr' ? 25 : 10;
+            const lvl = rawLvl > 0 ? clamp(Math.round(rawLvl), 1, maxLvl) : defLvl;
+            const cmd = mode === 'ssnr'
+              ? (b.ssnr ? b.ssnr(rx, lvl, on) : `NRS${rx === 'B' ? '$' : ''}${String(lvl).padStart(2, '0')}${on ? '1' : '0'};`)
+              : (b.nr ? b.nr(rx, lvl, on) : `NR${rx === 'B' ? '$' : ''}${String(lvl).padStart(2, '0')}${on ? '1' : '0'};`);
+            this._sendCat(cmd);
+          }
+        });
+        return btn;
+      };
+      const nrModeLmsBtn = makeNrModeBtn('lms', 'LMS');
+      const nrModeSsnrBtn = makeNrModeBtn('ssnr', 'SSNR');
+      nrModeSeg.appendChild(nrModeLmsBtn);
+      nrModeSeg.appendChild(nrModeSsnrBtn);
+      this._refs.nrModeBtns = { lms: nrModeLmsBtn, ssnr: nrModeSsnrBtn };
+
+      nrCtrlGroup.appendChild(nrModeSeg);
+      nrCtrlGroup.appendChild(this._refs.nrSwitch.btn);
+      this._refs.nrSwitch.row.appendChild(nrCtrlGroup);
       dspCard.appendChild(this._refs.nrSwitch.row);
 
       this._refs.nrSlider = makeSliderRow({
         label: 'NR Level',
-        min: 0,
+        min: 1,
         max: 10,
         step: 1,
         value: 4,
-        formatValue: (v) => String(v),
+        formatValue: (v) => String(Math.round(v)),
         onInput: (v) => {
           const rx = this.getTargetRx();
           const s = this._rxSnap(rx);
-          const b = this._builders();
-          if (this.state && typeof this.state.updateRx === 'function') {
-            this.state.updateRx(rx, { nrLevel: v }, `${rx}.nrLevel`);
+          const mode = s.nrMode === 'ssnr' ? 'ssnr' : 'lms';
+          const maxLvl = mode === 'ssnr' ? 25 : 10;
+          const level = clamp(Math.round(Number(v) || 1), 1, maxLvl);
+          if (typeof this.client.setNr === 'function') {
+            this.client.setNr(rx, { mode, level });
+          } else {
+            const on = Boolean(s.nrOn);
+            const b = this._builders();
+            const cmd = mode === 'ssnr'
+              ? (b.ssnr ? b.ssnr(rx, level, on) : `NRS${rx === 'B' ? '$' : ''}${String(level).padStart(2, '0')}${on ? '1' : '0'};`)
+              : (b.nr ? b.nr(rx, level, on) : `NR${rx === 'B' ? '$' : ''}${String(level).padStart(2, '0')}${on ? '1' : '0'};`);
+            this._sendCat(cmd);
           }
-          this._sendCat(b.nr ? b.nr(rx, v, Boolean(s.nrOn)) : `NR${rx === 'B' ? '$' : ''}${String(v).padStart(2, '0')}${s.nrOn ? '1' : '0'};`);
         },
       });
+      this._refs.nrSlider.input.dataset.testid = 'nr-slider';
       dspCard.appendChild(this._refs.nrSlider.row);
 
       this._refs.nmSwitch = makeSwitchRow('Manual Notch (NM)', () => {
@@ -1172,6 +1241,7 @@
       this._refs.peakHoldSwitch = makeSwitchRow('Peak Hold Trace', () => {
         this.onSetPeakHold(!this.getPeakHold());
       });
+      this._refs.peakHoldSwitch.btn.dataset.testid = 'peak-hold-switch';
       layoutCard.appendChild(this._refs.peakHoldSwitch.row);
 
       layoutCard.appendChild(el('span', 'k4-slider-label', 'Waterfall Palette'));
@@ -1444,8 +1514,8 @@
       diagCard.appendChild(kvGrid);
       pane.appendChild(diagCard);
 
-      // RX-Only Safety Card
-      const safeCard = makeCard('Receive-Only Firewall');
+      // Transmit Lock Card
+      const safeCard = makeCard('Transmit Lock');
       const safeBox = el('div', 'k4-safety-note');
       this._refs.safetyNote = safeBox;
       safeCard.appendChild(safeBox);
@@ -1768,13 +1838,13 @@
 
       // (a) TX Status, Posture, TOT, Split & XIT
       const statusBadge = el('span', 'k4-card-badge', 'RX ONLY');
-      const statusCard = makeCard('TX Status & Safety', statusBadge);
+      const statusCard = makeCard('TX Status & Lock', statusBadge);
 
       const postureGroup = el('div', 'k4-seg-group');
       const postureBtns = {};
       const postureSpecs = [
         { id: 'rx-only', label: 'RX ONLY' },
-        { id: 'tx-armed', label: 'ARM TX' },
+        { id: 'tx-armed', label: 'TX RDY' },
       ];
       for (let i = 0; i < postureSpecs.length; i++) {
         const p = postureSpecs[i];
@@ -1793,7 +1863,7 @@
       this._refs.txPostureBtns = postureBtns;
       this._refs.txTestToggleBtn = testToggleBtn;
 
-      const txBanner = el('div', 'k4-tx-banner', 'Receive-only firewall active');
+      const txBanner = el('div', 'k4-tx-banner', 'Transmit Lock active');
       txBanner.dataset.state = 'idle';
       statusCard.appendChild(txBanner);
       this._refs.txStatusBanner = txBanner;
@@ -2473,10 +2543,9 @@
         tile.dataset.sensorKey = key;
         tile.dataset.testid = `sensor-tile-${key}`;
         tile.setAttribute('aria-pressed', 'false');
-        tile.title = `Click to view ${lbl} trend graph`;
+        tile.title = `Click to open ${lbl} history graph`;
         const top = el('div', 'k4-sensor-tile-head');
         top.appendChild(el('span', 'k4-sensor-tile-lbl', lbl));
-        top.appendChild(el('span', 'k4-sensor-tile-hint', 'Graph'));
         tile.appendChild(top);
         const val = el('span', 'k4-sensor-tile-val', '—');
         tile.appendChild(val);
@@ -2795,8 +2864,33 @@
       }
       if (this._refs.nbSwitch) this._refs.nbSwitch.sync(rxS.nbOn);
       if (this._refs.nbSlider) this._refs.nbSlider.sync(rxS.nbLevel ?? 5);
-      if (this._refs.nrSwitch) this._refs.nrSwitch.sync(rxS.nrOn);
-      if (this._refs.nrSlider) this._refs.nrSlider.sync(rxS.nrLevel ?? 4);
+      const nrMode = rxS.nrMode === 'ssnr' ? 'ssnr' : 'lms';
+      const nrOn = Boolean(rxS.nrOn);
+      if (this._refs.nrSwitch) this._refs.nrSwitch.sync(nrOn);
+      if (this._refs.nrModeBtns) {
+        this._refs.nrModeBtns.lms.classList.toggle('is-active', nrMode === 'lms');
+        this._refs.nrModeBtns.lms.setAttribute('aria-pressed', nrMode === 'lms' ? 'true' : 'false');
+        this._refs.nrModeBtns.ssnr.classList.toggle('is-active', nrMode === 'ssnr');
+        this._refs.nrModeBtns.ssnr.setAttribute('aria-pressed', nrMode === 'ssnr' ? 'true' : 'false');
+      }
+      if (this._refs.nrSlider) {
+        const isSsnr = nrMode === 'ssnr';
+        const targetMax = isSsnr ? '25' : '10';
+        const inp = this._refs.nrSlider.input;
+        if (inp.min !== '1') inp.min = '1';
+        if (inp.max !== targetMax) inp.max = targetMax;
+        if (this._refs.nrSlider.labelEl) {
+          this._refs.nrSlider.labelEl.textContent = isSsnr ? 'SSNR Level' : 'NR Level';
+        }
+        const rawLevel = isSsnr ? rxS.ssnrLevel : rxS.lmsNrLevel;
+        const displayLevel =
+          Number.isFinite(rawLevel) && rawLevel >= 1
+            ? clamp(Math.round(rawLevel), 1, isSsnr ? 25 : 10)
+            : isSsnr
+            ? 5
+            : 4;
+        this._refs.nrSlider.sync(displayLevel);
+      }
       if (this._refs.nmSwitch) this._refs.nmSwitch.sync(rxS.notchOn);
       if (this._refs.nmSlider) this._refs.nmSlider.sync(rxS.notchHz ?? 750);
 
@@ -2977,10 +3071,12 @@
         const totalBlocked = (gStats.blockedCatCount || 0) + (gStats.blockedBinaryCount || 0);
         const policy = this.gate && this.gate.getPolicy ? this.gate.getPolicy() : 'rx-only';
         const posture = snapshot.txPosture || (policy === 'tx-enabled' ? 'tx-armed' : 'rx-only');
+        const postureLabel =
+          posture === 'rx-only' ? 'RX-ONLY' : (posture === 'tx-test' ? 'TX-TEST' : 'TX READY');
         this._refs.safetyNote.textContent =
           posture === 'rx-only'
-            ? `Policy: RX-ONLY · Intercepted TX attempts: ${totalBlocked}. All transmit, tune, keyer, DVR, power commands, and outbound audio (0x01) are blocked client-side by K4.RxOnlyGate.`
-            : `Policy: ${posture.toUpperCase()} (${policy.toUpperCase()}) · Intercepted TX attempts: ${totalBlocked}. Permanent destructive/calibration commands remain blocked in all modes.`;
+            ? `Blocked in RX-Only: ${totalBlocked} TX attempt${totalBlocked === 1 ? '' : 's'}. All transmit, tune, keyer, DVR, power commands, and outbound audio (0x01) are blocked while Transmit Lock is active.`
+            : `TX Mode: ${postureLabel} · Blocked TX attempts: ${totalBlocked}. Calibration and factory-service commands remain blocked in all modes.`;
       }
     }
 
@@ -3061,23 +3157,23 @@
           b.dataset.state = 'tuning';
           this._refs.txStatusBadge.textContent = 'TX Test';
         } else if (txActive) {
-          b.textContent = 'TRANSMITTING LIVE RF — Press Esc for immediate RX drop';
+          b.textContent = 'TX ON — Press Esc to return to RX';
           b.dataset.state = 'warn';
-          this._refs.txStatusBadge.textContent = 'ON AIR';
+          this._refs.txStatusBadge.textContent = 'TX ON';
         } else if (posture === 'tx-armed' && isTest) {
-          b.textContent = 'TX Test (TS1) active while Armed — RF output inhibited';
+          b.textContent = 'TX Test (TS1) active while TX Ready — RF output inhibited';
           b.dataset.state = 'tuning';
           this._refs.txStatusBadge.textContent = 'TX Test';
         } else if (posture === 'tx-armed') {
-          b.textContent = 'TX ARMED — Hold PTT or Spacebar to transmit';
+          b.textContent = 'TX READY — Hold PTT or Spacebar to transmit';
           b.dataset.state = 'matched';
-          this._refs.txStatusBadge.textContent = 'ARMED';
+          this._refs.txStatusBadge.textContent = 'TX READY';
         } else if (posture === 'tx-test' || isTest) {
           b.textContent = 'K4 TX Test (TS1) — Off-air audio, ALC & keyer check (PC unchanged)';
           b.dataset.state = 'tuning';
           this._refs.txStatusBadge.textContent = 'TX Test';
         } else {
-          b.textContent = 'Receive-Only Firewall Active — TX / ATU / Power locked';
+          b.textContent = 'Transmit Lock Active — TX / ATU / Power locked';
           b.dataset.state = 'idle';
           this._refs.txStatusBadge.textContent = 'RX ONLY';
         }

@@ -28,7 +28,7 @@
       this._mouseQsyMode = (K4.storage && K4.storage.get('k4.mouseQsyMode', 'lr')) === 'pane' ? 'pane' : 'lr';
       this._wheelRitMode = false;
       this._palette = K4.storage ? K4.storage.get('k4.palette', 'obsidian') : 'obsidian';
-      this._peakHold = K4.storage ? K4.storage.get('k4.peakHold', true) !== false : true;
+      this._peakHold = K4.storage ? K4.storage.get('k4.peakHold.v2', false) === true : false;
       this._drawerOpen = window.innerWidth >= 1200;
       this._tickerExpanded = false;
       this._lastTickerCount = 0;
@@ -449,7 +449,7 @@
 
       this.client.on('blocked', (info) => {
         const cmd = (info && (info.command || info.cmd)) || 'TX command';
-        this.toast(`Blocked ${cmd} — Receive-Only firewall active`, 'blocked');
+        this.toast(`Blocked ${cmd} — Transmit Lock active`, 'blocked');
         this._render();
       });
 
@@ -696,7 +696,7 @@
           this.client.setDisplay(this._dispRx(snap), { panFrozen: !snap.panFrozen });
         } else if (e.key === '?') {
           e.preventDefault();
-          this.toast('Shortcuts: Cmd/Ctrl+K Jump · M Mute · F Freeze · Space Hold-PTT (when armed) · Esc TX Panic/Close', 'info');
+          this.toast('Shortcuts: Cmd/Ctrl+K Jump · M Mute · F Freeze · Space Hold-PTT (when TX ready) · Esc Stop TX / Close', 'info');
         }
       });
 
@@ -922,7 +922,7 @@
           this.client.setTxPosture('rx-only');
         }
         this._syncTxMicStandby('rx-only');
-        this.toast('Receive-only firewall active', 'info');
+        this.toast('Transmit Lock active (RX Only)', 'info');
         this._render();
         return;
       }
@@ -979,7 +979,7 @@
       }
       this._syncTxMicStandby(posture);
       this.toast(
-        next ? 'TX Test ON (TS1) — RF output inhibited' : 'TX Test OFF (TS0) — Live RF armed',
+        next ? 'TX Test ON (TS1) — RF output inhibited' : 'TX Test OFF (TS0) — TX READY',
         'info'
       );
       this._render();
@@ -1025,7 +1025,7 @@
           } else if (!micSt.secureContext) {
             this._dom.txArmMic.textContent = 'Two-Tone Test (Mic requires localhost/HTTPS)';
           } else {
-            this._dom.txArmMic.textContent = 'Microphone (prompts permission on ARM)';
+            this._dom.txArmMic.textContent = 'Microphone (prompts permission when TX enabled)';
           }
         } else if (cfg.source === 'tone-1k') {
           this._dom.txArmMic.textContent = '1 kHz Test Tone';
@@ -1066,7 +1066,7 @@
         this.client.setTxPosture('tx-armed', { confirmed: true });
       }
       this._syncTxMicStandby('tx-armed');
-      this.toast('LIVE RF TX ARMED — Hold PTT or Spacebar to transmit', 'info');
+      this.toast('TX READY — Hold PTT or Spacebar to transmit', 'info');
       this._render();
     }
 
@@ -1182,7 +1182,7 @@
 
     setPeakHold(on) {
       this._peakHold = Boolean(on);
-      if (K4.storage) K4.storage.set('k4.peakHold', this._peakHold);
+      if (K4.storage) K4.storage.set('k4.peakHold.v2', this._peakHold);
       if (this.panadapter && this.panadapter.setPeakHold) {
         this.panadapter.setPeakHold(this._peakHold);
       }
@@ -1456,7 +1456,7 @@
       const transmitting = Boolean(snap.txActive || snap.atuTuning);
       const badgeLabel = this._dom.rxOnlyBadge.querySelector('.k4-rx-badge-text');
       if (badgeLabel) {
-        badgeLabel.textContent = posture === 'rx-only' ? 'SAFE' : (isTest ? 'TX Test' : (transmitting ? 'ON AIR' : 'ARMED'));
+        badgeLabel.textContent = posture === 'rx-only' ? 'RX ONLY' : (isTest ? 'TX Test' : (transmitting ? 'TX ON' : 'TX READY'));
       }
       if (this._dom.txPostureBar) {
         this._dom.txPostureBar.dataset.posture = posture;

@@ -207,8 +207,8 @@
       if (blockedMatch) {
         items.push({
           blocked: true,
-          title: `Blocked: "${blockedMatch[1].toUpperCase()}" is prohibited`,
-          sub: 'Receive-Only firewall enforces zero transmit, keyer, or tuner activity.',
+          title: `Blocked in RX-Only: "${blockedMatch[1].toUpperCase()}"`,
+          sub: 'Blocked while Transmit Lock is active (enforces zero transmit, keyer, or tuner activity).',
           tag: 'RX ONLY',
           run: () => {
             this.onNotify(`Blocked TX command "${trimmed}" (RX-Only mode)`, 'blocked');
@@ -434,8 +434,89 @@
         };
       }
 
-      // NB / NR / Notch / Lock
-      const dspToggle = lower.match(/^(nb|nr|notch|lock)(?:\s+(on|off))?$/);
+      // NR / SSNR ("nr", "nr on", "nr off", "nr 1..10", "ssnr", "ssnr on", "ssnr off", "ssnr 1..25")
+      const nrMatch = lower.match(/^(?:(nr)(?:\s+(on|off|lms|ssnr|\d+))?|(ssnr)(?:\s+(on|off|\d+))?)$/);
+      if (nrMatch) {
+        const cmdKind = nrMatch[1] || nrMatch[3];
+        const arg = nrMatch[2] || nrMatch[4] || '';
+        const snap = this.state.getSnapshot ? this.state.getSnapshot() : this.state;
+        const rxS = targetRx === 'B' ? snap.rxB : snap.rxA;
+        const b = K4.CatCodec && K4.CatCodec.builders;
+        const isSsnrCmd = cmdKind === 'ssnr' || arg === 'ssnr';
+        const mode = isSsnrCmd ? 'ssnr' : 'lms';
+        const maxLvl = isSsnrCmd ? 25 : 10;
+
+        let patch;
+        let title;
+        let sub;
+        if (arg === 'on') {
+          patch = { mode, on: true };
+          title = `${isSsnrCmd ? 'SSNR' : 'Noise Reduction'} ON (VFO ${targetRx})`;
+          sub = `Enable ${isSsnrCmd ? 'SSNR' : 'LMS NR'} on VFO ${targetRx}`;
+        } else if (arg === 'off') {
+          patch = cmdKind === 'ssnr' ? { mode: 'ssnr', on: false } : { on: false };
+          title = `${isSsnrCmd ? 'SSNR' : 'Noise Reduction'} OFF (VFO ${targetRx})`;
+          sub = `Disable ${isSsnrCmd ? 'SSNR' : 'NR'} on VFO ${targetRx}`;
+        } else if (arg === 'lms' || arg === 'ssnr') {
+          patch = { mode: arg };
+          title = `NR Mode ${arg.toUpperCase()} (VFO ${targetRx})`;
+          sub = `Switch NR algorithm to ${arg.toUpperCase()} on VFO ${targetRx}`;
+        } else if (/^\d+$/.test(arg)) {
+          const n = parseInt(arg, 10);
+          if (n <= 0) {
+            patch = { mode, on: false };
+            title = `${isSsnrCmd ? 'SSNR' : 'Noise Reduction'} OFF (VFO ${targetRx})`;
+            sub = `Disable ${isSsnrCmd ? 'SSNR' : 'LMS NR'} on VFO ${targetRx}`;
+          } else {
+            const level = Math.max(1, Math.min(maxLvl, n));
+            patch = { mode, on: true, level };
+            title = `${isSsnrCmd ? 'SSNR' : 'NR'} Level ${level} ON (VFO ${targetRx})`;
+            sub = `Enable ${isSsnrCmd ? 'SSNR' : 'LMS NR'} at level ${level} on VFO ${targetRx}`;
+          }
+        } else if (cmdKind === 'ssnr') {
+          const next = !(rxS && rxS.ssnrOn);
+          patch = { mode: 'ssnr', on: next };
+          title = `SSNR ${next ? 'ON' : 'OFF'} (VFO ${targetRx})`;
+          sub = `Toggle SSNR on VFO ${targetRx}`;
+        } else {
+          const next = !(rxS && rxS.nrOn);
+          patch = { on: next };
+          title = `Noise Reduction ${next ? 'ON' : 'OFF'} (VFO ${targetRx})`;
+          sub = `Toggle NR on VFO ${targetRx}`;
+        }
+
+        return {
+          title,
+          sub,
+          tag: isSsnrCmd ? 'SSNR' : 'NR',
+          run: () => {
+            if (typeof this.client.setNr === 'function') {
+              this.client.setNr(targetRx, patch);
+            } else {
+              const effMode = patch.mode || (rxS && rxS.nrMode === 'ssnr' ? 'ssnr' : 'lms');
+              const effOn = patch.on !== undefined ? patch.on : Boolean(rxS && rxS.nrOn);
+              const rawLvl =
+                patch.level !== undefined
+                  ? patch.level
+                  : effMode === 'ssnr'
+                  ? (rxS && rxS.ssnrLevel)
+                  : (rxS && rxS.lmsNrLevel);
+              const effDef = effMode === 'ssnr' ? 5 : 4;
+              const effMax = effMode === 'ssnr' ? 25 : 10;
+              const lvl = effOn
+                ? (rawLvl > 0 ? Math.min(effMax, rawLvl) : effDef)
+                : Math.max(0, Math.min(effMax, rawLvl || 0));
+              const cmd = effMode === 'ssnr'
+                ? (b && b.ssnr ? b.ssnr(targetRx, lvl, effOn) : `NRS${targetRx === 'B' ? '$' : ''}${String(lvl).padStart(2, '0')}${effOn ? '1' : '0'};`)
+                : (b && b.nr ? b.nr(targetRx, lvl, effOn) : `NR${targetRx === 'B' ? '$' : ''}${String(lvl).padStart(2, '0')}${effOn ? '1' : '0'};`);
+              this.client.sendCat(cmd);
+            }
+          },
+        };
+      }
+
+      // NB / Notch / Lock
+      const dspToggle = lower.match(/^(nb|notch|lock)(?:\s+(on|off))?$/);
       if (dspToggle) {
         const kind = dspToggle[1];
         const snap = this.state.getSnapshot ? this.state.getSnapshot() : this.state;
@@ -448,15 +529,6 @@
             sub: `Toggle NB on VFO ${targetRx}`,
             tag: 'NB',
             run: () => this.client.sendCat(b && b.nb ? b.nb(targetRx, rxS ? rxS.nbLevel : 5, next) : `NB${targetRx === 'B' ? '$' : ''}05${next ? '1' : '0'};`),
-          };
-        }
-        if (kind === 'nr') {
-          const next = dspToggle[2] ? dspToggle[2] === 'on' : !(rxS && rxS.nrOn);
-          return {
-            title: `Noise Reduction ${next ? 'ON' : 'OFF'} (VFO ${targetRx})`,
-            sub: `Toggle NR on VFO ${targetRx}`,
-            tag: 'NR',
-            run: () => this.client.sendCat(b && b.nr ? b.nr(targetRx, rxS ? rxS.nrLevel : 4, next) : `NR${targetRx === 'B' ? '$' : ''}04${next ? '1' : '0'};`),
           };
         }
         if (kind === 'notch') {
