@@ -107,6 +107,7 @@
       this._lastCache = {};
       this._digitEls = [];
       this._locked = false;
+      this._isTarget = this.rx === 'A';
       this._freqHz = this.rx === 'A' ? 14074000 : 14025000;
       this._subRxEnabled = false;
 
@@ -168,6 +169,11 @@
         }, { passive: false });
 
         span.addEventListener('click', (e) => {
+          if (typeof window !== 'undefined' && window.innerWidth < 960 && !this._isTarget) {
+            e.stopPropagation();
+            this.onSelectTarget(this.rx);
+            return;
+          }
           if (typeof window === 'undefined' || window.innerWidth >= 960) {
             this.onSelectTarget(this.rx);
           }
@@ -198,11 +204,17 @@
       root.appendChild(this.freqEl);
 
       root.addEventListener('click', (e) => {
-        if (typeof window !== 'undefined' && window.innerWidth < 960) return;
         const tgt = e.target;
+        if (typeof window !== 'undefined' && window.innerWidth < 960) {
+          if (!this._isTarget && !(tgt && tgt.closest && tgt.closest('button'))) {
+            this.onSelectTarget(this.rx);
+          }
+          return;
+        }
         if (
           tgt === root ||
           tgt === this.freqEl ||
+          tgt === this.pillsEl ||
           (tgt &&
             tgt.classList &&
             (tgt.classList.contains('k4-vfo-unit') ||
@@ -317,7 +329,7 @@
       this.client.tune(this.rx, nextHz, { optimistically: true });
     }
 
-    update(snapshot, targetRx, isMobileCompact) {
+    update(snapshot, targetRx) {
       const rxState = this.rx === 'A' ? snapshot.rxA : snapshot.rxB;
       if (!rxState) return;
 
@@ -327,14 +339,10 @@
       this._subRxEnabled = Boolean(snapshot.subRxEnabled);
 
       const isTarget = targetRx === this.rx;
+      this._isTarget = isTarget;
       if (this._lastCache.isTarget !== isTarget) {
         this.container.dataset.target = isTarget ? 'true' : 'false';
         this._lastCache.isTarget = isTarget;
-      }
-
-      if (isMobileCompact !== undefined) {
-        const hideMobile = !isTarget;
-        this.container.classList.toggle('k4-vfo--mobile-hidden', hideMobile);
       }
 
       if (this.rx === 'B') {

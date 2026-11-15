@@ -201,8 +201,17 @@ select option:disabled {
   display: none;
 }
 
-/* Mid-size desktop refinements (960px..1660px) */
-@media (min-width: 960px) and (max-width: 1660px) {
+/* Desktop VFO B & pills never crush */
+@media (min-width: 960px) {
+  #top-bar #vfo-a-mount,
+  #top-bar #vfo-b-mount,
+  #top-bar .k4-vfo-pills {
+    flex-shrink: 0;
+  }
+}
+
+/* Mid-size desktop icon compaction (960px..1760px) — keep ALL VFO B selectors visible */
+@media (min-width: 960px) and (max-width: 1760px) {
   #top-bar {
     gap: 4px;
     padding: 0 6px;
@@ -224,23 +233,25 @@ select option:disabled {
     display: none;
   }
 
+  .k4-audio-btn {
+    width: 30px;
+    min-width: 30px;
+    padding: 0;
+    justify-content: center;
+  }
+
   #top-bar .k4-vfo-slot {
     padding: 2px 6px;
     gap: 5px;
   }
 
-  .k4-vfo-slot--sub .k4-vfo-band,
-  .k4-vfo-slot--sub .k4-vfo-bw,
   .k4-vfo-slot[data-rx="A"] .k4-vfo-unit {
     display: none;
   }
 }
 
-@media (min-width: 960px) and (max-width: 1480px) {
-  .k4-conn-pill .k4-conn-label {
-    display: none;
-  }
-
+/* Tighter 1-row desktop spacing (1461px..1600px) so Dual RX + VFO B selectors never crowd */
+@media (min-width: 1461px) and (max-width: 1600px) {
   .k4-vfo-slot[data-rx="A"] .k4-vfo-band,
   .k4-vfo-slot .k4-vfo-lock:not(.is-locked) {
     display: none;
@@ -267,8 +278,8 @@ select option:disabled {
     font-size: 10px;
   }
 
-  #top-bar .k4-top-pill-btn {
-    height: 26px;
+  #top-bar #top-ant-btn {
+    height: 24px;
     padding: 0 6px;
     font-size: 10px;
   }
@@ -293,13 +304,91 @@ select option:disabled {
   }
 }
 
-@media (min-width: 960px) and (max-width: 1379px) {
+@media (min-width: 1461px) and (max-width: 1540px) {
+  .k4-conn-pill .k4-conn-label {
+    display: none;
+  }
+}
+
+/* Clean 2-row Top Bar (960px..1460px): Row 1 = Conn + VFO A + S-Meter + VFO B; Row 2 = Cluster + Actions */
+@media (min-width: 960px) and (max-width: 1460px) {
+  #top-bar {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    grid-template-rows: auto auto;
+    align-items: center;
+    height: auto;
+    min-height: var(--topbar-h);
+    padding: 4px 8px;
+    row-gap: 4px;
+    column-gap: 8px;
+  }
+
+  .k4-topbar-left {
+    grid-column: 1;
+    grid-row: 1;
+    justify-self: start;
+  }
+
+  .k4-topbar-center {
+    grid-column: 2;
+    grid-row: 1;
+    width: 100%;
+    justify-content: flex-end;
+    gap: 8px;
+  }
+
+  .k4-topbar-center .k4-smeter-slot {
+    margin: 0 auto;
+  }
+
+  #vfo-cluster {
+    grid-column: 1;
+    grid-row: 2;
+    justify-self: start;
+  }
+
+  .k4-topbar-right {
+    grid-column: 2;
+    grid-row: 2;
+    justify-self: end;
+    gap: 5px;
+  }
+
+  #top-bar .k4-vfo-freq {
+    font-size: 15px;
+    min-width: 0;
+  }
+
+  #top-bar .k4-vfo-slot--sub .k4-vfo-freq {
+    font-size: 13.5px;
+    min-width: 0;
+  }
+
+  #top-bar .k4-cluster-btn {
+    height: 24px;
+    padding: 0 6px;
+    font-size: 10px;
+  }
+}
+
+@media (min-width: 960px) and (max-width: 1219px) {
+  :root {
+    --drawer-w: 296px;
+  }
+
+  .k4-conn-pill .k4-conn-label {
+    display: none;
+  }
+
+  .k4-vfo-slot[data-rx="A"] .k4-vfo-band,
   .k4-vfo-slot[data-rx="A"] .k4-vfo-bw,
   .k4-vfo-slot .k4-vfo-lock:not(.is-locked) {
     display: none;
   }
 
   #top-bar .k4-icon-btn,
+  #top-bar .k4-action-btn,
   #top-bar .k4-conn-pill {
     padding: 0 5px;
     min-width: 26px;
@@ -308,39 +397,40 @@ select option:disabled {
 
   #top-bar .k4-vfo-slot {
     padding: 2px 5px;
-    gap: 3px;
+    gap: 4px;
   }
 
   #top-bar .k4-vfo-badge {
-    width: 16px;
-    height: 16px;
+    width: 17px;
+    height: 17px;
     font-size: 9.5px;
   }
 
   #top-bar .k4-vfo-mode,
+  #top-bar .k4-vfo-band,
+  #top-bar .k4-vfo-bw,
+  #top-bar .k4-vfo-sub-btn,
   #top-bar .k4-vfo-rit-badge,
-  #top-bar .k4-tx-badge {
-    padding: 1px 4px;
-    font-size: 9.5px;
-  }
-
-  #top-bar .k4-vfo-freq {
-    font-size: 13px;
-    min-width: 0;
-  }
-
-  #top-bar .k4-vfo-slot--sub .k4-vfo-freq {
-    font-size: 11.5px;
-    min-width: 0;
-  }
-
-  #top-bar .k4-cluster-btn {
-    height: 22px;
+  #top-bar .k4-tx-target-tag {
     padding: 0 4px;
     font-size: 9.5px;
   }
 
-  #top-bar .k4-top-pill-btn {
+  #top-bar .k4-vfo-freq {
+    font-size: 13.5px;
+  }
+
+  #top-bar .k4-vfo-slot--sub .k4-vfo-freq {
+    font-size: 12.5px;
+  }
+
+  #top-bar .k4-cluster-btn {
+    height: 22px;
+    padding: 0 5px;
+    font-size: 9.5px;
+  }
+
+  #top-bar #top-ant-btn {
     height: 24px;
     padding: 0 5px;
     font-size: 9.5px;
@@ -373,33 +463,7 @@ select option:disabled {
   }
 }
 
-@media (min-width: 960px) and (max-width: 1219px) {
-  :root {
-    --drawer-w: 296px;
-  }
-
-  #top-bar {
-    flex-wrap: wrap;
-    height: auto;
-    padding: 4px 8px;
-    row-gap: 4px;
-  }
-
-  .k4-topbar-left {
-    flex: 1 1 auto;
-  }
-
-  .k4-topbar-center {
-    flex: 0 0 auto;
-  }
-
-  .k4-topbar-right {
-    flex: 1 1 auto;
-    justify-content: flex-end;
-  }
-}
-
-/* Mobile Layout (< 960px): clean wrapping without horizontal overflow */
+/* Mobile Layout (< 960px): dual-VFO side-by-side Row 1, cluster+meter Row 2, actions Row 3 */
 @media (max-width: 959px) {
   #app-shell {
     grid-template-rows: auto minmax(0, 1fr) calc(var(--mobilenav-h) + env(safe-area-inset-bottom, 0px));
@@ -409,25 +473,26 @@ select option:disabled {
     height: auto;
     min-height: var(--topbar-mobile-h);
     flex-wrap: wrap;
+    align-items: center;
     padding: 4px 6px;
-    gap: 4px 6px;
+    gap: 4px;
   }
 
-  .k4-topbar-left {
+  .k4-topbar-left,
+  .k4-topbar-center {
     display: contents;
   }
 
-  #top-bar .k4-conn-pill,
   #top-bar .k4-vfo-slot {
     order: 1;
+    flex: 1 1 calc(50% - 4px);
+    min-width: 0;
+    justify-content: space-between;
   }
 
-  .k4-topbar-center {
+  #top-bar .k4-conn-pill {
     order: 2;
     flex: 0 0 auto;
-    margin-left: auto;
-    justify-content: flex-end;
-    gap: 4px;
   }
 
   #top-bar .k4-vfo-cluster {
@@ -435,18 +500,26 @@ select option:disabled {
     flex: 0 0 auto;
   }
 
-  .k4-topbar-right {
-    flex: 1 1 260px;
-    max-width: 100%;
+  #top-bar .k4-smeter-slot {
     order: 4;
+    flex: 1 1 136px;
+    width: auto;
+    min-width: 120px;
+    max-width: none;
+  }
+
+  .k4-topbar-right {
+    flex: 0 0 100%;
+    width: 100%;
+    order: 5;
     justify-content: space-between;
     gap: 4px;
   }
 
   .k4-conn-pill {
     padding: 0 6px !important;
-    min-width: 28px;
-    height: 30px;
+    min-width: 26px;
+    height: 28px;
     justify-content: center;
   }
 
@@ -466,17 +539,13 @@ select option:disabled {
     display: none;
   }
 
-  .k4-action-btn {
+  .k4-action-btn,
+  .k4-settings-toggle {
     padding: 0 !important;
     width: 30px;
     min-width: 30px;
     height: 30px;
     justify-content: center;
-  }
-
-  /* On mobile, show the active target VFO in the compact header */
-  .k4-vfo-slot.k4-vfo--mobile-hidden {
-    display: none !important;
   }
 
   .k4-vfo-slot .k4-vfo-band,
@@ -494,7 +563,7 @@ select option:disabled {
   /* Thumb-zone Mobile Navigation */
   .k4-mobile-nav {
     display: grid;
-    grid-template-columns: repeat(5, minmax(0, 1fr));
+    grid-template-columns: repeat(6, minmax(0, 1fr));
     align-items: center;
     height: calc(var(--mobilenav-h) + env(safe-area-inset-bottom, 0px));
     padding: 4px 6px calc(4px + env(safe-area-inset-bottom, 0px));
@@ -539,30 +608,22 @@ select option:disabled {
 
 @media (max-width: 520px) {
   #top-bar {
-    padding: 4px 5px;
-    gap: 3px;
-  }
-
-  .k4-topbar-left,
-  .k4-topbar-center,
-  .k4-topbar-right {
+    padding: 3px 5px;
     gap: 3px;
   }
 
   .k4-topbar-right {
-    flex: 0 0 100%;
-    width: 100%;
-    flex-wrap: wrap;
-    justify-content: space-between;
+    gap: 3px;
   }
 
   .k4-conn-pill {
     min-width: 24px;
-    height: 28px;
+    height: 26px;
     padding: 0 4px !important;
   }
 
-  .k4-action-btn {
+  .k4-action-btn,
+  .k4-settings-toggle {
     width: 28px;
     min-width: 28px;
     height: 28px;
