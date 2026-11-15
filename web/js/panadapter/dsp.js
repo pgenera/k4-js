@@ -207,17 +207,39 @@
       return plotLeftPx + u * plotWidthPx;
     },
 
-    dialFreqFromClick({
-      xPx,
-      plotLeftPx,
-      plotWidthPx,
-      panCenterHz,
-      userSpanHz,
-      mode,
-      cwPitchHz = 500,
-      stepHz = 100,
-      fine = false,
-    }) {
+    isVoiceMode(mode) {
+      if (mode === 1 || mode === 2 || mode === 4 || mode === 5) {
+        return true;
+      }
+      if (typeof mode === 'string') {
+        const norm = mode.trim().toUpperCase();
+        return (
+          norm === 'LSB' ||
+          norm === 'USB' ||
+          norm === 'FM' ||
+          norm === 'AM' ||
+          norm === '1' ||
+          norm === '2' ||
+          norm === '4' ||
+          norm === '5'
+        );
+      }
+      return false;
+    },
+
+    dialFreqFromClick(opts = {}) {
+      const {
+        xPx,
+        plotLeftPx,
+        plotWidthPx,
+        panCenterHz,
+        userSpanHz,
+        mode,
+        cwPitchHz = 500,
+        stepHz = 100,
+        fine = false,
+      } = opts || {};
+      const voiceClickSnapKhz = Boolean(opts && opts.voiceClickSnapKhz);
       const rfHz = SpectrumGeometry.rfFreqFromX(
         xPx,
         plotLeftPx,
@@ -232,7 +254,11 @@
       } else if (mode === 7) {
         rawDial = rfHz + pitch;
       }
-      const step = fine ? 1 : stepHz || 100;
+      const step = fine
+        ? 1
+        : voiceClickSnapKhz && SpectrumGeometry.isVoiceMode(mode)
+          ? 1000
+          : stepHz || 100;
       return clamp(Math.round(rawDial / step) * step, 100000, 54000000);
     },
   };

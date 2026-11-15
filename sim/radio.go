@@ -122,6 +122,11 @@ type RxState struct {
 	SpotPulseUntil      float64
 }
 
+// PanCenterHz returns the clamped effective panadapter stream center frequency in Hz.
+func (rx RxState) PanCenterHz() int64 {
+	return clampInt64(rx.FreqHz+rx.PanCenterOffsetHz, 100000, 54000000)
+}
+
 type atuMatchKey struct {
 	Band int
 	Ant  int
@@ -1793,7 +1798,7 @@ func (r *Radio) execSingleLocked(orig, upper string, tSec float64) string {
 		if rx == 'B' {
 			fiPrefix = "FI$"
 		}
-		resp = fmt.Sprintf("%s%011d;", fiPrefix, clampInt64(target.FreqHz+target.PanCenterOffsetHz, 100000, 54000000))
+		resp = fmt.Sprintf("%s%011d;", fiPrefix, target.PanCenterHz())
 	case strings.HasPrefix(upper, "FI"):
 		rx, prefix, arg := splitSubRx(upper, "FI")
 		target := r.rxPtr(rx)
@@ -1806,7 +1811,7 @@ func (r *Radio) execSingleLocked(orig, upper string, tSec float64) string {
 				}
 			}
 		}
-		resp = fmt.Sprintf("%s%011d;", prefix, clampInt64(target.FreqHz+target.PanCenterOffsetHz, 100000, 54000000))
+		resp = fmt.Sprintf("%s%011d;", prefix, target.PanCenterHz())
 	case strings.HasPrefix(upper, "RT"):
 		rx, prefix, arg := splitSubRx(upper, "RT")
 		target := r.rxPtr(rx)
@@ -1866,15 +1871,15 @@ func (r *Radio) execSingleLocked(orig, upper string, tSec float64) string {
 		}
 		switch arg[0] {
 		case '0': // Copy VFO A frequency -> VFO B frequency
-			r.setRxFreqLocked('B', r.RxA.FreqHz)
+			r.setRxFreqSwapLocked('B', r.RxA.FreqHz)
 			return fmt.Sprintf("FB%011d;", r.RxB.FreqHz)
 		case '1': // Copy VFO B frequency -> VFO A frequency
-			r.setRxFreqLocked('A', r.RxB.FreqHz)
+			r.setRxFreqSwapLocked('A', r.RxB.FreqHz)
 			return fmt.Sprintf("FA%011d;", r.RxA.FreqHz)
 		case '2': // Swap VFO A <-> VFO B frequencies
 			freqA, freqB := r.RxA.FreqHz, r.RxB.FreqHz
-			r.setRxFreqLocked('A', freqB)
-			r.setRxFreqLocked('B', freqA)
+			r.setRxFreqSwapLocked('A', freqB)
+			r.setRxFreqSwapLocked('B', freqA)
 			return fmt.Sprintf("FA%011d;FB%011d;", r.RxA.FreqHz, r.RxB.FreqHz)
 		case '3': // Copy VFO A full slice params -> VFO B
 			copySliceParams(&r.RxB, &r.RxA, r.RxA.FixedTune)
@@ -1883,9 +1888,10 @@ func (r *Radio) execSingleLocked(orig, upper string, tSec float64) string {
 			copySliceParams(&r.RxA, &r.RxB, r.RxA.FixedTune)
 			return formatSliceCAT('A', r.RxA)
 		case '5': // Swap VFO A <-> VFO B full slice params
+			fixedTune := r.RxA.FixedTune
 			origA := r.RxA
-			copySliceParams(&r.RxA, &r.RxB, r.RxA.FixedTune)
-			copySliceParams(&r.RxB, &origA, r.RxA.FixedTune)
+			copySliceParams(&r.RxA, &r.RxB, fixedTune)
+			copySliceParams(&r.RxB, &origA, fixedTune)
 			return formatSliceCAT('A', r.RxA) + formatSliceCAT('B', r.RxB)
 		}
 	case strings.HasPrefix(upper, "XT"):
@@ -2689,13 +2695,37 @@ func (r *Radio) rxPtr(rx byte) *RxState {
 	return &r.RxA
 }
 
+func panHalfSpanHz(rx RxState) int64 {
+	if rx.PanSpanHz > 0 {
+		return int64(rx.PanSpanHz) / 2
+	}
+	return 24000
+}
+
+func reframePanOffset(dst *RxState, oldCenter, newFreq, maxOffset int64, fixedTune bool) {
+	if fixedTune && absInt64(oldCenter-newFreq) <= maxOffset {
+		dst.PanCenterOffsetHz = oldCenter - newFreq
+		return
+	}
+	dst.PanCenterOffsetHz = 0
+}
+
 func (r *Radio) setRxFreqLocked(rx byte, hz int64) {
 	target := r.rxPtr(rx)
 	oldCenter := target.FreqHz + target.PanCenterOffsetHz
 	target.FreqHz = clampInt64(hz, 100000, 54000000)
-	if r.RxA.FixedTune {
-		target.PanCenterOffsetHz = clampInt64(oldCenter-target.FreqHz, -5000000, 5000000)
+	maxOffset := panHalfSpanHz(*target)
+	if tierHalf := int64(target.PanTierKHz) * 1000 / 2; tierHalf > maxOffset {
+		maxOffset = tierHalf
 	}
+	reframePanOffset(target, oldCenter, target.FreqHz, maxOffset, r.RxA.FixedTune)
+}
+
+func (r *Radio) setRxFreqSwapLocked(rx byte, hz int64) {
+	target := r.rxPtr(rx)
+	oldCenter := target.FreqHz + target.PanCenterOffsetHz
+	target.FreqHz = clampInt64(hz, 100000, 54000000)
+	reframePanOffset(target, oldCenter, target.FreqHz, panHalfSpanHz(*target), r.RxA.FixedTune)
 }
 
 func (r *Radio) execAutoSpotLocked(rx byte, tSec float64) string {
@@ -2718,10 +2748,8 @@ func (r *Radio) execAutoSpotLocked(rx byte, tSec float64) string {
 }
 
 func copySliceParams(dst, src *RxState, fixedTune bool) {
-	if fixedTune {
-		oldCenter := dst.FreqHz + dst.PanCenterOffsetHz
-		dst.PanCenterOffsetHz = clampInt64(oldCenter-src.FreqHz, -5000000, 5000000)
-	}
+	oldCenter := dst.FreqHz + dst.PanCenterOffsetHz
+	reframePanOffset(dst, oldCenter, src.FreqHz, panHalfSpanHz(*dst), fixedTune)
 	dst.FreqHz = src.FreqHz
 	dst.Mode = src.Mode
 	dst.DataSubMode = src.DataSubMode
@@ -2933,6 +2961,13 @@ func clampInt64(v, lo, hi int64) int64 {
 	}
 	if v > hi {
 		return hi
+	}
+	return v
+}
+
+func absInt64(v int64) int64 {
+	if v < 0 {
+		return -v
 	}
 	return v
 }

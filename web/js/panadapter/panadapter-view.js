@@ -66,19 +66,20 @@
   ]);
 
   class PanadapterView {
-    constructor({
-      container,
-      state,
-      client,
-      renderer = 'auto',
-      palette = 'obsidian',
-      peakHold = false,
-      mouseQsyMode = 'lr',
-      onSelectTarget = null,
-      onToggleWheelRit = null,
-      onNotify = null,
-      onViewportChange = null,
-    } = {}) {
+    constructor(opts = {}) {
+      const {
+        container,
+        state,
+        client,
+        renderer = 'auto',
+        palette = 'obsidian',
+        peakHold = false,
+        mouseQsyMode = 'lr',
+        onSelectTarget = null,
+        onToggleWheelRit = null,
+        onNotify = null,
+        onViewportChange = null,
+      } = opts || {};
       if (!container) {
         throw new Error('PanadapterView requires a container element');
       }
@@ -89,6 +90,12 @@
 
       this._targetRx = 'A';
       this._mouseQsyMode = mouseQsyMode === 'pane' ? 'pane' : 'lr';
+      this._voiceClickSnapKhz =
+        opts && opts.voiceClickSnapKhz !== undefined
+          ? Boolean(opts.voiceClickSnapKhz)
+          : Boolean(
+              K4.storage ? K4.storage.get('prefs.voiceClickSnapKhz', true) : true
+            );
       this._wheelRitMode = false;
       this._onSelectTarget =
         typeof onSelectTarget === 'function' ? onSelectTarget : null;
@@ -126,6 +133,13 @@
         A: this._createPaneState(),
         B: this._createPaneState(),
       };
+      const initialSnap = this._getSnapshot();
+      for (const rxKey of ['A', 'B']) {
+        const rxInit = (rxKey === 'B' ? initialSnap.rxB : initialSnap.rxA) || {};
+        if (Number.isFinite(rxInit.freqHz) && rxInit.freqHz > 0) {
+          this._panes[rxKey].lastKnownStateFreqHz = rxInit.freqHz;
+        }
+      }
 
       this._miniPanByRx = {
         A: {
@@ -226,12 +240,14 @@
         lastCenterHz: null,
         panCenterHz: null,
         streamCenterHz: null,
+        streamSpanHz: null,
         pendingStreamCenterHz: null,
         pendingStreamCenterUntil: 0,
         customCenterHz: null,
         customSpanHz: null,
         recentRadioSpans: [],
         lastKnownStateSpanHz: null,
+        lastKnownStateFreqHz: null,
         tierKHz: null,
         noiseFloorDbm: null,
       };
@@ -272,6 +288,11 @@
       if (!snap.fixedTune) {
         this._autoFixedTuneFromDrag = false;
       }
+      const isVfoCopy =
+        changedKey === 'vfoCopy' ||
+        Boolean(changedKeysSet && changedKeysSet.has('vfoCopy'));
+      const nowMs =
+        typeof performance !== 'undefined' ? performance.now() : Date.now();
       for (const rxKey of ['A', 'B']) {
         const rxSnap = (rxKey === 'B' ? snap.rxB : snap.rxA) || {};
         const pane = this._panes[rxKey];
@@ -291,6 +312,75 @@
             }
           }
           pane.lastKnownStateSpanHz = curSpan;
+        }
+        const streamSpan =
+          Number.isFinite(pane.streamSpanHz) && pane.streamSpanHz > 0
+            ? pane.streamSpanHz
+            : Number.isFinite(curSpan) && curSpan > 0
+              ? curSpan
+              : 48000;
+        const panCenter = Number(rxSnap.panCenterHz);
+        const awaitingStreamShift =
+          !isVfoCopy &&
+          pane.pendingStreamCenterUntil > nowMs &&
+          Number.isFinite(pane.pendingStreamCenterHz) &&
+          (!Number.isFinite(panCenter) ||
+            Math.abs(panCenter - pane.pendingStreamCenterHz) > 2500);
+        if (Number.isFinite(panCenter) && panCenter > 0 && !awaitingStreamShift) {
+          if (
+            isVfoCopy ||
+            !(Number.isFinite(pane.streamCenterHz) && pane.streamCenterHz > 0) ||
+            Math.abs(pane.streamCenterHz - panCenter) > streamSpan / 2
+          ) {
+            pane.streamCenterHz = panCenter;
+            pane.panCenterHz = panCenter;
+            if (isVfoCopy) {
+              pane.pendingStreamCenterUntil = 0;
+              pane.pendingStreamCenterHz = null;
+            }
+          }
+        }
+        const newFreq = Number(rxSnap.freqHz);
+        if (pane.customCenterHz !== null) {
+          const baseSpan =
+            Number.isFinite(curSpan) && curSpan > 0 ? curSpan : 48000;
+          const viewSpan = clamp(
+            Number.isFinite(pane.customSpanHz) && pane.customSpanHz > 0
+              ? pane.customSpanHz
+              : baseSpan,
+            6000,
+            368000
+          );
+          const halfMargin = viewSpan * 0.48;
+          const oldFreq =
+            Number.isFinite(pane.lastKnownStateFreqHz) &&
+            pane.lastKnownStateFreqHz > 0
+              ? pane.lastKnownStateFreqHz
+              : newFreq;
+          const oldInView =
+            Number.isFinite(oldFreq) &&
+            oldFreq > 0 &&
+            Math.abs(oldFreq - pane.customCenterHz) <= halfMargin;
+          const newInView =
+            Number.isFinite(newFreq) &&
+            newFreq > 0 &&
+            Math.abs(newFreq - pane.customCenterHz) <= halfMargin;
+          if (isVfoCopy) {
+            if (!(oldInView && newInView)) {
+              pane.customCenterHz = null;
+            }
+          } else if (
+            !awaitingStreamShift &&
+            viewSpan >= streamSpan * 0.99 &&
+            Number.isFinite(newFreq) &&
+            newFreq > 0 &&
+            !newInView
+          ) {
+            pane.customCenterHz = null;
+          }
+        }
+        if (Number.isFinite(newFreq) && newFreq > 0) {
+          pane.lastKnownStateFreqHz = newFreq;
         }
       }
       this._scheduleRender();
@@ -685,6 +775,10 @@
           ? pkt.sampleRateKHz
           : rxSnap.panTierKHz || 48;
       const tierSpanHz = Math.max(1000, tierKHz * 1000);
+      const streamSpanHz =
+        Number.isFinite(pkt.spanHz) && pkt.spanHz > 0
+          ? pkt.spanHz
+          : tierSpanHz || 48000;
       const centerHz = Number.isFinite(pkt.centerFreqHz)
         ? pkt.centerFreqHz
         : rxSnap.freqHz || 14074000;
@@ -714,10 +808,11 @@
         pane.panCenterHz = centerHz;
       }
       pane.tierKHz = tierKHz;
+      pane.streamSpanHz = streamSpanHz;
       if (
         !awaitingStreamShift &&
         pane.customCenterHz !== null &&
-        Math.abs(pane.customCenterHz - centerHz) > 184000
+        Math.abs(pane.customCenterHz - centerHz) > streamSpanHz / 2
       ) {
         pane.customCenterHz = null;
         pane.customSpanHz = null;
@@ -809,6 +904,17 @@
 
     getMouseQsyMode() {
       return this._mouseQsyMode;
+    }
+
+    setVoiceClickSnapKhz(on) {
+      this._voiceClickSnapKhz = Boolean(on);
+      if (K4.storage && typeof K4.storage.set === 'function') {
+        K4.storage.set('prefs.voiceClickSnapKhz', this._voiceClickSnapKhz);
+      }
+    }
+
+    getVoiceClickSnapKhz() {
+      return Boolean(this._voiceClickSnapKhz);
     }
 
     setWheelRitMode(on) {

@@ -327,6 +327,10 @@
         cwPitchHz: hit.cwPitchHz,
         stepHz: rxState.stepHz || 100,
         fine: Boolean(fine),
+        voiceClickSnapKhz:
+          this.view && typeof this.view.getVoiceClickSnapKhz === 'function'
+            ? this.view.getVoiceClickSnapKhz()
+            : true,
       });
       this.view.setLastClickFreqHz(snappedHz);
       if (typeof this.client.tune === 'function') {

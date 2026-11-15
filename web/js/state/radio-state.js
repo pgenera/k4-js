@@ -678,6 +678,29 @@
       }
     }
 
+    _syncSlicePanCenterAfterQsy(slice, oldFreq, newFreq, fixedTune) {
+      if (!slice || !Number.isFinite(newFreq)) return;
+      const oldCenter =
+        Number.isFinite(slice.panCenterHz) && slice.panCenterHz > 0
+          ? slice.panCenterHz
+          : oldFreq;
+      const rawSpan =
+        Number.isFinite(slice.panSpanHz) && slice.panSpanHz > 0
+          ? slice.panSpanHz
+          : Number.isFinite(slice.spanHz) && slice.spanHz > 0
+          ? slice.spanHz
+          : 48000;
+      const halfSpan = rawSpan / 2;
+      if (fixedTune) {
+        slice.panCenterHz =
+          Number.isFinite(oldCenter) && Math.abs(oldCenter - newFreq) <= halfSpan
+            ? oldCenter
+            : newFreq;
+      } else {
+        slice.panCenterHz = newFreq;
+      }
+    }
+
     /**
      * Clear the buffered decoded CW/RTTY/PSK text history.
      */
@@ -1220,6 +1243,9 @@
           const m = parsed.mode;
           const a = this._state.rxA;
           const b = this._state.rxB;
+          const fixedTune = Boolean(this._state.fixedTune);
+          const oldFreqA = a.freqHz;
+          const oldFreqB = b.freqHz;
           const SLICE_FIELDS = [
             'freqHz',
             'mode',
@@ -1250,10 +1276,12 @@
           if (m === 0) {
             b.freqHz = a.freqHz;
             b.band = bandForFreq(b.freqHz);
+            this._syncSlicePanCenterAfterQsy(b, oldFreqB, b.freqHz, fixedTune);
           } else if (m === 1) {
             a.freqHz = b.freqHz;
             a.band = bandForFreq(a.freqHz);
             this._state.band = a.band;
+            this._syncSlicePanCenterAfterQsy(a, oldFreqA, a.freqHz, fixedTune);
           } else if (m === 2) {
             const tmpFreq = a.freqHz;
             a.freqHz = b.freqHz;
@@ -1261,11 +1289,15 @@
             a.band = bandForFreq(a.freqHz);
             b.band = bandForFreq(b.freqHz);
             this._state.band = a.band;
+            this._syncSlicePanCenterAfterQsy(a, oldFreqA, a.freqHz, fixedTune);
+            this._syncSlicePanCenterAfterQsy(b, oldFreqB, b.freqHz, fixedTune);
           } else if (m === 3) {
             for (const f of SLICE_FIELDS) b[f] = a[f];
+            this._syncSlicePanCenterAfterQsy(b, oldFreqB, b.freqHz, fixedTune);
           } else if (m === 4) {
             for (const f of SLICE_FIELDS) a[f] = b[f];
             this._state.band = a.band;
+            this._syncSlicePanCenterAfterQsy(a, oldFreqA, a.freqHz, fixedTune);
           } else if (m === 5) {
             for (const f of SLICE_FIELDS) {
               const tmp = a[f];
@@ -1273,6 +1305,8 @@
               b[f] = tmp;
             }
             this._state.band = a.band;
+            this._syncSlicePanCenterAfterQsy(a, oldFreqA, a.freqHz, fixedTune);
+            this._syncSlicePanCenterAfterQsy(b, oldFreqB, b.freqHz, fixedTune);
           } else {
             return false;
           }
