@@ -394,6 +394,7 @@
         onSetMouseQsyMode: (m) => this.setMouseQsyMode(m),
         onToggleAudio: () => this.toggleAudio(),
         onSetTxPosture: (p) => this.setTxPosture(p),
+        onToggleTxTest: () => this.toggleTxTest(),
         onPanicAbort: () => this.panicAbortTx('ui-panic'),
         getTxAudioConfig: () => this._txAudioConfig,
         onSetTxAudioConfig: (patch) => this.setTxAudioConfig(patch),
@@ -528,7 +529,7 @@
         this._dom.txModeRxBtn.addEventListener('click', () => this.setTxPosture('rx-only'));
       }
       if (this._dom.txModeTestBtn) {
-        this._dom.txModeTestBtn.addEventListener('click', () => this.setTxPosture('tx-test'));
+        this._dom.txModeTestBtn.addEventListener('click', () => this.toggleTxTest());
       }
       if (this._dom.txModeArmedBtn) {
         this._dom.txModeArmedBtn.addEventListener('click', () => this.setTxPosture('tx-armed'));
@@ -841,7 +842,7 @@
         if (this.client && typeof this.client.setTxPosture === 'function') {
           this.client.setTxPosture('tx-test');
         }
-        this.toast('K4 TX TEST (TS1) active — RF inhibited, PC unchanged', 'info');
+        this.toast('TX Test ON (TS1) — RF output inhibited', 'info');
         this._render();
         return;
       }
@@ -853,6 +854,42 @@
         return;
       }
       this.openArmConfirm();
+    }
+
+    toggleTxTest() {
+      const snap = this._getSnapshot();
+      const posture = (this.client && typeof this.client.getTxPosture === 'function')
+        ? this.client.getTxPosture()
+        : (snap.txPosture || 'rx-only');
+      if (posture === 'rx-only') {
+        this.closeArmConfirm();
+        if (this.client && typeof this.client.setTxTest === 'function') {
+          this.client.setTxTest(true);
+        }
+        this.toast('TX Test ON (TS1) — RF output inhibited', 'info');
+        this._render();
+        return;
+      }
+      if (posture === 'tx-test') {
+        this._endHoldPtt();
+        this.closeArmConfirm();
+        if (this.client && typeof this.client.setTxTest === 'function') {
+          this.client.setTxTest(false);
+        }
+        this.toast('TX Test OFF (TS0) — Receive-only active', 'info');
+        this._render();
+        return;
+      }
+      this._endHoldPtt();
+      const next = !Boolean(snap.txTestMode);
+      if (this.client && typeof this.client.setTxTest === 'function') {
+        this.client.setTxTest(next);
+      }
+      this.toast(
+        next ? 'TX Test ON (TS1) — RF output inhibited' : 'TX Test OFF (TS0) — Live RF armed',
+        'info'
+      );
+      this._render();
     }
 
     openArmConfirm() {
@@ -1289,24 +1326,25 @@
       this._dom.rxBlockedCount.textContent = String(blockedTotal);
 
       const posture = snap.txPosture || (this.client && typeof this.client.getTxPosture === 'function' ? this.client.getTxPosture() : 'rx-only');
+      const isTest = Boolean(snap.txTestMode || posture === 'tx-test');
       const transmitting = Boolean(snap.txActive || snap.atuTuning);
       const badgeLabel = this._dom.rxOnlyBadge.querySelector('.k4-rx-badge-text');
       if (badgeLabel) {
-        badgeLabel.textContent = posture === 'rx-only' ? 'SAFE' : (posture === 'tx-test' ? 'TEST' : (transmitting ? 'ON AIR' : 'ARMED'));
+        badgeLabel.textContent = posture === 'rx-only' ? 'SAFE' : (isTest ? 'TX Test' : (transmitting ? 'ON AIR' : 'ARMED'));
       }
       if (this._dom.txPostureBar) {
         this._dom.txPostureBar.dataset.posture = posture;
+        this._dom.txPostureBar.dataset.txTest = isTest ? 'true' : 'false';
         this._dom.txPostureBar.dataset.transmitting = transmitting ? 'true' : 'false';
       }
-      const syncPostureBtn = (btn, target) => {
+      const syncPostureBtn = (btn, active) => {
         if (!btn) return;
-        const active = posture === target;
-        btn.classList.toggle('is-active', active);
+        btn.classList.toggle('is-active', Boolean(active));
         btn.setAttribute('aria-pressed', active ? 'true' : 'false');
       };
-      syncPostureBtn(this._dom.txModeRxBtn, 'rx-only');
-      syncPostureBtn(this._dom.txModeTestBtn, 'tx-test');
-      syncPostureBtn(this._dom.txModeArmedBtn, 'tx-armed');
+      syncPostureBtn(this._dom.txModeRxBtn, posture === 'rx-only');
+      syncPostureBtn(this._dom.txModeTestBtn, isTest);
+      syncPostureBtn(this._dom.txModeArmedBtn, posture === 'tx-armed');
 
       if (this._dom.pttBtn) {
         const pttEnabled = posture !== 'rx-only' && !snap.txInhibit;
@@ -1315,7 +1353,7 @@
         this._dom.pttBtn.classList.toggle('is-held', Boolean(this._pttHeldUi || snap.pttHeld));
         this._dom.pttBtn.classList.toggle('is-tx', Boolean(snap.txActive));
         this._dom.pttBtn.setAttribute('aria-pressed', pttActive ? 'true' : 'false');
-        this._dom.pttBtn.textContent = snap.txActive ? (posture === 'tx-test' ? 'TEST TX' : 'ON AIR') : 'PTT';
+        this._dom.pttBtn.textContent = snap.txActive ? (isTest ? 'TX Test' : 'ON AIR') : 'PTT';
       }
 
       // Floating Panadapter HUD

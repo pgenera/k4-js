@@ -342,15 +342,12 @@ void main() {
         textColor: '#FFF1F2',
       });
     }
-    if (
-      snapshot.txTestMode &&
-      (snapshot.txActive || snapshot.txPosture === 'tx-test')
-    ) {
+    if (snapshot.txTestMode || snapshot.txPosture === 'tx-test') {
       pills.push({
-        text: 'TX TEST',
-        fill: 'rgba(245, 158, 11, 0.24)',
-        stroke: 'rgba(245, 158, 11, 0.85)',
-        textColor: '#FEF3C7',
+        text: 'TX Test',
+        fill: 'rgba(249, 115, 22, 0.24)',
+        stroke: 'rgba(249, 115, 22, 0.88)',
+        textColor: '#FFEDD5',
       });
     }
     return pills;
@@ -426,8 +423,9 @@ void main() {
     monoFont,
   }) {
     if (!txOverlay) return null;
+    const isTest = Boolean(snapshot.txTestMode || txPosture === 'tx-test');
     const txShown =
-      txPosture !== 'rx-only' || txOverlay.isSplitOrXit || isLiveTx;
+      txPosture !== 'rx-only' || isTest || txOverlay.isSplitOrXit || isLiveTx;
     if (!txShown) return null;
 
     const txState = txOverlay.txVfo === 'B' ? rxB : rxA;
@@ -438,13 +436,17 @@ void main() {
 
     const splitEnabled = Boolean(snapshot.splitEnabled);
     const xitEnabled = Boolean(snapshot.xitEnabled);
-    let txLabel = 'TX';
-    if (splitEnabled && xitEnabled) {
-      txLabel = 'TX B·XIT';
-    } else if (splitEnabled) {
-      txLabel = 'TX B';
-    } else if (xitEnabled) {
-      txLabel = 'XIT';
+    let txLabel = isTest && !snapshot.atuTuning
+      ? (splitEnabled ? 'TX Test B' : 'TX Test')
+      : 'TX';
+    if (!isTest || snapshot.atuTuning) {
+      if (splitEnabled && xitEnabled) {
+        txLabel = 'TX B·XIT';
+      } else if (splitEnabled) {
+        txLabel = 'TX B';
+      } else if (xitEnabled) {
+        txLabel = 'XIT';
+      }
     }
 
     let curtainFill;
@@ -453,14 +455,14 @@ void main() {
     let badgeFill;
     let badgeStroke;
     let badgeText;
-    if (isLiveTx) {
+    if (isLiveTx && (!isTest || snapshot.atuTuning)) {
       curtainFill = 'rgba(244, 63, 94, 0.24)';
       curtainEdge = '#F43F5E';
       pinColor = '#F43F5E';
       badgeFill = '#F43F5E';
       badgeStroke = '#FDA4AF';
       badgeText = '#FFF1F2';
-    } else if (txPosture === 'tx-armed') {
+    } else if (!isTest && txPosture === 'tx-armed') {
       curtainFill = 'rgba(244, 63, 94, 0.12)';
       curtainEdge = 'rgba(244, 63, 94, 0.65)';
       pinColor = 'rgba(251, 113, 133, 0.90)';
@@ -468,12 +470,12 @@ void main() {
       badgeStroke = 'rgba(244, 63, 94, 0.85)';
       badgeText = '#FDA4AF';
     } else {
-      curtainFill = 'rgba(251, 146, 60, 0.11)';
-      curtainEdge = 'rgba(251, 146, 60, 0.68)';
-      pinColor = 'rgba(251, 146, 60, 0.88)';
-      badgeFill = 'rgba(14, 19, 29, 0.90)';
+      curtainFill = isLiveTx ? 'rgba(249, 115, 22, 0.22)' : 'rgba(251, 146, 60, 0.11)';
+      curtainEdge = isLiveTx ? '#F97316' : 'rgba(251, 146, 60, 0.68)';
+      pinColor = isLiveTx ? '#FB923C' : 'rgba(251, 146, 60, 0.88)';
+      badgeFill = isLiveTx ? 'rgba(234, 88, 12, 0.90)' : 'rgba(14, 19, 29, 0.90)';
       badgeStroke = 'rgba(251, 146, 60, 0.85)';
-      badgeText = '#FDBA74';
+      badgeText = isLiveTx ? '#FFF7ED' : '#FDBA74';
     }
 
     const lowX = K4.SpectrumGeometry.xFromRfFreq(

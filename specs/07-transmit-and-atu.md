@@ -8,9 +8,9 @@ Every session starts **receive-only by default** — zero transmit capability is
 - **`'rx-only'` (Mandatory Default)**:
   - Active on initial page load, after reload, before `connect()`, immediately upon `connect()` completion, and upon `disconnect()` / socket close. Never persisted in `localStorage` or `sessionStorage`.
   - `K4.RxOnlyGate` policy is `'rx-only'`, blocking all TX/ATU/power/keyer SET commands and all outbound `0x01` audio frames.
-- **`'tx-test'` (Dry-Run Off-Air Mode — K4 `TS1;`)**:
-  - `RxOnlyGate` policy becomes `'tx-enabled'`, `txAudioAllowed` enables while held, and client sends `TS1;TM1;PO1;` (`txTestMode: true`).
-  - PTT hold (`PTT` button or held `Spacebar`) keys the transmitter in **TX Test Mode**: the K4 (`TS1;`) puts out **0.0 W RF** while still processing mic/tone `0x01` TX audio and driving live **ALC / CMP** metering so audio levels, compressor, and keyer text can be verified safely off-air.
+- **`'tx-test'` (Elecraft K4 TX Test Mode — K4 `TS1;`)**:
+  - `RxOnlyGate` policy becomes `'tx-enabled'`, `txAudioAllowed` enables while held, and client sends `TS1;TM1;PO1;` (`txTestMode: true`) without altering `PC` RF output power.
+  - PTT hold (`PTT` button or held `Spacebar`) keys the transmitter in **TX Test Mode**: the K4 (`TS1;`) inhibits RF output (`0.0 W` forward) while still driving live **ALC / CMP**, keyer sidetone, and downstream PTT gear. Matches the K4 front-panel `[TEST]` switch (`TS1;` <-> `TS0;`): orange flashing **`◀ TX Test`** / **`TX Test ▶`** indicator at the upper middle of the meter/status strip, and independent **`TEST`** toggle while armed (`TS1;`/`TS0;` without losing armed status) or from RX Only (`tx-test` <-> `rx-only`).
 - **`'tx-armed'` (Live RF Transmit — K4 `TS0;`)**:
   - Triggered explicitly by clicking the **Arm TX** control (2-step confirmation popover showing active **TX VFO frequency**, **Mode**, **Power (`PC`)**, and **Selected TX Antenna (`AN` + `ACN` label)**).
   - Sets `RxOnlyGate` policy `'tx-enabled'` and sends `TS0;TM1;PO1;`.
@@ -167,7 +167,8 @@ Add `K4.BinaryPackets.encodeAudio(opts)`:
 - **Bootstrap Subscription**: Add `TM1;PO1;SIDU1;SIRC1;` alongside `SIFP1;SIRF1;SIDA1;` (note: `TM1;`, `PO1;`, `SIDU1;`, `SIRC1;` are permitted telemetry/meter subscriptions in `rx-only`!).
 - **Methods**:
   - `getTxPosture()` -> `'rx-only' | 'tx-test' | 'tx-armed'`
-  - `setTxPosture(posture)`: resets to `'rx-only'` cleanly (`stopPtt()`, sends `TS0;` if leaving `'tx-test'` while socket is open BEFORE calling `gate.setPolicy('rx-only')` so no stray TX command leaks thereafter; on `'tx-test'`, sets `gate.setPolicy('tx-enabled')` and sends `TS1;TM1;PO1;` without altering `PC`; on `'tx-armed'`, sets `gate.setPolicy('tx-enabled')` and sends `TS0;TM1;PO1;`).
+  - `setTxPosture(posture)`: resets to `'rx-only'` cleanly (`stopPtt()`, sends `TS0;` if leaving web `'tx-test'` while socket is open BEFORE calling `gate.setPolicy('rx-only')` so passive `rx-only` viewers never overwrite front-panel `TS1;` and no stray TX command leaks thereafter; on `'tx-test'`, sets `gate.setPolicy('tx-enabled')` and sends `TS1;TM1;PO1;` without altering `PC`; on `'tx-armed'`, sets `gate.setPolicy('tx-enabled')` and sends `TS0;TM1;PO1;`).
+  - `setTxTest(enabled)`: K4 `[TEST]` toggle (`TS1;` / `TS0;`). From `'rx-only'`, turning on enters `'tx-test'`; from `'tx-test'`, turning off disarms to `'rx-only'` via `TS0;`; while `'tx-armed'`, toggles `txTestMode` (`TS1;` / `TS0;`) without dropping armed posture.
   - `startPtt({ maxSeconds } = {})`: refuses if `txPosture === 'rx-only'` or `state.txInhibit` or `!isWsOpen`. Resets peak meters for the new TX keydown, sets `gate.setTxAudioAllowed(true)`, updates `state` (`pttHeld: true, txStartedAt: Date.now()`), starts TOT timer, sends `TX;TM1;PO1;`, notifies attached `AudioEngine` to start streaming TX audio frames if in voice/AF-data mode.
   - `stopPtt()`: clears TOT timer, stops `AudioEngine` TX capture, sets `gate.setTxAudioAllowed(false)`, updates `state` (`pttHeld: false, txStartedAt: null`), sends `RX;`.
   - `sendTxAudioPacket(payloadUint8)`: delegates through `this.sendBinary(0x01, payloadUint8)` so `RxOnlyGate.inspectBinary(0x01)` enforces `tx-enabled && txAudioAllowed`.
@@ -208,7 +209,7 @@ Add `K4.BinaryPackets.encodeAudio(opts)`:
   - Uses `computePassbandRange(Object.assign({}, txState, { freqHz: txDialHz }), snapshot.cwPitchHz)` to compute `{ txVfo, carrierHz, centerHz, lowHz, highHz, isSplitOrXit: Boolean(snapshot.splitEnabled || snapshot.xitEnabled), active: Boolean(snapshot.txActive || snapshot.atuTuning) }`.
 - In `web/js/panadapter/webgl-renderer.js`:
   - Render a translucent coral/red **TX Passband & Carrier Pin** (`TX A` / `TX B` / `XIT`) on panes showing that TX frequency whenever `txPosture !== 'rx-only'` OR `isSplitOrXit` OR `active`, pulsing/solid bright coral (`#F43F5E`) during `txActive` / `atuTuning`.
-  - Add top-right status pill on the spectrum when `atuTuning` (`ATU TUNE · SWR X.X:1`) or `txTestMode && (txActive || txPosture === 'tx-test')` (`TX TEST`) or `txInhibit` (`TX INHIBIT`).
+  - Add top-right status pill on the spectrum when `atuTuning` (`ATU TUNE · SWR X.X:1`) or `txTestMode || txPosture === 'tx-test'` (`TX Test`) or `txInhibit` (`TX INHIBIT`).
 
 ---
 
@@ -216,10 +217,11 @@ Add `K4.BinaryPackets.encodeAudio(opts)`:
 
 ### 7.1 Top Bar Posture, Meter & Hold-PTT Strip (`web/index.html`, `web/css/components.css`, `web/js/ui/smeter-widget.js`)
 - Replace passive `#rx-only-badge` with a cohesive **TX Safety Posture Pill Group**:
-  - Preserves `[data-testid="rx-only-badge"]` (`dataset.blocked="true|false"` when blocked attempts > 0 so existing RX tests remain green!) as the `RX ONLY` posture button `[data-testid="tx-mode-rx"]` (or badge inside the posture selector). Specifically: keep `#rx-only-badge` carrying `data-testid="rx-only-badge"` AND clickable/status-aware, alongside explicit `[data-testid="tx-mode-test"]` (`TX TEST`) and `[data-testid="tx-mode-armed"]` (`ARM TX`) controls cleanly grouped in `#tx-posture-bar`!
+  - Preserves `[data-testid="rx-only-badge"]` (`dataset.blocked="true|false"` when blocked attempts > 0 so existing RX tests remain green!) as the `RX ONLY` posture button `[data-testid="tx-mode-rx"]` (or badge inside the posture selector). Specifically: keep `#rx-only-badge` carrying `data-testid="rx-only-badge"` AND clickable/status-aware, alongside `[data-testid="tx-mode-armed"]` (`ARM TX`) and the independent K4 `[TEST]` toggle `[data-testid="tx-mode-test"]` (`TEST`) cleanly grouped in `#tx-posture-bar`!
   - **2-Step Arm Confirmation Popover (`[data-testid="tx-arm-confirm"]`)**: Clicking `ARM TX` from RX-Only/Test opens an inline confirmation summary displaying `TX VFO · Freq · Mode · Power · Antenna` + `Confirm Live TX` (`[data-testid="tx-arm-confirm-btn"]`) and `Cancel` (single click directly back to `RX ONLY` requires zero confirm — instant safe disarm!).
-  - **Hold-Only PTT Button (`[data-testid="ptt-btn"]`)**: Visible/enabled when `txPosture !== 'rx-only'`; displays `HOLD PTT (SPACE)` when idle, glowing coral (`TX LIVE · 1.2s`) or amber dashed (`TX TEST`) while held, immediately sending `RX;` on release!
-- **Dual-Mode Meter (`K4.SMeterWidget`)**:
+  - **Hold-Only PTT Button (`[data-testid="ptt-btn"]`)**: Visible/enabled when `txPosture !== 'rx-only'`; displays `PTT` when idle, glowing coral (`ON AIR`) or K4 orange (`TX Test`) while held, immediately sending `RX;` on release!
+- **Dual-Mode Meter & K4 TX VFO Indicator (`K4.SMeterWidget`)**:
+  - Header carries `[data-testid="k4-tx-vfo-indicator"]` rendering K4's orange directional TX VFO indicator (`◀ TX` on VFO A, `TX ▶` in Split), switching to flashing **`◀ TX Test`** / **`TX Test ▶`** whenever `TS1;` (`txTestMode`) is active.
   - Keeps `[data-testid="smeter"]`, `[data-testid="smeter-dbm"]`, `[data-testid="smeter-ovf-badge"]` in RX mode.
   - When `txActive || atuTuning || pinTxMeters`, reveals `[data-testid="tx-meter-cluster"]` with 4 crisp horizontal telemetry bars (`PWR` watts, `SWR` ratio `1.0:1..5.0:1` color-coded green/amber/red, `ALC` `0..7` bars with sweet-spot marker `4–5`, `CMP` `0..30 dB`).
 - **Compact Hardware Sensor Strip (`[data-testid="sensor-strip"]`)**:
@@ -227,7 +229,7 @@ Add `K4.BinaryPackets.encodeAudio(opts)`:
 
 ### 7.2 Dedicated `TX / ATU` Inspector Tab (`web/js/ui/inspector-panels.js`)
 Add `'tx'` (`TX / ATU`) tab alongside `'band-mode'`, `'dsp'`, `'display'`, `'audio'` on Desktop & Mobile:
-1. **Safety & Status Card**: Posture buttons (`RX ONLY` / `TX TEST` / `ARM TX`), active TX VFO summary, `TX INHIBIT` indicator, `TOT` remaining countdown, quick `Split (FT)`, `A►B Split +1kHz`, and `XIT (XT)` toggle + offset nudge.
+1. **Safety & Status Card**: Posture buttons (`RX ONLY` / `ARM TX`) + independent `TEST` (`TS1`/`TS0`) toggle, active `◀ TX` / `TX ▶` VFO summary, `TX INHIBIT` indicator, `TOT` remaining countdown, quick `Split (FT)`, `A►B Split +1kHz`, and `XIT (XT)` toggle + offset nudge.
 2. **KAT4 ATU & Antenna Card**:
    - TX Antenna selector (`[data-testid="tx-antenna-select"]` or segmented buttons `ANT1`..`ANT3` filtered by `txAntennaMask` and labeled via `antennaNames`, e.g. `1 · G5RV`, `3 · dummy`).
    - ATU Mode (`BYPASS` / `AUTO`), action buttons: `[data-testid="atu-tune-btn"]` (`ATU TUNE`), `[data-testid="atu-full-btn"]` (`FULL SEARCH`, highlighted for 5s after `TU3`), `TUNE LP`, and red `[data-testid="atu-stop-btn"]` (`STOP`).

@@ -222,7 +222,7 @@
       this._clearTotTimer();
       const snap = this.state ? this.state.getSnapshot() : {};
       const wasActive = Boolean(snap.pttHeld || snap.txActive || snap.atuTuning);
-      const wasTestPosture = this._txPosture === 'tx-test' || Boolean(snap.txTestMode);
+      const wasTestPosture = this._txPosture === 'tx-test';
 
       let cleanupSent = false;
       if (!silentCat && wasTestPosture && isWsOpen(this._ws)) {
@@ -1276,6 +1276,38 @@
         return { sent: false, allowed: [], blocked: [], sanitized: '' };
       }
       return this.sendCat(isTest ? 'TS1;TM1;PO1;' : 'TS0;TM1;PO1;');
+    }
+
+    /**
+     * Toggle or set Elecraft K4 TX Test mode (TS1; / TS0;), matching the front-panel [TEST] switch.
+     * While 'tx-armed', toggles TS1;/TS0; cleanly without dropping armed status.
+     * From 'rx-only', turning ON enters off-air 'tx-test' (TS1;); turning OFF from 'tx-test' returns to 'rx-only'.
+     * @param {boolean} enabled
+     */
+    setTxTest(enabled) {
+      const on = Boolean(enabled);
+      if (this._txPosture === 'rx-only') {
+        if (on) {
+          return this.setTxPosture('tx-test');
+        }
+        return { sent: false, allowed: [], blocked: [], sanitized: '' };
+      }
+      if (this._txPosture === 'tx-test') {
+        if (!on) {
+          return this.setTxPosture('rx-only');
+        }
+        this.state.updateTxSafety({ txTestMode: true }, 'txTestMode');
+        return this.sendCat('TS1;TM1;PO1;');
+      }
+
+      const snap = this.state ? this.state.getSnapshot() : {};
+      this.state.updateTxSafety({ txTestMode: on }, 'txTestMode');
+      this.emit('txPttChange', {
+        active: Boolean(snap.pttHeld || snap.txActive),
+        posture: 'tx-armed',
+        testMode: on,
+      });
+      return this.sendCat(K4.CatCodec.builders.txTest(on));
     }
 
     /**

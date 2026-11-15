@@ -224,6 +224,12 @@
           this.client.setTxPosture(posture, { confirmed: posture === 'tx-armed' });
         }
       });
+      this.onToggleTxTest = opts.onToggleTxTest || (() => {
+        if (this.client && typeof this.client.setTxTest === 'function') {
+          const snap = this.client.state ? this.client.state.getSnapshot() : {};
+          this.client.setTxTest(!Boolean(snap.txTestMode));
+        }
+      });
       this.onPanicAbort = opts.onPanicAbort || (() => {
         if (this.client && typeof this.client.panicAbortTx === 'function') {
           this.client.panicAbortTx('ui-panic');
@@ -1732,7 +1738,6 @@
       const postureBtns = {};
       const postureSpecs = [
         { id: 'rx-only', label: 'RX ONLY' },
-        { id: 'tx-test', label: 'TX TEST' },
         { id: 'tx-armed', label: 'ARM TX' },
       ];
       for (let i = 0; i < postureSpecs.length; i++) {
@@ -1743,8 +1748,14 @@
         postureGroup.appendChild(b);
         postureBtns[p.id] = b;
       }
+      const testToggleBtn = el('button', 'k4-seg-btn k4-test-switch', 'TEST');
+      testToggleBtn.type = 'button';
+      testToggleBtn.title = 'K4 [TEST] switch (TS1/TS0): toggle TX Test mode without altering PC output power';
+      testToggleBtn.addEventListener('click', () => this.onToggleTxTest());
+      postureGroup.appendChild(testToggleBtn);
       statusCard.appendChild(postureGroup);
       this._refs.txPostureBtns = postureBtns;
+      this._refs.txTestToggleBtn = testToggleBtn;
 
       const txBanner = el('div', 'k4-tx-banner', 'Receive-only firewall active');
       txBanner.dataset.state = 'idle';
@@ -2877,6 +2888,11 @@
           this._refs.txPostureBtns[id].classList.toggle('is-active', id === posture);
         }
       }
+      if (this._refs.txTestToggleBtn) {
+        this._refs.txTestToggleBtn.classList.toggle('is-active', isTest);
+        this._refs.txTestToggleBtn.setAttribute('aria-pressed', isTest ? 'true' : 'false');
+        this._refs.txTestToggleBtn.textContent = isTest ? 'TX Test: ON' : 'TEST';
+      }
       if (this._refs.txStatusBanner) {
         const b = this._refs.txStatusBanner;
         if (snapshot.txInhibit) {
@@ -2888,21 +2904,25 @@
           b.dataset.state = 'tuning';
           this._refs.txStatusBadge.textContent = 'ATU';
         } else if (txActive && isTest) {
-          b.textContent = 'K4 TX TEST (TS1) ACTIVE — RF inhibited, ALC/keyer live (PC unchanged)';
+          b.textContent = 'K4 TX Test (TS1) ACTIVE — RF inhibited, ALC/keyer live (PC unchanged)';
           b.dataset.state = 'tuning';
-          this._refs.txStatusBadge.textContent = 'TX TEST';
+          this._refs.txStatusBadge.textContent = 'TX Test';
         } else if (txActive) {
           b.textContent = 'TRANSMITTING LIVE RF — Press Esc for immediate RX drop';
           b.dataset.state = 'warn';
           this._refs.txStatusBadge.textContent = 'ON AIR';
+        } else if (posture === 'tx-armed' && isTest) {
+          b.textContent = 'TX Test (TS1) active while Armed — RF output inhibited';
+          b.dataset.state = 'tuning';
+          this._refs.txStatusBadge.textContent = 'TX Test';
         } else if (posture === 'tx-armed') {
           b.textContent = 'TX ARMED — Hold PTT or Spacebar to transmit';
           b.dataset.state = 'matched';
           this._refs.txStatusBadge.textContent = 'ARMED';
-        } else if (posture === 'tx-test') {
-          b.textContent = 'K4 TX TEST (TS1) — Off-air audio, ALC & keyer check (PC unchanged)';
+        } else if (posture === 'tx-test' || isTest) {
+          b.textContent = 'K4 TX Test (TS1) — Off-air audio, ALC & keyer check (PC unchanged)';
           b.dataset.state = 'tuning';
-          this._refs.txStatusBadge.textContent = 'TX TEST';
+          this._refs.txStatusBadge.textContent = 'TX Test';
         } else {
           b.textContent = 'Receive-Only Firewall Active — TX / ATU / Power locked';
           b.dataset.state = 'idle';
@@ -2911,7 +2931,10 @@
       }
       if (this._refs.txVfoVal) {
         const txVfo = snapshot.activeTxVfo || (snapshot.splitEnabled ? 'B' : 'A');
-        this._refs.txVfoVal.textContent = snapshot.splitEnabled ? `VFO ${txVfo} (SPLIT)` : `VFO ${txVfo}`;
+        const indTag = isTest ? 'TX Test' : 'TX';
+        this._refs.txVfoVal.textContent = snapshot.splitEnabled
+          ? `${indTag} ▶ VFO ${txVfo} (SPLIT)`
+          : `◀ ${indTag} · VFO ${txVfo}`;
       }
       if (this._refs.txTotVal) {
         const maxSec = Number(snapshot.txTimeoutSec) || 180;

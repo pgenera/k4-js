@@ -853,11 +853,14 @@ def run_http_origin_and_screenshots(
             """
             const snap = globalThis.k4App.state.getSnapshot();
             const ptt = document.querySelector('[data-testid="ptt-btn"]');
-            return snap.txPosture === 'tx-test' && snap.txTestMode === true && ptt && ptt.disabled === false;
+            const ind = document.querySelector('[data-testid="k4-tx-vfo-indicator"]');
+            return snap.txPosture === 'tx-test' && snap.txTestMode === true &&
+                   ptt && ptt.disabled === false &&
+                   ind && ind.textContent === '◀ TX Test' && ind.dataset.state === 'test';
             """
         )
         and http_get_json(stats_url)["txTestMode"] is True,
-        "TX TEST (TS1) posture active",
+        "TX TEST (TS1) posture active with flashing ◀ TX Test indicator",
     )
 
     audio_before = http_get_json(stats_url)["txAudioPacketsIn"]
@@ -942,11 +945,57 @@ def run_http_origin_and_screenshots(
             """
             const pop = document.querySelector('[data-testid="tx-arm-confirm"]');
             const s = globalThis.k4App.state.getSnapshot();
-            return pop && pop.hidden === true && s.txPosture === 'tx-armed' && s.txTestMode === false;
+            const ind = document.querySelector('[data-testid="k4-tx-vfo-indicator"]');
+            return pop && pop.hidden === true && s.txPosture === 'tx-armed' && s.txTestMode === false &&
+                   ind && ind.textContent === '◀ TX' && ind.dataset.state === 'standby';
             """
         )
         and http_get_json(stats_url)["txTestMode"] is False,
-        "TX armed via 2-step confirmation",
+        "TX armed via 2-step confirmation with ◀ TX indicator",
+    )
+
+    # Verify Split arrow flips ◀ TX -> TX ▶, then restore VFO A
+    client.execute_script("globalThis.k4App.client.setSplit(true);")
+    wait_until(
+        lambda: client.execute_script(
+            "const ind = document.querySelector('[data-testid=\"k4-tx-vfo-indicator\"]'); return ind && ind.textContent === 'TX ▶';"
+        ),
+        "Split sets K4 indicator to TX ▶",
+    )
+    client.execute_script("globalThis.k4App.client.setSplit(false);")
+    wait_until(
+        lambda: client.execute_script(
+            "const ind = document.querySelector('[data-testid=\"k4-tx-vfo-indicator\"]'); return ind && ind.textContent === '◀ TX';"
+        ),
+        "Simplex restores K4 indicator to ◀ TX",
+    )
+
+    # Verify independent K4 [TEST] switch toggles TS1;/TS0; while staying armed
+    client.click_element(client.find_element('[data-testid="tx-mode-test"]'))
+    wait_until(
+        lambda: client.execute_script(
+            """
+            const s = globalThis.k4App.state.getSnapshot();
+            const ind = document.querySelector('[data-testid="k4-tx-vfo-indicator"]');
+            return s.txPosture === 'tx-armed' && s.txTestMode === true &&
+                   ind && ind.textContent === '◀ TX Test' && ind.dataset.state === 'test';
+            """
+        )
+        and http_get_json(stats_url)["txTestMode"] is True,
+        "TEST switch engages TS1; while staying tx-armed",
+    )
+    client.click_element(client.find_element('[data-testid="tx-mode-test"]'))
+    wait_until(
+        lambda: client.execute_script(
+            """
+            const s = globalThis.k4App.state.getSnapshot();
+            const ind = document.querySelector('[data-testid="k4-tx-vfo-indicator"]');
+            return s.txPosture === 'tx-armed' && s.txTestMode === false &&
+                   ind && ind.textContent === '◀ TX' && ind.dataset.state === 'standby';
+            """
+        )
+        and http_get_json(stats_url)["txTestMode"] is False,
+        "TEST switch restores TS0; while staying tx-armed",
     )
 
     # Trigger ATU Tune and wait for live SWR tracking + convergence <= 1.3
@@ -963,22 +1012,47 @@ def run_http_origin_and_screenshots(
         "KAT4 ATU Tune (TU3) starts live SWR tuning",
         timeout=5.0,
     )
-    wait_until(
-        lambda: (
-            (st := http_get_json(stats_url))["atuMatched"] is True
-            and st["atuTuning"] is False
-            and client.execute_script(
+    try:
+        wait_until(
+            lambda: (
+                (st := http_get_json(stats_url))["atuMatched"] is True
+                and st["atuTuning"] is False
+                and client.execute_script(
+                    """
+                    const s = globalThis.k4App.state.getSnapshot();
+                    const badge = document.querySelector('[data-testid="atu-status"]');
+                    return s.atuTuning === false && Number.isFinite(s.atuMatchedSwr) && s.atuMatchedSwr > 0 && s.atuMatchedSwr <= 1.3 &&
+                           badge && (badge.dataset.state === 'matched' || badge.dataset.state === 'warn');
+                    """
+                )
+            ),
+            "KAT4 ATU Tune converges to matched SWR <= 1.3",
+            timeout=6.0,
+        )
+    except AssertionError as exc:
+        diag = {
+            "stats": http_get_json(stats_url),
+            "js": client.execute_script(
                 """
                 const s = globalThis.k4App.state.getSnapshot();
                 const badge = document.querySelector('[data-testid="atu-status"]');
-                return s.atuTuning === false && Number.isFinite(s.atuMatchedSwr) && s.atuMatchedSwr > 0 && s.atuMatchedSwr <= 1.3 &&
-                       badge && (badge.dataset.state === 'matched' || badge.dataset.state === 'warn');
+                return {
+                  atuTuning: s.atuTuning,
+                  atuTuneKind: s.atuTuneKind,
+                  atuMatchedSwr: s.atuMatchedSwr,
+                  atuSearchWindowUntil: s.atuSearchWindowUntil,
+                  txActive: s.txActive,
+                  txTestMode: s.txTestMode,
+                  splitEnabled: s.splitEnabled,
+                  txMeters: s.txMeters,
+                  badgeState: badge ? badge.dataset.state : null,
+                  badgeText: badge ? badge.textContent : null,
+                  errors: window.__K4_E2E_ERRORS__ || []
+                };
                 """
-            )
-        ),
-        "KAT4 ATU Tune converges to matched SWR <= 1.3",
-        timeout=6.0,
-    )
+            ),
+        }
+        raise AssertionError(f"{exc}\nDIAG={json.dumps(diag)}") from exc
 
     # Trigger Full Search and abort mid-tune with Escape panic (TU0;RX;)
     client.click_element(client.find_element('[data-testid="atu-full-btn"]'))

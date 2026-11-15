@@ -45,16 +45,18 @@
       const head = document.createElement('div');
       head.className = 'k4-smeter-head';
 
-      this.titleEl = document.createElement('span');
-      this.titleEl.className = 'k4-smeter-title';
-      this.titleEl.textContent = 'S-METER';
-      head.appendChild(this.titleEl);
+      this.txVfoEl = document.createElement('span');
+      this.txVfoEl.className = 'k4-tx-vfo-ind';
+      this.txVfoEl.dataset.testid = 'k4-tx-vfo-indicator';
+      this.txVfoEl.dataset.state = 'standby';
+      this.txVfoEl.textContent = '◀ TX';
+      head.appendChild(this.txVfoEl);
 
       this.modeBtn = document.createElement('button');
       this.modeBtn.type = 'button';
       this.modeBtn.className = 'k4-meter-mode-btn';
       this.modeBtn.dataset.testid = 'meter-mode-toggle';
-      this.modeBtn.textContent = 'TX';
+      this.modeBtn.textContent = 'MTR';
       this.modeBtn.title = 'Inspect RX S-meter or TX meter cluster';
       this.modeBtn.addEventListener('click', () => {
         if (this._currentlyShowingTx) {
@@ -203,9 +205,32 @@
       this.dbmEl.hidden = showTx;
       this.txCluster.hidden = !showTx;
       this.txHeadTag.hidden = !showTx;
-      this.titleEl.textContent = showTx ? 'TX METER' : 'S-METER';
-      this.modeBtn.textContent = showTx ? 'RX' : 'TX';
+      this.modeBtn.textContent = showTx ? 'S-MTR' : 'MTR';
       this.modeBtn.classList.toggle('is-tx', showTx);
+
+      const split = Boolean(snapshot.splitEnabled);
+      const isTestHead = Boolean(snapshot.txTestMode || snapshot.txPosture === 'tx-test');
+      let txIndText = split ? 'TX ▶' : '◀ TX';
+      let txIndState = 'standby';
+      if (snapshot.txInhibit) {
+        txIndText = split ? 'TX Inhibit ▶' : '◀ TX Inhibit';
+        txIndState = 'inhibit';
+      } else if (isTestHead) {
+        txIndText = split ? 'TX Test ▶' : '◀ TX Test';
+        txIndState = 'test';
+      } else if (snapshot.atuTuning) {
+        txIndText = split ? 'ATU ▶' : '◀ ATU';
+        txIndState = 'atu';
+      } else if (snapshot.txActive) {
+        txIndText = split ? 'TX ▶' : '◀ TX';
+        txIndState = 'live';
+      }
+      if (this.txVfoEl) {
+        this.txVfoEl.textContent = txIndText;
+        this.txVfoEl.dataset.state = txIndState;
+        this.txVfoEl.dataset.keyed = snapshot.txActive ? 'true' : 'false';
+        this.txVfoEl.title = `Active TX VFO: VFO ${split ? 'B (SPLIT)' : 'A'}${isTestHead ? ' · TX Test (RF output inhibited)' : ''}`;
+      }
 
       const rxA = snapshot.rxA || {};
       const rxB = snapshot.rxB || {};
@@ -271,7 +296,7 @@
           this.txHeadTag.textContent = 'ATU TUNE';
           this.txHeadTag.className = 'k4-tx-meter-tag is-test';
         } else if (snapshot.txActive && isTest) {
-          this.txHeadTag.textContent = 'TX TEST';
+          this.txHeadTag.textContent = 'TX Test';
           this.txHeadTag.className = 'k4-tx-meter-tag is-test';
         } else if (snapshot.txActive) {
           this.txHeadTag.textContent = 'ON AIR';

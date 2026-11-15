@@ -359,15 +359,15 @@
         const posture = snapshot.txPosture || 'rx-only';
         const isTest = Boolean(snapshot.txTestMode || posture === 'tx-test');
 
-        const showTxBadge = isTxTarget && (txActive || atuTuning || split || posture !== 'rx-only');
+        const showTxBadge = isTxTarget && (txActive || atuTuning || isTest || split || posture !== 'rx-only');
         let badgeText = split && this.rx === 'B' ? 'SPLIT TX' : 'TX';
         let badgeClass = 'k4-tx-target-tag';
         if (isTxTarget && atuTuning) {
           badgeText = 'ATU';
           badgeClass = 'k4-tx-target-tag is-tx-test';
-        } else if (isTxTarget && txActive && isTest) {
-          badgeText = 'TEST';
-          badgeClass = 'k4-tx-target-tag is-tx-test';
+        } else if (isTxTarget && isTest) {
+          badgeText = 'TX Test';
+          badgeClass = 'k4-tx-target-tag is-tx-test is-flashing';
         } else if (isTxTarget && txActive) {
           badgeText = 'TX';
           badgeClass = 'k4-tx-target-tag is-tx-live';

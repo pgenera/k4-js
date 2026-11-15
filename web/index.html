@@ -84,9 +84,10 @@
 
           <div class="k4-tx-posture-seg">
             <button type="button" id="tx-mode-rx" class="k4-posture-btn is-active" data-testid="tx-mode-rx" data-posture-target="rx-only" aria-pressed="true" title="Receive-only firewall active: block all RF &amp; TX commands">RX ONLY</button>
-            <button type="button" id="tx-mode-test" class="k4-posture-btn" data-testid="tx-mode-test" data-posture-target="tx-test" aria-pressed="false" title="K4 TX TEST (TS1): off-air audio/ALC/keyer check without changing RF power setting">TX TEST</button>
             <button type="button" id="tx-mode-armed" class="k4-posture-btn" data-testid="tx-mode-armed" data-posture-target="tx-armed" aria-pressed="false" title="Arm live RF transmitter (requires 2-step confirmation)">ARM TX</button>
           </div>
+
+          <button type="button" id="tx-mode-test" class="k4-posture-btn k4-test-switch" data-testid="tx-mode-test" aria-pressed="false" title="K4 [TEST] switch (TS1/TS0): toggle TX Test mode (flashing &#x27;TX Test&#x27; indicator, zero RF output)">TEST</button>
 
           <button type="button" id="ptt-btn" class="k4-ptt-btn" data-testid="ptt-btn" disabled aria-pressed="false" title="Hold to transmit (Spacebar when un-focused; releases immediately on keyup or blur)">PTT</button>
         </div>

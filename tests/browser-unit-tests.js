@@ -2131,6 +2131,25 @@
     assertEqual(client.gate.getPolicy(), 'rx-only', 'rx-only re-locks gate after tx-test');
     assertEqual(client.state.getSnapshot().txTestMode, false, 'rx-only clears txTestMode');
     assertEqual(wireCats[1], 'TS0;', 'leaving tx-test -> rx-only emits TS0; before locking gate');
+
+    // Independent K4 [TEST] toggle while tx-armed preserves armed posture
+    client.setTxPosture('tx-armed');
+    assertEqual(wireCats[2], 'TS0;TM1;PO1;', 'tx-armed emits TS0;TM1;PO1;');
+    client.setTxTest(true);
+    assertEqual(client.getTxPosture(), 'tx-armed', 'setTxTest(true) preserves tx-armed');
+    assertEqual(client.state.getSnapshot().txTestMode, true, 'setTxTest(true) enables txTestMode');
+    assertEqual(wireCats[3], 'TS1;', 'setTxTest(true) while armed emits TS1;');
+    client.setTxTest(false);
+    assertEqual(client.getTxPosture(), 'tx-armed', 'setTxTest(false) preserves tx-armed');
+    assertEqual(client.state.getSnapshot().txTestMode, false, 'setTxTest(false) clears txTestMode');
+    assertEqual(wireCats[4], 'TS0;', 'setTxTest(false) while armed emits TS0;');
+
+    // Passive rx-only client seeing remote TS1; must not overwrite hardware TS1; on disarm
+    const countBeforePassive = wireCats.length;
+    client.setTxPosture('rx-only');
+    client.state.applyParsedCat(globalThis.K4.CatCodec.parseCommand('TS1;'));
+    client.setTxPosture('rx-only');
+    assertEqual(wireCats.length, countBeforePassive, 'passive rx-only client does not send TS0;');
   });
 
   // 26. RadioState: TX/ATU/sensor transitions (TM L/H scaling, TX->RX peakHold, SIFP/SIRF/SIDU, atuMatchedSwr)
