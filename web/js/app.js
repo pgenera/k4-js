@@ -41,6 +41,8 @@
       this._lastSyncedSl = null;
       this._lastConnStatus = null;
       this._lastAuthStatus = null;
+      this._lastRadioId = '';
+      this._lastWsUrl = '';
       this._lastHudCwMode = null;
       this._a2bWindowUntil = 0;
       this._a2bCueTimer = null;
@@ -524,13 +526,28 @@
       });
 
       this.client.on('connection', (conn) => {
-        this.connectionDialog.syncConnectionState(conn);
+        const nextStatus = (conn && conn.status) || 'disconnected';
+        const nextAuth = (conn && conn.authStatus) || null;
+        const nextRadioId = (conn && conn.radioId) || '';
+        const nextWsUrl = (conn && conn.wsUrl) || '';
+        const connMetaChanged =
+          nextStatus !== this._lastConnStatus ||
+          nextAuth !== this._lastAuthStatus ||
+          nextRadioId !== this._lastRadioId ||
+          nextWsUrl !== this._lastWsUrl;
+        if (connMetaChanged || (this.connectionDialog && typeof this.connectionDialog.isOpen === 'function' && this.connectionDialog.isOpen())) {
+          this.connectionDialog.syncConnectionState(conn);
+        }
         if (this._pendingConnectClose && conn && conn.status === 'connected' && conn.authStatus === 'authenticated') {
           this._pendingConnectClose = false;
           this.connectionDialog.close();
           this.toast('Connected to K4 Receiver', 'success');
         }
-        this._render();
+        if (connMetaChanged) {
+          this._render(['connection']);
+        } else {
+          this._scheduleMeterRender(['connection.rttMs']);
+        }
       });
 
       if (typeof this.audio.setTxPacketHandler === 'function') {
@@ -560,24 +577,25 @@
           }
           this._render();
         });
-        this.audio.on('mute', () => {
-          this._syncAudioToggleUi(this._getSnapshot());
-          if (this.inspector && typeof this.inspector._syncAfScopeLoop === 'function') {
-            this.inspector._syncAfScopeLoop();
+        const syncMediaUi = () => {
+          const snap = this._getSnapshot();
+          const aDiag = this.audio && this.audio.getDiagnostics ? this.audio.getDiagnostics() : { started: false, muted: true };
+          this._syncAudioToggleUi(snap, aDiag);
+          this._updateConnLatency(snap, aDiag);
+          if (this.inspector) {
+            if (typeof this.inspector._getVisibleTabId === 'function' && this.inspector._getVisibleTabId() === 'audio') {
+              this.inspector.update(snap, ['audio']);
+            } else {
+              if (this.inspector._dirtyTabs) this.inspector._dirtyTabs.add('audio');
+              if (typeof this.inspector._syncAfScopeLoop === 'function') {
+                this.inspector._syncAfScopeLoop();
+              }
+            }
           }
-        });
-        this.audio.on('mediaAction', () => {
-          this._syncAudioToggleUi(this._getSnapshot());
-          if (this.inspector && typeof this.inspector._syncAfScopeLoop === 'function') {
-            this.inspector._syncAfScopeLoop();
-          }
-        });
-        this.audio.on('stopped', () => {
-          this._syncAudioToggleUi(this._getSnapshot());
-          if (this.inspector && typeof this.inspector._syncAfScopeLoop === 'function') {
-            this.inspector._syncAfScopeLoop();
-          }
-        });
+        };
+        this.audio.on('mute', syncMediaUi);
+        this.audio.on('mediaAction', syncMediaUi);
+        this.audio.on('stopped', syncMediaUi);
       }
 
       const METER_ONLY_KEYS = new Set([
@@ -587,6 +605,7 @@
         'rxB.panMeta',
         'txMeters',
         'telemetry',
+        'decodedText',
         'connection.rttMs',
         'latency',
         'swr',
@@ -609,7 +628,10 @@
         const connStatus = conn.status || 'disconnected';
         const connAuthStatus = conn.authStatus || null;
         const connMetaUnchanged =
-          connStatus === this._lastConnStatus && connAuthStatus === this._lastAuthStatus;
+          connStatus === this._lastConnStatus &&
+          connAuthStatus === this._lastAuthStatus &&
+          (conn.radioId || '') === this._lastRadioId &&
+          (conn.wsUrl || '') === this._lastWsUrl;
 
         let allMeterOnly = keyList.length > 0;
         for (let i = 0; i < keyList.length; i++) {
@@ -1474,38 +1496,56 @@
       this.smeterWidget.update(snap, this._targetRx);
       this._updateConnLatency(snap, aDiag);
 
+      if (pending.includes('decodedText')) {
+        this._renderDecodedText(snap.decodedText);
+      }
+
       if (this._dom.topAtuBtn && (pending.includes('txMeters') || pending.includes('swr'))) {
         this._syncTopRfStatus(snap);
       }
 
       if (!this.inspector) return;
+      const touchesAudio = pending.some((k) => k === 'connection.rttMs' || k === 'latency' || k === 'telemetry');
+      const touchesTx = pending.some(
+        (k) => k === 'txMeters' || k === 'telemetry' || k === 'swr' || k === 'alc' || k === 'power' || k === 'idd' || k === 'vdd' || k === 'temp'
+      );
       if (this.inspector.isDrawerOpen && this.inspector.isDrawerOpen()) {
         if (typeof this.inspector._updateSensorStrip === 'function') {
           this.inspector._updateSensorStrip(snap);
         }
         const visTab = typeof this.inspector._getVisibleTabId === 'function' ? this.inspector._getVisibleTabId() : null;
-        const touchesAudio = pending.some((k) => k === 'connection.rttMs' || k === 'latency' || k === 'telemetry');
-        const touchesTx = pending.some(
-          (k) => k === 'txMeters' || k === 'telemetry' || k === 'swr' || k === 'alc' || k === 'power' || k === 'idd' || k === 'vdd' || k === 'temp'
-        );
         if (touchesAudio) {
           if (visTab === 'audio' && typeof this.inspector._updateAudioTab === 'function') {
             const rxS = (this._targetRx === 'B' ? snap.rxB : snap.rxA) || {};
             this.inspector._updateAudioTab(snap, rxS, aDiag);
-          } else if (this.inspector._dirtyTabs) {
-            this.inspector._dirtyTabs.add('audio');
+          } else {
+            if (this.inspector._dirtyTabs) this.inspector._dirtyTabs.add('audio');
+            if (this._uiPerf) {
+              this._uiPerf.inspectorTabSkips += 1;
+              if (!this.inspector._afScopeTimer) this._uiPerf.afScopeSkips += 1;
+            }
           }
         }
         if (touchesTx) {
           if (visTab === 'tx' && typeof this.inspector._updateTxTab === 'function') {
             this.inspector._updateTxTab(snap, aDiag);
-          } else if (this.inspector._dirtyTabs) {
-            this.inspector._dirtyTabs.add('tx');
+          } else {
+            if (this.inspector._dirtyTabs) this.inspector._dirtyTabs.add('tx');
+            if (this._uiPerf) this._uiPerf.inspectorTabSkips += 1;
           }
         }
-      } else if (this.inspector._dirtyTabs) {
-        this.inspector._dirtyTabs.add('audio');
-        this.inspector._dirtyTabs.add('tx');
+      } else {
+        if (this.inspector._dirtyTabs) {
+          this.inspector._dirtyTabs.add('audio');
+          this.inspector._dirtyTabs.add('tx');
+        }
+        if (this._uiPerf) {
+          if (touchesAudio) {
+            this._uiPerf.inspectorTabSkips += 1;
+            if (!this.inspector._afScopeTimer) this._uiPerf.afScopeSkips += 1;
+          }
+          if (touchesTx) this._uiPerf.inspectorTabSkips += 1;
+        }
       }
     }
 
@@ -1653,6 +1693,8 @@
       const status = conn.status || 'disconnected';
       this._lastConnStatus = status;
       this._lastAuthStatus = conn.authStatus || null;
+      this._lastRadioId = conn.radioId || '';
+      this._lastWsUrl = conn.wsUrl || '';
       this._dom.connBtn.dataset.status = status;
       let statusLabel = 'Disconnected';
       if (status === 'connected') {
@@ -1795,7 +1837,7 @@
       this._hudFreezeBtn.textContent = snap.panFrozen ? 'Frozen' : 'Freeze';
       this._hudFreezeBtn.classList.toggle('is-active', Boolean(snap.panFrozen));
 
-      const isCw = rxS.mode === 'CW' || rxS.mode === 'CW-R';
+      const isCw = Number(rxS.mode) === 3 || Number(rxS.mode) === 7;
       const spotActive = Boolean(snap.spotTone || rxS.spotMode === 1 || rxS.spotMode === 2);
       if (this._hudAutoSpotBtn) {
         this._hudAutoSpotBtn.disabled = !isCw;

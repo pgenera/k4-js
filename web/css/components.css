@@ -660,17 +660,58 @@
   line-height: 1;
 }
 
+@media (min-width: 1380px) and (max-width: 1559px) {
+  .k4-smeter-slot {
+    width: 220px;
+    flex: 0 1 auto;
+    min-width: 170px;
+  }
+
+  .k4-smeter-slot.is-dual-rx {
+    width: 312px;
+    flex: 0 1 auto;
+    min-width: 236px;
+    padding: 3px 5px;
+  }
+
+  .k4-smeter-slot.is-dual-rx .k4-smeter-block-b {
+    padding-left: 5px;
+  }
+
+  .k4-smeter-slot.is-dual-rx .k4-smeter-head {
+    gap: 2px;
+  }
+
+  .k4-smeter-slot.is-dual-rx .k4-smeter-dbm {
+    font-size: 8.5px;
+  }
+
+  .k4-smeter-slot.is-dual-rx .k4-tx-vfo-ind {
+    font-size: 9px;
+  }
+
+  .k4-smeter-slot.is-dual-rx .k4-smeter-mode-btn,
+  .k4-smeter-slot.is-dual-rx .k4-smeter-ovf-badge {
+    padding: 0 3px;
+    font-size: 8px;
+  }
+}
+
 @media (min-width: 1160px) and (max-width: 1379px) {
   .k4-vfo-freq {
     font-size: 15.5px;
   }
 
   .k4-smeter-slot {
-    width: 216px;
+    width: 210px;
+    flex: 0 1 auto;
+    min-width: 164px;
   }
 
   .k4-smeter-slot.is-dual-rx {
-    width: 300px;
+    width: 280px;
+    flex: 0 1 auto;
+    min-width: 224px;
     padding: 3px 5px;
   }
 
@@ -708,10 +749,14 @@
 
   .k4-smeter-slot {
     width: 204px;
+    flex: 0 1 auto;
+    min-width: 160px;
   }
 
   .k4-smeter-slot.is-dual-rx {
-    width: 300px;
+    width: 276px;
+    flex: 0 1 auto;
+    min-width: 220px;
     padding: 3px 5px;
   }
 

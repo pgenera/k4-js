@@ -461,44 +461,64 @@ def verify_peak_hold_default_off(client: MarionetteClient) -> None:
 
 
 def verify_ui_notes_and_cw(client: MarionetteClient, stats_url: str) -> None:
-    """Verify Notes 1-4, 6 + CW decode contrast/coalescing/mnemonics + Mini-Pan/CAT cleanup."""
-    # Note 4: Natural ham labels + zero old security jargon across top-bar, confirm popover, tabs, Transmit Lock, Omnibar blocked card
+    """Verify Notes 1-4, 6 + CW decode contrast/coalescing/mnemonics + overhaul labels & absent legacy UI."""
+    # Item 2 & 12: Direct TX controls present, zero legacy Transmit Lock / Loupe / Send KY / Abort KY / L-H controls
     chrome_texts = client.execute_script(
         """
         const topBar = document.getElementById('top-bar');
-        const rxBadge = document.querySelector('[data-testid="rx-only-badge"]');
-        const rxBtn = document.querySelector('[data-testid="tx-mode-rx"]');
-        const armBtn = document.querySelector('[data-testid="tx-mode-armed"]');
-        const pop = document.querySelector('[data-testid="tx-arm-confirm"]');
-        const warnPill = pop ? pop.querySelector('.k4-tx-arm-warn-pill') : null;
+        const legacyIds = ['rx-only-badge', 'tx-mode-rx', 'tx-mode-armed', 'tx-arm-confirm', 'atu-full-btn', 'tx-antenna-select', 'tx-power-range'];
+        const legacyPresent = legacyIds.filter((id) => Boolean(document.querySelector('[data-testid="' + id + '"]') || document.getElementById(id)));
         globalThis.k4App.inspector.selectDesktopTab('audio');
         const audioText = document.getElementById('inspector-drawer')?.textContent || '';
         globalThis.k4App.inspector.selectDesktopTab('tx');
-        const txText = document.getElementById('inspector-drawer')?.textContent || '';
+        const txPane = document.getElementById('inspector-drawer');
+        const txText = txPane ? txPane.textContent : '';
+        const kySend = document.querySelector('[data-testid="cw-ky-send"]');
+        const kyAbort = document.querySelector('[data-testid="cw-ky-abort"]');
+        const katBadges = Array.from(txPane ? txPane.querySelectorAll('.k4-card-badge') : []).filter((e) => e.textContent.trim() === 'KAT4');
+        const pwrSlider = document.querySelector('[data-testid="tx-power-slider"]');
+        const antBtn = document.querySelector('[data-testid="tx-antenna-btn"]');
+        const atuTuneBtn = document.querySelector('[data-testid="atu-tune-btn"]');
         const tiles = Array.from(document.querySelectorAll('.k4-sensor-tile')).map((el) => el.textContent || '');
         const hudLoupe = globalThis.k4App._hudLoupeBtn;
+        const bodyText = document.body ? document.body.textContent : '';
         return {
+          legacyPresent,
           topBarText: topBar ? topBar.textContent : '',
-          rxBadgeText: rxBadge ? rxBadge.textContent.trim() : '',
-          rxBtnText: rxBtn ? rxBtn.textContent.trim() : '',
-          armBtnText: armBtn ? armBtn.textContent.trim() : '',
-          popText: pop ? pop.textContent : '',
-          warnPillText: warnPill ? warnPill.textContent.trim() : '',
+          topAntVisible: Boolean(document.getElementById('top-ant-btn')),
+          topAtuVisible: Boolean(document.getElementById('top-atu-btn')),
+          testBtnText: document.querySelector('[data-testid="tx-mode-test"]')?.textContent.trim() || '',
+          pttBtnText: document.querySelector('[data-testid="ptt-btn"]')?.textContent.trim() || '',
           audioText,
           txText,
+          bodyText,
+          kySendText: kySend ? kySend.textContent.trim() : '',
+          kyAbortText: kyAbort ? kyAbort.textContent.trim() : '',
+          atuHeaderCount: (txText.match(/ATU & Antenna/g) || []).length,
+          katBadgeCount: katBadges.length,
+          pwrSliderMin: pwrSlider ? pwrSlider.min : null,
+          pwrSliderMax: pwrSlider ? pwrSlider.max : null,
+          hasAntBtn: Boolean(antBtn),
+          hasAtuTuneBtn: Boolean(atuTuneBtn),
           tiles,
           hudLoupeText: hudLoupe ? hudLoupe.textContent.trim() : '',
           hudLoupeTitle: hudLoupe ? hudLoupe.title : '',
         };
         """
     )
-    assert "RX ONLY" in chrome_texts["rxBadgeText"] and chrome_texts["rxBtnText"] == "RX ONLY", chrome_texts
-    assert chrome_texts["armBtnText"] == "TX RDY", f"Expected TX RDY button, got {chrome_texts['armBtnText']!r}"
-    assert chrome_texts["warnPillText"] == "TX ON", f"Expected TX ON pill, got {chrome_texts['warnPillText']!r}"
-    assert "Transmit Lock" in chrome_texts["audioText"] and "Transmit Lock" in chrome_texts["txText"], chrome_texts
+    assert chrome_texts["legacyPresent"] == [], f"Legacy UI hooks still present: {chrome_texts['legacyPresent']}"
+    assert chrome_texts["topAntVisible"] and chrome_texts["topAtuVisible"], chrome_texts
+    assert chrome_texts["testBtnText"] == "TEST" and chrome_texts["pttBtnText"] == "PTT", chrome_texts
+    assert chrome_texts["kySendText"] == "Send", f"Expected keyer 'Send', got {chrome_texts['kySendText']!r}"
+    assert chrome_texts["kyAbortText"] == "Stop", f"Expected keyer 'Stop', got {chrome_texts['kyAbortText']!r}"
+    assert chrome_texts["atuHeaderCount"] == 1 and chrome_texts["katBadgeCount"] == 1, chrome_texts
+    assert chrome_texts["pwrSliderMin"] == "0.1" and chrome_texts["pwrSliderMax"] == "110", chrome_texts
+    assert chrome_texts["hasAntBtn"] and chrome_texts["hasAtuTuneBtn"], chrome_texts
+    assert "Mic Input" not in chrome_texts["txText"], "Physical Mic Input selector must be removed"
+    for banned in ["Send KY", "Abort KY @", "Loupe", "Transmit Lock", "Arm live RF", "RX-only firewall"]:
+        assert banned.lower() not in chrome_texts["bodyText"].lower(), f"Banned UI label {banned!r} found in visible DOM"
     assert_no_forbidden_jargon(chrome_texts["topBarText"], "#top-bar")
-    assert_no_forbidden_jargon(chrome_texts["popText"], "tx-arm-confirm")
-    assert_no_forbidden_jargon(chrome_texts["audioText"], "Audio/Transmit Lock tab")
+    assert_no_forbidden_jargon(chrome_texts["audioText"], "Audio tab")
     assert_no_forbidden_jargon(chrome_texts["txText"], "TX tab")
 
     # Note 1: Zero 'Graph' text in any .k4-sensor-tile, clicking sensor-tile-pt opens graph modal
@@ -524,22 +544,21 @@ def verify_ui_notes_and_cw(client: MarionetteClient, stats_url: str) -> None:
         "Sensor graph modal closes",
     )
 
-    # Note 4 + Mini-Pan Omnibar checks (without pressing Enter on blocked 'tx')
+    # Omnibar Auto Spot + Mini-Pan cards (zero 'loupe' or Transmit Lock jargon)
     client.click_element(client.find_element('[data-testid="omnibar-btn"]'))
     wait_until(
         lambda: client.execute_script("const m = document.querySelector('[data-testid=\"omnibar-modal\"]'); return m && m.dataset.open === 'true';"),
-        "Omnibar open for Note 4 / Mini-Pan checks",
+        "Omnibar open for Auto Spot / Mini-Pan checks",
     )
-    client.clear_and_type('[data-testid="omnibar-input"]', "tx")
+    client.clear_and_type('[data-testid="omnibar-input"]', "auto spot")
     wait_until(
         lambda: client.execute_script(
-            "const item = document.querySelector('.k4-omnibar-item'); return item && item.textContent.includes('Blocked in RX-Only');"
+            "const l = document.querySelector('.k4-omnibar-list'); return l && l.textContent.includes('Auto Spot CW');"
         ),
-        "Omnibar displays Blocked in RX-Only card for 'tx'",
+        "Omnibar displays Auto Spot CW card",
     )
-    omni_blocked = client.execute_script("return document.querySelector('.k4-omnibar-list')?.textContent || '';")
-    assert_no_forbidden_jargon(omni_blocked, "Omnibar blocked card")
-    assert "Transmit Lock" in omni_blocked and "RX ONLY" in omni_blocked, f"Unexpected omnibar blocked copy: {omni_blocked!r}"
+    omni_spot = client.execute_script("return document.querySelector('.k4-omnibar-list')?.textContent || '';")
+    assert_no_forbidden_jargon(omni_spot, "Omnibar Auto Spot card")
 
     # Mini-Pan & CAT cleanup (#114)
     assert chrome_texts["hudLoupeText"].startswith("Mini-Pan") and chrome_texts["hudLoupeTitle"] == "Toggle Mini-Pan", chrome_texts
@@ -1205,31 +1224,32 @@ def run_file_origin_e2e(client: MarionetteClient, ws_url: str, password: str, st
 
     verify_ui_notes_and_cw(client, stats_url)
 
-    # Verify RxOnlyGate blocks TX commands locally and simulator sees 0 TX violations
+    # Verify App boots directly in tx-enabled/tx-armed while explicit RxOnlyGate('rx-only') blocks TX cleanly
     gate_res = client.execute_script(
-        "return globalThis.k4App.client.sendCat('TX;TU1;KY CQ;PC050;SW01;');"
+        """
+        const appGate = globalThis.k4App.gate;
+        const appPosture = globalThis.k4App.client.getTxPosture();
+        const strictGate = new K4.RxOnlyGate('rx-only');
+        const check = strictGate.inspectCat('TX;TU1;KY CQ;PC050;SW01;SP3;');
+        return {
+          policy: appGate.getPolicy(),
+          posture: appPosture,
+          strictBlocked: check.blocked,
+          strictAllowed: check.allowed,
+        };
+        """
     )
-    assert gate_res["sent"] is False and gate_res["blocked"] == [
-        "TX;",
-        "TU1;",
-        "KY CQ;",
-        "PC050;",
-        "SW01;",
-    ], f"RxOnlyGate failed to block all 5 TX commands: {gate_res}"
-    wait_until(
-        lambda: client.execute_script(
-            "const b = document.querySelector('[data-testid=\"rx-only-badge\"]'); return b && b.dataset.blocked === 'true';"
-        ),
-        "RX ONLY badge reflects intercepted client TX block",
-    )
+    assert gate_res["policy"] == "tx-enabled" and gate_res["posture"] == "tx-armed", f"Unexpected default boot posture: {gate_res}"
+    assert gate_res["strictBlocked"] == ["TX;", "TU1;", "KY CQ;", "PC050;", "SW01;"], f"Explicit RxOnlyGate failed: {gate_res}"
+    assert gate_res["strictAllowed"] == ["SP3;"], f"Explicit RxOnlyGate must allow SP3;: {gate_res}"
     stats = http_get_json(stats_url)
     assert stats["txBlockedViolations"] == 0, f"TX leaked to simulator! stats={stats}"
-    assert stats["txCatCommands"] == 0, f"TX CAT command leaked in rx-only posture! stats={stats}"
+    assert stats["txCatCommands"] == 0, f"Unexpected TX CAT command during RX file:// pass! stats={stats}"
     assert stats["authPassed"] >= 1 and stats["authFailed"] == 0, f"Unexpected auth stats: {stats}"
 
     errs = client.collect_console_errors()
     assert not errs, f"Console errors during file:// E2E: {errs}"
-    print("      PASS: file:// auth, hydration, render, click-to-tune, CW -500Hz, Shift/right-click FB, Omnibar, TB$ ';', RxOnlyGate=0")
+    print("      PASS: file:// auth, hydration, render, click-to-tune, CW -500Hz, Shift/right-click FB, Omnibar, TB$ ';', tx-enabled/tx-armed")
 
 
 def run_http_origin_and_screenshots(
@@ -1345,7 +1365,272 @@ def run_http_origin_and_screenshots(
         "Center button clears viewport pan offset",
     )
 
-    # (b) Verify TX resets to rx-only on connect; then TX TEST (TS1) + warm standby Mic + fake-mic PTT hold
+    # Item 13: Persistent #top-ant-btn and #top-atu-btn across drawer collapse and all inspector tabs
+    ant_atu_persist = client.execute_script(
+        """
+        const ant = document.getElementById('top-ant-btn');
+        const atu = document.getElementById('top-atu-btn');
+        const vis = () => Boolean(ant && atu && ant.offsetParent !== null && atu.offsetParent !== null);
+        const results = [];
+        for (const tab of ['band-mode', 'dsp', 'display', 'audio', 'tx']) {
+          globalThis.k4App.inspector.selectDesktopTab(tab);
+          results.push({ ctx: 'tab:' + tab, ok: vis() });
+        }
+        document.getElementById('drawer-toggle')?.click();
+        results.push({ ctx: 'drawerClosed', ok: vis() });
+        document.getElementById('drawer-toggle')?.click();
+        results.push({ ctx: 'drawerReopened', ok: vis() });
+        return results;
+        """
+    )
+    assert all(r["ok"] for r in ant_atu_persist), f"Top ANT/ATU pills disappeared: {ant_atu_persist}"
+
+    # Item 5 & 11: Live audio + MediaSession metadata/handlers + keep-alive <audio> + zero-shift E2E XXms <-> RTT XXms
+    client.execute_script("globalThis.k4App.inspector.selectDesktopTab('audio');")
+    client.click_element(client.find_element('[data-testid="audio-toggle"]'))
+    wait_until(
+        lambda: client.execute_script(
+            """
+            const d = globalThis.k4App.audio.getDiagnostics();
+            const rtt = document.querySelector('#conn-btn .k4-conn-rtt');
+            const e2e = document.querySelector('[data-testid="diag-e2eLatency"]');
+            return d.started && !d.muted && rtt && rtt.textContent.startsWith('E2E ') && e2e && e2e.textContent.startsWith('RX ') && e2e.textContent.includes('ms');
+            """
+        ),
+        "Live audio shows E2E XXms in #conn-btn and Telemetry diag-e2eLatency",
+        timeout=10.0,
+    )
+    media_check = client.execute_script(
+        """
+        const keepAlive = Array.from(document.querySelectorAll('audio')).find((el) => el.loop);
+        const ms = navigator.mediaSession;
+        const metaTitle = ms && ms.metadata ? ms.metadata.title : '';
+        const metaArtist = ms && ms.metadata ? ms.metadata.artist : '';
+        const conn = document.getElementById('conn-btn');
+        const vfoA = document.getElementById('vfo-a-mount');
+        const rBefore = { connL: conn.getBoundingClientRect().left, connW: conn.getBoundingClientRect().width, vfoL: vfoA.getBoundingClientRect().left };
+        const e2eText = document.querySelector('#conn-btn .k4-conn-rtt')?.textContent || '';
+        return {
+          hasKeepAlive: Boolean(keepAlive && keepAlive.loop),
+          metaTitle,
+          metaArtist,
+          e2eText,
+          rBefore,
+        };
+        """
+    )
+    assert media_check["hasKeepAlive"], f"Silent keep-alive <audio loop> missing: {media_check}"
+    assert "Elecraft K4" in media_check["metaArtist"] and media_check["metaTitle"], f"MediaSession metadata not set: {media_check}"
+
+    # Toggle mute via MediaSession pause/play action handler & verify immediate RTT <-> E2E sync with 0.0px layout shift
+    client.execute_script("globalThis.k4App.audio._handleMediaSessionAction('pause');")
+    wait_until(
+        lambda: client.execute_script(
+            """
+            const btn = document.getElementById('audio-toggle');
+            const rtt = document.querySelector('#conn-btn .k4-conn-rtt');
+            return btn && btn.dataset.state === 'muted' && rtt && rtt.textContent.startsWith('RTT ');
+            """
+        ),
+        "MediaSession pause mutes audio and updates #conn-btn to RTT XXms",
+    )
+    shift_check = client.execute_script(
+        """
+        const conn = document.getElementById('conn-btn');
+        const vfoA = document.getElementById('vfo-a-mount');
+        const rAfter = { connL: conn.getBoundingClientRect().left, connW: conn.getBoundingClientRect().width, vfoL: vfoA.getBoundingClientRect().left };
+        const rttText = document.querySelector('#conn-btn .k4-conn-rtt')?.textContent || '';
+        globalThis.k4App.audio._handleMediaSessionAction('play');
+        return { rAfter, rttText };
+        """
+    )
+    assert abs(shift_check["rAfter"]["connL"] - media_check["rBefore"]["connL"]) <= 0.5, (media_check, shift_check)
+    assert abs(shift_check["rAfter"]["connW"] - media_check["rBefore"]["connW"]) <= 0.5, (media_check, shift_check)
+    assert abs(shift_check["rAfter"]["vfoL"] - media_check["rBefore"]["vfoL"]) <= 0.5, (media_check, shift_check)
+    wait_until(
+        lambda: client.execute_script("return document.getElementById('audio-toggle')?.dataset.state === 'active';"),
+        "MediaSession play resumes audio cleanly",
+    )
+
+    # Item 3: Auto Spot (SP3;) zero-beat CW carrier (14.025 MHz - pitch in CW, + pitch in CW-R) + Spot tone toggle
+    client.execute_script("globalThis.k4App.client.sendCat('MD3;FA00014025800;');")
+    wait_until(
+        lambda: http_get_json(stats_url)["faHz"] == 14025800 and client.execute_script("return globalThis.k4App.state.getSnapshot().rxA.mode === 3;"),
+        "VFO A tuned near CW beacon (14025800 Hz, CW)",
+    )
+    client.click_element(client.find_element('#pan-stage [data-testid="auto-spot-btn"]'))
+    pitch_hz = client.execute_script("return globalThis.k4App.state.getSnapshot().cwPitchHz || 500;")
+    wait_until(
+        lambda: http_get_json(stats_url)["faHz"] == 14025000 - pitch_hz,
+        f"Auto Spot snaps CW dial to zero-beat {14025000 - pitch_hz} Hz",
+    )
+    client.execute_script("globalThis.k4App.client.sendCat('MD7;FA00014024800;');")
+    wait_until(
+        lambda: http_get_json(stats_url)["faHz"] == 14024800 and client.execute_script("return globalThis.k4App.state.getSnapshot().rxA.mode === 7;"),
+        "VFO A switched to CW-R at 14024800 Hz",
+    )
+    client.click_element(client.find_element('#pan-stage [data-testid="auto-spot-btn"]'))
+    wait_until(
+        lambda: http_get_json(stats_url)["faHz"] == 14025000 + pitch_hz,
+        f"Auto Spot snaps CW-R dial to zero-beat {14025000 + pitch_hz} Hz",
+    )
+    client.click_element(client.find_element('#pan-stage [data-testid="cw-spot-btn"]'))
+    wait_until(
+        lambda: client.execute_script("return globalThis.k4App.state.getSnapshot().spotTone === 1;"),
+        "Spot tone button toggles SP1 ON",
+    )
+    client.click_element(client.find_element('#pan-stage [data-testid="cw-spot-btn"]'))
+    wait_until(
+        lambda: client.execute_script("return globalThis.k4App.state.getSnapshot().spotTone === 0;"),
+        "Spot tone button toggles SP0 OFF",
+    )
+
+    # Item 1: Dual draggable Mini-Pan A & B (drag persists, wheel/click isolated from FA/FB, dblclick resets, clamps at 390x844, close)
+    client.execute_script(
+        "if (K4.storage) { K4.storage.remove('k4.minipan.pos.a'); K4.storage.remove('k4.minipan.pos.b'); }"
+        "globalThis.k4App.client.sendCat('SB1;#MP1;#MP$1;');"
+    )
+    wait_until(
+        lambda: client.execute_script(
+            """
+            const a = document.querySelector('[data-testid="minipan-box-a"]');
+            const b = document.querySelector('[data-testid="minipan-box-b"]');
+            return a && b && a.style.display !== 'none' && b.style.display !== 'none';
+            """
+        ),
+        "Both Mini-Pan A and Mini-Pan B floating boxes visible",
+    )
+    pre_mp_stats = http_get_json(stats_url)
+    mp_drag = client.execute_script(
+        """
+        const hdr = document.querySelector('[data-testid="minipan-drag-a"]');
+        const r0 = document.querySelector('[data-testid="minipan-box-a"]').getBoundingClientRect();
+        const hr = hdr.getBoundingClientRect();
+        return { hx: Math.round(hr.left + hr.width / 2), hy: Math.round(hr.top + hr.height / 2), r0: { left: r0.left, top: r0.top } };
+        """
+    )
+    client.perform_actions(
+        [
+            {
+                "type": "pointer",
+                "id": "mouse",
+                "parameters": {"pointerType": "mouse"},
+                "actions": [
+                    {"type": "pointerMove", "duration": 0, "x": mp_drag["hx"], "y": mp_drag["hy"], "origin": "viewport"},
+                    {"type": "pointerDown", "button": 0},
+                    {"type": "pointerMove", "duration": 40, "x": mp_drag["hx"] - 65, "y": mp_drag["hy"] + 50, "origin": "viewport"},
+                    {"type": "pointerUp", "button": 0},
+                ],
+            }
+        ]
+    )
+    client.release_actions()
+    mp_after_drag = client.execute_script(
+        """
+        const box = document.querySelector('[data-testid="minipan-box-a"]');
+        const r = box.getBoundingClientRect();
+        const stored = K4.storage ? K4.storage.get('k4.minipan.pos.a', null) : null;
+        box.dispatchEvent(new WheelEvent('wheel', { deltaY: -120, bubbles: true, cancelable: true }));
+        box.click();
+        return { left: r.left, top: r.top, docked: box.dataset.docked, stored };
+        """
+    )
+    assert abs(mp_after_drag["left"] - mp_drag["r0"]["left"]) > 25 and abs(mp_after_drag["top"] - mp_drag["r0"]["top"]) > 25, mp_after_drag
+    assert mp_after_drag["docked"] == "false" and isinstance(mp_after_drag["stored"], dict), mp_after_drag
+    post_mp_stats = http_get_json(stats_url)
+    assert post_mp_stats["faHz"] == pre_mp_stats["faHz"] and post_mp_stats["fbHz"] == pre_mp_stats["fbHz"], (pre_mp_stats, post_mp_stats)
+
+    # Clamp on mobile resize 390x844 and restore 1440x900
+    client.set_window_rect(390, 844)
+    wait_until(
+        lambda: client.execute_script(
+            """
+            const r = document.querySelector('[data-testid="minipan-box-a"]').getBoundingClientRect();
+            return r.width > 0 && r.left >= 0 && r.top >= 0 && r.right <= window.innerWidth + 1 && r.bottom <= window.innerHeight + 1;
+            """
+        ),
+        "Mini-Pan A clamps inside 390x844 viewport",
+    )
+    client.set_window_rect(1440, 900)
+    wait_until(lambda: client.execute_script("return window.innerWidth >= 1400;"), "Restore 1440x900 after Mini-Pan clamp test")
+
+    # dblclick header resets position back to docked
+    client.execute_script(
+        "document.querySelector('[data-testid=\"minipan-drag-a\"]').dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true }));"
+    )
+    wait_until(
+        lambda: client.execute_script(
+            """
+            const box = document.querySelector('[data-testid="minipan-box-a"]');
+            const stored = K4.storage ? K4.storage.get('k4.minipan.pos.a', null) : null;
+            return box && box.dataset.docked === 'true' && stored === null;
+            """
+        ),
+        "Double-click Mini-Pan A header snaps back to docked",
+    )
+    client.click_element(client.find_element('[data-testid="minipan-close-a"]'))
+    wait_until(
+        lambda: client.execute_script(
+            """
+            const a = document.querySelector('[data-testid="minipan-box-a"]');
+            const b = document.querySelector('[data-testid="minipan-box-b"]');
+            return a && a.style.display === 'none' && b && b.style.display !== 'none';
+            """
+        ),
+        "Closing Mini-Pan A leaves Mini-Pan B visible",
+    )
+    client.execute_script("globalThis.k4App.client.sendCat('#MP$0;SB0;');")
+
+    # Item 10: #vfo-cluster controls (A/B AB2/AB5, A>B AB0/AB3, SPLIT FT1/FT0, SUB SB1/SB0) + Split TX indicator
+    client.execute_script("globalThis.k4App.client.sendCat('FA00014074000;FB00007074000;MD2;MD$1;FT0;SB0;');")
+    wait_until(
+        lambda: (st := http_get_json(stats_url))["faHz"] == 14074000 and st["fbHz"] == 7074000,
+        "VFO A=14074000 / VFO B=7074000 prepared for VFO cluster checks",
+    )
+    client.click_element(client.find_element('#vfo-ab-btn'))
+    wait_until(
+        lambda: (st := http_get_json(stats_url))["faHz"] == 7074000 and st["fbHz"] == 14074000,
+        "#vfo-ab-btn swaps VFO A and B (AB2)",
+    )
+    client.execute_script("document.getElementById('vfo-ab-btn').dispatchEvent(new MouseEvent('click', { bubbles: true, shiftKey: true }));")
+    wait_until(
+        lambda: (st := http_get_json(stats_url))["faHz"] == 14074000
+        and st["fbHz"] == 7074000
+        and client.execute_script("const s = globalThis.k4App.state.getSnapshot(); return s.rxA.mode === 1 && s.rxB.mode === 2;"),
+        "Shift+click #vfo-ab-btn full-swaps freq + mode A<->B back (AB5)",
+    )
+    client.click_element(client.find_element('#vfo-a2b-btn'))
+    wait_until(
+        lambda: http_get_json(stats_url)["fbHz"] == 14074000
+        and client.execute_script(
+            "const b = document.getElementById('vfo-a2b-btn'); const s = globalThis.k4App.state.getSnapshot(); return b && b.dataset.window === 'full' && s.rxB.mode === 2;"
+        ),
+        "1st tap #vfo-a2b-btn copies A->B freq (AB0) and opens ALL►B window",
+    )
+    client.click_element(client.find_element('#vfo-a2b-btn'))
+    wait_until(
+        lambda: client.execute_script("const s = globalThis.k4App.state.getSnapshot(); return s.rxB.mode === 1 && s.rxB.mode === s.rxA.mode;"),
+        "2nd tap #vfo-a2b-btn within 3s copies mode/params A->B (AB3)",
+    )
+    client.click_element(client.find_element('#vfo-split-btn'))
+    wait_until(
+        lambda: client.execute_script(
+            """
+            const s = globalThis.k4App.state.getSnapshot();
+            const bTag = document.querySelector('[data-testid="vfo-b-tx-badge"]');
+            return s.splitEnabled === true && bTag && !bTag.hidden && bTag.classList.contains('is-split-tx');
+            """
+        ),
+        "#vfo-split-btn toggles Split ON with VFO B is-split-tx badge",
+    )
+    client.click_element(client.find_element('#vfo-split-btn'))
+    wait_until(lambda: client.execute_script("return globalThis.k4App.state.getSnapshot().splitEnabled === false;"), "Split OFF")
+    client.click_element(client.find_element('#vfo-sub-btn'))
+    wait_until(lambda: client.execute_script("return globalThis.k4App.state.getSnapshot().subRxEnabled === true;"), "#vfo-sub-btn toggles Sub RX ON")
+    client.click_element(client.find_element('#vfo-sub-btn'))
+    wait_until(lambda: client.execute_script("return globalThis.k4App.state.getSnapshot().subRxEnabled === false;"), "#vfo-sub-btn toggles Sub RX OFF")
+
+    # (b) Item 12: Direct TX posture on connect ('tx-armed' / 'tx-enabled') + continuous power slider + ANT cycle + TEST/PTT
     rx_boot = client.execute_script(
         """
         const snap = globalThis.k4App.state.getSnapshot();
@@ -1354,21 +1639,20 @@ def run_http_origin_and_screenshots(
         const micBtn = document.querySelector('[data-testid="tx-mic-btn"]');
         return {
           posture: snap.txPosture,
-          policy: snap.operatingPolicy,
+          policy: globalThis.k4App.gate.getPolicy(),
           txActive: snap.txActive,
           barPosture: bar ? bar.dataset.posture : null,
           pttDisabled: ptt ? ptt.disabled : null,
-          micHidden: micBtn ? micBtn.hidden : null,
+          micBtnExists: Boolean(micBtn),
         };
         """
     )
-    assert rx_boot["posture"] == "rx-only" and rx_boot["policy"] == "rx-only", f"TX posture not rx-only on connect: {rx_boot}"
-    assert rx_boot["txActive"] is False and rx_boot["barPosture"] == "rx-only" and rx_boot["pttDisabled"] is True, (
-        f"Unexpected TX boot UI state: {rx_boot}"
+    assert rx_boot["posture"] == "tx-armed" and rx_boot["policy"] == "tx-enabled", f"Expected tx-armed/tx-enabled on connect: {rx_boot}"
+    assert rx_boot["txActive"] is False and rx_boot["barPosture"] == "tx-armed" and rx_boot["pttDisabled"] is False, (
+        f"Unexpected direct TX boot UI state: {rx_boot}"
     )
-    assert rx_boot["micHidden"] is True, f"Mic indicator should stay hidden in rx-only: {rx_boot}"
 
-    # Ensure USB mode for voice TX capture, open TX / ATU drawer tab, and verify default source === 'mic' on localhost
+    # Ensure USB mode, open TX / ATU drawer tab, verify continuous slider (0.1..110 L/H), ANT cycle, and default source === 'mic'
     default_src = client.execute_script(
         """
         globalThis.k4App.client.setMode('A', 'USB');
@@ -1387,6 +1671,44 @@ def run_http_origin_and_screenshots(
         "VFO A switched to USB mode for TX audio test",
     )
 
+    # Item 7: Continuous TX power slider (7.5W -> PC075L, 45W -> PC045H)
+    client.execute_script(
+        """
+        const sl = document.querySelector('[data-testid="tx-power-slider"]');
+        sl.value = '7.5';
+        sl.dispatchEvent(new Event('change', { bubbles: true }));
+        """
+    )
+    wait_until(
+        lambda: (st := http_get_json(stats_url))["powerRange"] == "L" and abs(st["powerWatts"] - 7.5) < 0.2,
+        "Continuous power slider 7.5W sets L range in simulator",
+    )
+    client.execute_script(
+        """
+        const sl = document.querySelector('[data-testid="tx-power-slider"]');
+        sl.value = '45';
+        sl.dispatchEvent(new Event('change', { bubbles: true }));
+        """
+    )
+    wait_until(
+        lambda: (st := http_get_json(stats_url))["powerRange"] == "H" and st["powerWatts"] >= 44,
+        "Continuous power slider 45W sets H range in simulator",
+    )
+
+    # Item 9: tx-antenna-btn tap-to-cycle ANT 1 -> 2 -> 3 -> 1
+    ant_start = http_get_json(stats_url)["txAntenna"]
+    for step in range(1, 4):
+        expected_ant = ((ant_start - 1 + step) % 3) + 1
+        client.click_element(client.find_element('[data-testid="tx-antenna-btn"]'))
+        wait_until(
+            lambda exp=expected_ant: http_get_json(stats_url)["txAntenna"] == exp
+            and client.execute_script(
+                "const b = document.querySelector('[data-testid=\"tx-antenna-btn\"]'); return b && b.textContent.includes('ANT ' + arguments[0]);",
+                [exp],
+            ),
+            f"tx-antenna-btn cycles to ANT {expected_ant}",
+        )
+
     # Switch to TX TEST (TS1): warm standby mic opens automatically + steady (non-blinking) TX Test indicators
     client.click_element(client.find_element('[data-testid="tx-mode-test"]'))
     wait_until(
@@ -1394,12 +1716,14 @@ def run_http_origin_and_screenshots(
             """
             const snap = globalThis.k4App.state.getSnapshot();
             const ptt = document.querySelector('[data-testid="ptt-btn"]');
+            const bar = document.querySelector('[data-testid="tx-posture-bar"]');
             const ind = document.querySelector('[data-testid="k4-tx-vfo-indicator"]');
             const badge = document.querySelector('[data-testid="vfo-a-tx-badge"]');
             const micBtn = document.querySelector('[data-testid="tx-mic-btn"]');
             const indAnim = ind ? getComputedStyle(ind).animationName : '';
             const badgeAnim = badge ? getComputedStyle(badge).animationName : '';
-            return snap.txPosture === 'tx-test' && snap.txTestMode === true &&
+            return snap.txPosture === 'tx-armed' && snap.txTestMode === true &&
+                   bar && bar.dataset.txTest === 'true' &&
                    ptt && ptt.disabled === false &&
                    micBtn && !micBtn.hidden && micBtn.dataset.micState === 'ready' &&
                    ind && ind.textContent === '◀ TX Test' && ind.dataset.state === 'test' &&
@@ -1538,36 +1862,19 @@ def run_http_origin_and_screenshots(
         "Clicking top strip VS pill switches graph to Supply Voltage",
     )
 
-    # (c) 2-step Arm live TX popover + KAT4 ATU Tune + Full Search Escape panic abort to RX ONLY
-    client.click_element(client.find_element('[data-testid="tx-mode-armed"]'))
+    # Toggle TEST off back to normal standby '◀ TX' while remaining tx-armed
+    client.click_element(client.find_element('[data-testid="tx-mode-test"]'))
     wait_until(
         lambda: client.execute_script(
             """
-            const pop = document.querySelector('[data-testid="tx-arm-confirm"]');
-            const micRow = document.getElementById('tx-arm-mic');
-            const s = globalThis.k4App.state.getSnapshot();
-            return pop && pop.hidden === false && s.txPosture !== 'tx-armed' &&
-                   micRow && micRow.textContent.toLowerCase().includes('mic');
-            """
-        ),
-        "2-step TX arm confirmation popover opens with Microphone summary before arming",
-    )
-    pop_text = client.execute_script("return document.querySelector('[data-testid=\"tx-arm-confirm\"]').textContent;")
-    assert_no_forbidden_jargon(pop_text, "open tx-arm-confirm popover")
-    assert "TX ON" in pop_text and "Enable TX" in pop_text, pop_text
-    client.click_element(client.find_element('[data-testid="tx-arm-confirm-btn"]'))
-    wait_until(
-        lambda: client.execute_script(
-            """
-            const pop = document.querySelector('[data-testid="tx-arm-confirm"]');
             const s = globalThis.k4App.state.getSnapshot();
             const ind = document.querySelector('[data-testid="k4-tx-vfo-indicator"]');
-            return pop && pop.hidden === true && s.txPosture === 'tx-armed' && s.txTestMode === false &&
+            return s.txPosture === 'tx-armed' && s.txTestMode === false &&
                    ind && ind.textContent === '◀ TX' && ind.dataset.state === 'standby';
             """
         )
         and http_get_json(stats_url)["txTestMode"] is False,
-        "TX armed via 2-step confirmation with ◀ TX indicator",
+        "TEST switch restores TS0; with ◀ TX indicator while staying tx-armed",
     )
 
     # Verify Split arrow flips ◀ TX -> TX ▶, then restore VFO A
@@ -1586,7 +1893,7 @@ def run_http_origin_and_screenshots(
         "Simplex restores K4 indicator to ◀ TX",
     )
 
-    # Verify independent K4 [TEST] switch toggles TS1;/TS0; while staying armed
+    # Verify independent K4 [TEST] toggle ON and OFF while staying armed
     client.click_element(client.find_element('[data-testid="tx-mode-test"]'))
     wait_until(
         lambda: client.execute_script(
@@ -1614,7 +1921,7 @@ def run_http_origin_and_screenshots(
         "TEST switch restores TS0; while staying tx-armed",
     )
 
-    # Trigger ATU Tune and wait for live SWR tracking + convergence <= 1.3
+    # (c) Item 4: Single ATU TUNE (1st tap TU3 -> converges <= 1.3; 2nd tap within 5s -> TU4 Full Search -> Escape keeps tx-armed)
     client.click_element(client.find_element('[data-testid="atu-tune-btn"]'))
     wait_until(
         lambda: http_get_json(stats_url)["atuTuning"] is True
@@ -1622,10 +1929,10 @@ def run_http_origin_and_screenshots(
             """
             const s = globalThis.k4App.state.getSnapshot();
             const badge = document.querySelector('[data-testid="atu-status"]');
-            return s.atuTuning === true && s.txMeters.swr >= 1.0 && badge && badge.dataset.state === 'tuning';
+            return s.atuTuning === true && s.atuTuneKind === 3 && s.txMeters.swr >= 1.0 && badge && badge.dataset.state === 'tuning';
             """
         ),
-        "KAT4 ATU Tune (TU3) starts live SWR tuning",
+        "KAT4 ATU Tune 1st click sends TU3 and starts live SWR tuning",
         timeout=5.0,
     )
     wait_until(
@@ -1645,12 +1952,14 @@ def run_http_origin_and_screenshots(
         timeout=6.0,
     )
 
-    # Trigger Full Search and abort mid-tune with Escape panic (TU0;RX;)
-    client.click_element(client.find_element('[data-testid="atu-full-btn"]'))
+    # 2nd tap on single atu-tune-btn within 5s triggers Full Search (TU4), then Escape aborts while staying tx-armed
+    client.click_element(client.find_element('[data-testid="atu-tune-btn"]'))
     wait_until(
         lambda: http_get_json(stats_url)["atuTuning"] is True
-        and client.execute_script("return globalThis.k4App.state.getSnapshot().atuTuning === true;"),
-        "ATU Full Search (TU4) active before Escape panic",
+        and client.execute_script(
+            "const s = globalThis.k4App.state.getSnapshot(); return s.atuTuning === true && s.atuTuneKind === 4;"
+        ),
+        "2nd ATU TUNE click within 5s upgrades to Full Search (TU4)",
     )
     client.perform_actions(
         [
@@ -1670,25 +1979,13 @@ def run_http_origin_and_screenshots(
             and client.execute_script(
                 """
                 const s = globalThis.k4App.state.getSnapshot();
-                const micBtn = document.querySelector('[data-testid="tx-mic-btn"]');
-                return s.atuTuning === false && s.txActive === false && s.txPosture === 'rx-only' &&
-                       micBtn && micBtn.hidden === true && globalThis.k4App.audio.getMicStatus().state === 'idle';
+                const ptt = document.querySelector('[data-testid="ptt-btn"]');
+                return s.atuTuning === false && s.txActive === false && s.txPosture === 'tx-armed' &&
+                       ptt && ptt.disabled === false;
                 """
             )
         ),
-        "Escape (STOP TX · RX) aborts ATU Full Search and resets posture to RX ONLY + releases mic",
-    )
-
-    # Re-arm TX before Spacebar PTT hold test
-    client.click_element(client.find_element('[data-testid="tx-mode-armed"]'))
-    wait_until(
-        lambda: client.execute_script("const pop = document.querySelector('[data-testid=\"tx-arm-confirm\"]'); return pop && pop.hidden === false;"),
-        "TX arm confirmation opens for re-arm before Spacebar PTT",
-    )
-    client.click_element(client.find_element('[data-testid="tx-arm-confirm-btn"]'))
-    wait_until(
-        lambda: client.execute_script("return globalThis.k4App.state.getSnapshot().txPosture === 'tx-armed';"),
-        "TX re-armed cleanly for Spacebar PTT hold",
+        "Escape aborts ATU Full Search cleanly while keeping tx-armed ready",
     )
 
     # (d) Spacebar PTT hold in tx-armed -> 4-bar TX meter, FWD > 0, SIFP current & PA temp rise -> Spacebar release -> RX
@@ -1771,7 +2068,7 @@ def run_http_origin_and_screenshots(
         timeout=5.0,
     )
 
-    # Return cleanly to rx-only posture via STOP TX · RX (Esc) button before screenshots
+    # Verify STOP TX · RX (Esc) button returns to clean RX while staying tx-armed
     client.click_element(client.find_element('[data-testid="stop-tx-btn"]'))
     wait_until(
         lambda: client.execute_script(
@@ -1780,10 +2077,11 @@ def run_http_origin_and_screenshots(
             const stopBtn = document.querySelector('[data-testid="stop-tx-btn"]');
             const ptt = document.querySelector('[data-testid="ptt-btn"]');
             return stopBtn && stopBtn.textContent.includes('STOP TX · RX') &&
-                   s.txPosture === 'rx-only' && ptt && ptt.disabled === true;
+                   s.txActive === false && s.atuTuning === false &&
+                   s.txPosture === 'tx-armed' && ptt && ptt.disabled === false;
             """
         ),
-        "STOP TX · RX button resets posture back to rx-only",
+        "STOP TX · RX button aborts cleanly while staying tx-armed",
     )
 
     err_toasts = client.execute_script(
@@ -1795,7 +2093,58 @@ def run_http_origin_and_screenshots(
     client.take_screenshot(desktop_png)
     assert os.path.getsize(desktop_png) > 5000, f"Desktop screenshot too small: {desktop_png}"
 
-    # Switch to Mobile 390x844 and verify mobile nav + bottom sheet + zero horizontal overflow
+    # Item 13: Verify 0px horizontal overflow, unobscured controls, & persistent top-ant-btn/top-atu-btn across 1440x900, 1280x800, 1024x768 (Single + SB1 Dual RX)
+    def check_desktop_layout(w: int, h: int, dual_rx: bool):
+        ov = client.execute_script(
+            """
+            const ant = document.getElementById('top-ant-btn');
+            const atu = document.getElementById('top-atu-btn');
+            const sub = document.getElementById('vfo-sub-btn');
+            const top = document.getElementById('top-bar');
+            const ctr = document.querySelector('.k4-topbar-center');
+            const subR = sub ? sub.getBoundingClientRect() : null;
+            const hitSub = subR ? document.elementFromPoint(subR.left + subR.width / 2, subR.top + subR.height / 2) : null;
+            const antR = ant ? ant.getBoundingClientRect() : null;
+            const hitAnt = antR ? document.elementFromPoint(antR.left + antR.width / 2, antR.top + antR.height / 2) : null;
+            return {
+              sw: document.documentElement.scrollWidth,
+              cw: document.documentElement.clientWidth,
+              topSw: top ? top.scrollWidth : 0,
+              topCw: top ? top.clientWidth : 0,
+              ctrSw: ctr ? ctr.scrollWidth : 0,
+              ctrCw: ctr ? ctr.clientWidth : 0,
+              antOk: Boolean(ant && ant.offsetParent !== null && (hitAnt === ant || (hitAnt && ant.contains(hitAnt)))),
+              atuOk: Boolean(atu && atu.offsetParent !== null),
+              subOk: Boolean(sub && sub.offsetParent !== null && (hitSub === sub || (hitSub && sub.contains(hitSub)))),
+              hitSubTag: hitSub ? (hitSub.id || hitSub.className || hitSub.tagName) : null,
+            };
+            """
+        )
+        mode_tag = "SB1 Dual RX" if dual_rx else "Single RX"
+        assert ov["sw"] <= ov["cw"] and ov["antOk"] and ov["atuOk"] and ov["subOk"], (
+            f"Overflow, obscured control, or hidden ANT/ATU at {w}x{h} ({mode_tag}): {ov}"
+        )
+        assert ov["topSw"] <= ov["topCw"] + 1 and ov["ctrSw"] <= ov["ctrCw"] + 1, (
+            f"#top-bar/.k4-topbar-center overflow at {w}x{h} ({mode_tag}): {ov}"
+        )
+
+    for w, h in [(1440, 900), (1280, 800), (1024, 768)]:
+        client.set_window_rect(w, h)
+        wait_until(lambda tw=w: client.execute_script("return Math.abs(window.innerWidth - arguments[0]) <= 20;", [tw]), f"Resize {w}x{h}")
+        check_desktop_layout(w, h, False)
+        client.execute_script("globalThis.k4App.client.setSubRx(true);")
+        wait_until(
+            lambda: client.execute_script("return globalThis.k4App.state.getSnapshot().subRxEnabled === true;"),
+            f"Dual RX enabled at {w}x{h} overflow check",
+        )
+        check_desktop_layout(w, h, True)
+        client.execute_script("globalThis.k4App.client.setSubRx(false);")
+        wait_until(
+            lambda: client.execute_script("return globalThis.k4App.state.getSnapshot().subRxEnabled === false;"),
+            f"SB0 restored at {w}x{h}",
+        )
+
+    # Switch to Mobile 390x844 and verify mobile nav + bottom sheet + persistent ANT/ATU + 0px horizontal overflow
     client.set_window_rect(390, 844)
     wait_until(
         lambda: client.execute_script(
@@ -1804,9 +2153,26 @@ def run_http_origin_and_screenshots(
         "mobile nav bar visible at 390x844",
     )
     mob_overflow = client.execute_script(
-        "return { sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth };"
+        """
+        const ant = document.getElementById('top-ant-btn');
+        const atu = document.getElementById('top-atu-btn');
+        const ptt = document.getElementById('ptt-btn');
+        const top = document.getElementById('top-bar');
+        const pttR = ptt ? ptt.getBoundingClientRect() : null;
+        return {
+          sw: document.documentElement.scrollWidth,
+          cw: document.documentElement.clientWidth,
+          topSw: top ? top.scrollWidth : 0,
+          topCw: top ? top.clientWidth : 0,
+          antOk: Boolean(ant && ant.offsetParent !== null),
+          atuOk: Boolean(atu && atu.offsetParent !== null),
+          pttInView: Boolean(pttR && pttR.width > 0 && pttR.right <= document.documentElement.clientWidth + 1),
+        };
+        """
     )
-    assert mob_overflow["sw"] <= mob_overflow["cw"], f"Horizontal overflow at 390x844 (Single RX): {mob_overflow}"
+    assert mob_overflow["sw"] <= mob_overflow["cw"] and mob_overflow["topSw"] <= mob_overflow["topCw"] + 1 and mob_overflow["antOk"] and mob_overflow["atuOk"] and mob_overflow["pttInView"], (
+        f"Horizontal overflow, clipped PTT, or missing ANT/ATU at 390x844 (Single RX): {mob_overflow}"
+    )
     # Verify Dual RX at 390x844 also has zero horizontal overflow
     client.execute_script("globalThis.k4App.client.setSubRx(true);")
     wait_until(
@@ -1840,7 +2206,7 @@ def run_http_origin_and_screenshots(
 
     errs = client.collect_console_errors()
     assert not errs, f"Console errors during HTTP E2E: {errs}"
-    print(f"      PASS: localhost SecureContext, TX TEST, ATU Tune+Esc, Spacebar PTT+Sensors, CW KY, Desktop ({desktop_png}) + Mobile ({mobile_png}), 0 console errors")
+    print(f"      PASS: localhost SecureContext, all 13 UI/Sim overhaul checks + Desktop ({desktop_png}) + Mobile ({mobile_png}), 0 console errors")
 
 
 def terminate_proc(proc: subprocess.Popen | None, name: str):

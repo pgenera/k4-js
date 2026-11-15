@@ -1711,7 +1711,7 @@
     setSpotTone(mode = 1, _rx = 'A') {
       const m = clamp(Math.round(Number.isFinite(Number(mode)) ? Number(mode) : 1), 0, 2);
       const cmd = K4.CatCodec.builders.spot(m, 'A');
-      const res = this.sendCat(cmd + 'SP;');
+      const res = this.sendCat(cmd);
       if (res.blocked.length === 0) {
         this.state.applyParsedCat({ kind: 'spot', rx: 'A', mode: m, value: m });
       }

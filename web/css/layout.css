@@ -122,6 +122,8 @@ select option:disabled {
 .k4-topbar-center {
   flex: 1 1 auto;
   justify-content: center;
+  max-width: 100%;
+  overflow: hidden;
 }
 
 .k4-topbar-right {
@@ -450,7 +452,7 @@ select option:disabled {
 
   .k4-conn-pill .k4-conn-label,
   .k4-conn-pill .k4-conn-rtt {
-    display: none;
+    display: none !important;
   }
 
   .k4-drawer,
@@ -535,7 +537,7 @@ select option:disabled {
   }
 }
 
-@media (max-width: 440px) {
+@media (max-width: 520px) {
   #top-bar {
     padding: 4px 5px;
     gap: 3px;

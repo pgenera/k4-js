@@ -171,21 +171,22 @@
   });
 
   // 4. RxOnlyGate TX rejection vs RX pass
-  test('RxOnlyGate blocks TX/tune/keyer/PC/SW and allows RX/display/audio', () => {
+  test('RxOnlyGate blocks TX/tune/keyer/PC/SW and allows RX/SP/display/audio', () => {
     const K4 = globalThis.K4;
     const gate = new K4.RxOnlyGate('rx-only');
     const blockedEvents = [];
     gate.on('blocked', (ev) => blockedEvents.push(ev));
 
-    const mixed = gate.inspectCat('FA00014074000;MD3;TX;TU1;KY CQ;PC050;SW01;SW10;SP1;RX;SP0;#SPN48000;MXA.B;');
+    const mixed = gate.inspectCat('FA00014074000;MD3;TX;TU1;KY CQ;PC050;SW01;SW10;SP1;TS1;RX;SP0;#SPN48000;MXA.B;');
     assertDeepEqual(mixed.allowed, [
       'FA00014074000;',
       'MD3;',
+      'SP1;',
       'RX;',
       'SP0;',
       '#SPN48000;',
       'MXA.B;',
-    ], 'allowed RX commands');
+    ], 'allowed RX/SP commands');
     assertDeepEqual(mixed.blocked, [
       'TX;',
       'TU1;',
@@ -193,9 +194,9 @@
       'PC050;',
       'SW01;',
       'SW10;',
-      'SP1;',
+      'TS1;',
     ], 'blocked TX commands');
-    assertEqual(mixed.sanitized, 'FA00014074000;MD3;RX;SP0;#SPN48000;MXA.B;', 'sanitized CAT');
+    assertEqual(mixed.sanitized, 'FA00014074000;MD3;SP1;RX;SP0;#SPN48000;MXA.B;', 'sanitized CAT');
 
     assertEqual(gate.inspectBinary(0x00), true, 'CAT binary 0x00 allowed');
     assertEqual(gate.inspectBinary(0x01), false, 'TX Audio binary 0x01 blocked');
@@ -549,8 +550,6 @@
 
     const gate = new K4.RxOnlyGate('rx-only');
     const blockedCmds = [
-      'SP;',
-      'SP$3;',
       'AN1;',
       'AN/;',
       'FT1;',
@@ -565,12 +564,16 @@
     assertDeepEqual(
       blockedRes.blocked,
       blockedCmds.map((c) => c.toUpperCase()),
-      'D4 blocks bare SP/SP$, SET AN/FT/ID, RRP, TS, VC$'
+      'D4 blocks SET AN/FT/ID, RRP, TS, VC$'
     );
     assertEqual(blockedRes.sanitized, '', 'D4 blocked batch sanitized empty');
 
     const allowedCmds = [
+      'SP;',
+      'SP$3;',
       'SP0;',
+      'SP1;',
+      'SP3;',
       'AN;',
       'FT;',
       'FT0;',
@@ -592,8 +595,8 @@
       'RO$-0050;',
     ];
     const allowedRes = gate.inspectCat(allowedCmds.join(''));
-    assertDeepEqual(allowedRes.blocked, [], 'D4 allowed GET/RX/display/pan commands must not be blocked');
-    assertDeepEqual(allowedRes.allowed, allowedCmds, 'D4 allows SP0, GET AN/FT/FT0/ID/OM/SN/RV/IF/TQ/PP/PP05, VC, DV, FC, #FRZ, #FXT, RT$, RO$');
+    assertDeepEqual(allowedRes.blocked, [], 'D4 allowed GET/RX/SP/display/pan commands must not be blocked');
+    assertDeepEqual(allowedRes.allowed, allowedCmds, 'D4 allows SP/SP$3/SP0..3, GET AN/FT/FT0/ID/OM/SN/RV/IF/TQ/PP/PP05, VC, DV, FC, #FRZ, #FXT, RT$, RO$');
 
     // Verify builders
     assertEqual(K4.CatCodec.builders.centerPan('A'), 'FC;', 'builder centerPan A');
@@ -1297,14 +1300,16 @@
       getPeakHold: () => false,
     });
     try {
-      inspector.selectDesktopTab('display');
+      inspector.selectDesktopTab('band-mode');
       let s = inspState.getSnapshot();
       inspector.update(s);
+      assertEqual(inspector._refs.divSwitch.row.hidden, true, 'Diversity RX hidden when OM lacks S');
+      assertEqual(inspector._refs.divSwitch.btn.disabled, true, 'Diversity RX disabled when OM lacks S');
+
+      inspector.selectDesktopTab('display');
       assertEqual(inspector._refs.dispBadge.textContent, 'PAN A', 'Single-Pan Main shows PAN A badge even when targetRx=B');
       assertEqual(inspector._refs.dpmBtns[1].disabled, false, '1x Sub (B) remains enabled on base K4 when OM lacks S');
       assertEqual(inspector._refs.dpmBtns[2].disabled, false, '2x Dual remains enabled on base K4 when OM lacks S');
-      assertEqual(inspector._refs.divSwitch.row.hidden, true, 'Diversity RX hidden when OM lacks S');
-      assertEqual(inspector._refs.divSwitch.btn.disabled, true, 'Diversity RX disabled when OM lacks S');
       assert(inspector._refs.refSlider.row.textContent.includes('-112 dBm'), 'Spectrum Geometry shows PAN A #REF (-112), not B (-95)');
       inspector._refs.spanBtns[0].btn.click();
       assertEqual(inspCalls[0].rx, 'A', 'Span preset button routes to dispRx A');
@@ -1315,10 +1320,12 @@
       s = inspState.getSnapshot();
       inspector.update(s);
       assertEqual(inspector._refs.dpmBtns[1].disabled, false, '1x Sub (B) enabled when OM includes S');
-      assertEqual(inspector._refs.divSwitch.row.hidden, false, 'Diversity RX visible when OM includes S');
       assertEqual(inspector._refs.dispBadge.textContent, 'PAN B', 'Single-Pan Sub (#DPM1) shows PAN B badge');
       inspector._refs.spanBtns[0].btn.click();
       assertEqual(inspCalls[1].rx, 'B', 'Span preset button routes to dispRx B in #DPM1');
+
+      inspector.selectDesktopTab('band-mode');
+      assertEqual(inspector._refs.divSwitch.row.hidden, false, 'Diversity RX visible after switching to Band & Mode tab when OM includes S');
     } finally {
       drawer.remove();
       mobileNav.remove();
@@ -2737,6 +2744,369 @@
     assertEqual(snap3.decodedText[0].closed, true, 'Previous RX A line closed after newline');
     assertEqual(snap3.decodedText[2].text, 'NEXT', 'New RX A line started with NEXT');
     assertEqual(snap3.decodedText[2].closed, false, 'New RX A line remains open');
+  });
+
+  // 35. Direct TX boot posture (tx-enabled/tx-armed), sticky arming, panicAbortTx, and permanent blocklist
+  test('Direct TX boot posture defaults to tx-enabled/tx-armed while permanent blocklist stays enforced', () => {
+    const K4 = globalThis.K4;
+    const state = new K4.RadioState();
+    assertEqual(state.getSnapshot().txPosture, 'tx-armed', 'RadioState defaults txPosture to tx-armed');
+
+    const gate = new K4.RxOnlyGate('tx-enabled');
+    assertEqual(gate.getPolicy(), 'tx-enabled', 'RxOnlyGate accepts tx-enabled constructor arg');
+
+    const sentRaw = [];
+    const client = new K4.Client({ state, gate });
+    assertEqual(client.getTxPosture(), 'tx-armed', 'Client defaults txPosture to tx-armed');
+    client._ws = { readyState: 1, send: (buf) => sentRaw.push(buf) };
+    state.updateConnection({ status: 'connected', authStatus: 'authenticated' });
+
+    try {
+      // TX, ATU, Power, Antenna commands pass directly without modal arming
+      const txRes = client.sendCat('TX;TU3;PC050H;AN2;');
+      assertDeepEqual(txRes.blocked, [], 'Direct TX/ATU/Power/Ant allowed in default tx-enabled posture');
+      assertEqual(txRes.allowed.length, 4, '4 TX commands allowed');
+
+      // Permanent admin/hardware-destructive blocklist stays blocked even in tx-enabled
+      const permRes = client.sendCat('#CAL0;EE;RRPsecret;PS0;SWT09;DARM1;');
+      assertDeepEqual(permRes.allowed, [], 'Permanent dangerous prefixes remain blocked in tx-enabled');
+      assertEqual(permRes.blocked.length, 6, 'All 6 permanent blocklist prefixes rejected');
+
+      // panicAbortTx aborts TX/ATU/keyer while keeping txPosture armed
+      state.update({ txActive: true, atuTuning: true }, 'txActive');
+      const abortRes = client.panicAbortTx('escape');
+      assertEqual(abortRes.sanitized, 'PB0;TU0;KY @;RX;TS0;', 'panicAbortTx sends full abort macro');
+      assertEqual(client.getTxPosture(), 'tx-armed', 'panicAbortTx keeps txPosture in tx-armed');
+
+      // Simulated disconnect keeps txPosture in tx-armed
+      client.disconnect();
+      assertEqual(client.getTxPosture(), 'tx-armed', 'Disconnect keeps txPosture in tx-armed');
+    } finally {
+      client._ws = null;
+      client._stopKeepalive();
+    }
+  });
+
+  // 36. Stage 1 protocol/client overhaul: Auto Spot, single ATU 3->4 tap, continuous PC L/H, ANT cycle, AB0..5, QuickSplit
+  test('Client & CatCodec support SP3/SP$3 Auto Spot, TU3->TU4 ATU double-tap, continuous PC L/H, ANT cycle, and AB0..5', () => {
+    const K4 = globalThis.K4;
+    const b = K4.CatCodec.builders;
+    assertEqual(b.spot(3, 'A'), 'SP3;', 'builder spot 3 A');
+    assertEqual(b.spot(3, 'B'), 'SP$3;', 'builder spot 3 B');
+    assertEqual(b.spot(1, 'A'), 'SP1;', 'builder spot 1 A');
+    assertEqual(b.power(0.1), 'PC001L;', 'builder power 0.1W -> PC001L;');
+    assertEqual(b.power(5.5), 'PC055L;', 'builder power 5.5W -> PC055L;');
+    assertEqual(b.power(10), 'PC100L;', 'builder power 10.0W -> PC100L;');
+    assertEqual(b.power(11), 'PC011H;', 'builder power 11W -> PC011H;');
+    assertEqual(b.power(110), 'PC110H;', 'builder power 110W -> PC110H;');
+    assertEqual(b.vfoCopy(0), 'AB0;', 'builder vfoCopy 0');
+    assertEqual(b.vfoCopy(3), 'AB3;', 'builder vfoCopy 3');
+    assertEqual(b.vfoCopy(5), 'AB5;', 'builder vfoCopy 5');
+
+    const pLow = K4.CatCodec.parseCommand('PC055L;');
+    assertEqual(pLow.kind, 'powerControl', 'PC055L kind');
+    assertApprox(pLow.powerWatts, 5.5, 0.01, 'PC055L powerWatts');
+    assertEqual(pLow.powerRange, 'L', 'PC055L powerRange');
+
+    const pHigh = K4.CatCodec.parseCommand('PC045H;');
+    assertApprox(pHigh.powerWatts, 45, 0.01, 'PC045H powerWatts');
+    assertEqual(pHigh.powerRange, 'H', 'PC045H powerRange');
+
+    const state = new K4.RadioState();
+    const client = new K4.Client({ state, gate: new K4.RxOnlyGate('tx-enabled') });
+    const sent = [];
+    client.sendCat = (cmd) => {
+      const inspected = client.gate.inspectCat(cmd);
+      if (inspected.sanitized) sent.push(inspected.sanitized);
+      return { sent: true, allowed: inspected.allowed, blocked: inspected.blocked, sanitized: inspected.sanitized };
+    };
+
+    // Auto Spot & Spot Tone
+    client.setTargetRx('A');
+    client.autoSpot();
+    assertEqual(sent[sent.length - 1], 'SP3;FA;', 'autoSpot A sends SP3;FA;');
+    client.setTargetRx('B');
+    client.autoSpot();
+    assertEqual(sent[sent.length - 1], 'SP$3;FB;', 'autoSpot B sends SP$3;FB;');
+    client.setSpotTone(1);
+    assertEqual(sent[sent.length - 1], 'SP1;', 'setSpotTone(1) sends SP1;');
+    assertEqual(state.getSnapshot().spotTone, 1, 'spotTone 1 after SP1');
+    client.setSpotTone(0);
+    assertEqual(state.getSnapshot().spotTone, 0, 'spotTone 0 after SP0');
+
+    // Single ATU button: 1st tap -> TU3; opening 5s window, 2nd tap -> TU4;
+    client.startAtuTune();
+    assertEqual(sent[sent.length - 1], 'TU3;TM1;PO1;', '1st ATU tap sends TU3');
+    assertEqual(state.getSnapshot().atuTuneKind, 3, '1st tap records atuTuneKind=3');
+    assert(state.getSnapshot().atuSearchWindowUntil > Date.now(), '1st tap opens 5s Full Search window');
+    client.startAtuTune();
+    assertEqual(sent[sent.length - 1], 'TU4;TM1;PO1;', '2nd ATU tap within 5s upgrades to TU4');
+    assertEqual(state.getSnapshot().atuTuneKind, 4, '2nd tap records atuTuneKind=4');
+    assertEqual(state.getSnapshot().atuSearchWindowUntil, 0, '2nd tap consumes Full Search window');
+    client.stopAtuTune();
+    assertEqual(sent[sent.length - 1], 'TU0;RX;', 'stopAtuTune sends TU0;RX;');
+
+    // Continuous power slider auto L/H boundary
+    client.setPowerWatts(5.5);
+    assertEqual(sent[sent.length - 1], 'PC055L;PC;', '5.5W sends PC055L;');
+    assertApprox(state.getSnapshot().powerWatts, 5.5, 0.01, 'state powerWatts 5.5');
+    assertEqual(state.getSnapshot().powerRange, 'L', 'state powerRange L');
+    client.setPowerWatts(45);
+    assertEqual(sent[sent.length - 1], 'PC045H;PC;', '45W sends PC045H;');
+    assertEqual(state.getSnapshot().powerWatts, 45, 'state powerWatts 45');
+    assertEqual(state.getSnapshot().powerRange, 'H', 'state powerRange H');
+
+    // Antenna cycle 1 -> 2 -> 3 -> 1
+    client.cycleTxAntenna();
+    assertEqual(sent[sent.length - 1], 'AN2;AN;', 'cycleTxAntenna 1->2');
+    client.cycleTxAntenna();
+    assertEqual(sent[sent.length - 1], 'AN3;AN;', 'cycleTxAntenna 2->3');
+    client.cycleTxAntenna();
+    assertEqual(sent[sent.length - 1], 'AN1;AN;', 'cycleTxAntenna 3->1');
+
+    // VFO AB cluster copy & Quick Split
+    client.vfoCopy(0);
+    assertEqual(sent[sent.length - 1], 'AB0;FA;FB;', 'vfoCopy(0) copies freq + polls FA;FB;');
+    client.vfoCopy(3);
+    assert(sent[sent.length - 1].startsWith('AB3;FA;FB;MD;'), 'vfoCopy(3) copies all + polls modes/filters');
+    client.setupQuickSplit(2000);
+    assert(sent[sent.length - 1].includes('AB3;FB00014076000;FT1;'), 'setupQuickSplit sets +2kHz & FT1');
+  });
+
+  // 37. AudioEngine E2E latency breakdown, MediaMetadata dedup, mute events, and AF FFT skip counters
+  test('AudioEngine computes E2E latency, deduplicates MediaMetadata, and tracks _perf skips', async () => {
+    const K4 = globalThis.K4;
+    const state = new K4.RadioState();
+    state.applyParsedCat(K4.CatCodec.parseCommand('FA00014074000;'));
+    state.applyParsedCat(K4.CatCodec.parseCommand('MD2;'));
+    const audio = new K4.AudioEngine({ state });
+
+    try {
+      // MediaSession metadata deduplication (test before audio.start() which also calls updateMediaMetadata)
+      const snap = state.getSnapshot();
+      const first = audio.updateMediaMetadata(snap);
+      if (typeof globalThis.MediaMetadata === 'function' && globalThis.navigator && globalThis.navigator.mediaSession) {
+        assertEqual(first, true, 'First updateMediaMetadata populates MediaMetadata');
+        const updatesBefore = audio._perf.mediaMetaUpdates;
+        const skipsBefore = audio._perf.mediaMetaSkips;
+        const second = audio.updateMediaMetadata(snap);
+        assertEqual(second, false, 'Identical snapshot updateMediaMetadata is skipped');
+        assertEqual(audio._perf.mediaMetaUpdates, updatesBefore, 'mediaMetaUpdates unchanged on dedup');
+        assertEqual(audio._perf.mediaMetaSkips, skipsBefore + 1, 'mediaMetaSkips incremented on dedup');
+
+        state.applyParsedCat(K4.CatCodec.parseCommand('FA00007074000;'));
+        const third = audio.updateMediaMetadata(state.getSnapshot());
+        assertEqual(third, true, 'Freq change updates MediaMetadata');
+        assert(globalThis.navigator.mediaSession.metadata.title.includes('7.074'), 'MediaMetadata title reflects 7.074 MHz');
+      }
+
+      audio.updateNetworkRtt(42);
+      const stoppedBrk = audio.getLatencyBreakdown(42);
+      assertEqual(stoppedBrk.rttMs, 42, 'latency breakdown rttMs');
+      assertEqual(stoppedBrk.rxNetHalfRttMs, 21, 'latency breakdown rxNetHalfRttMs');
+      assertEqual(stoppedBrk.e2eRxMs, null, 'latency breakdown e2eRxMs null when stopped/muted');
+      assert(Number.isFinite(stoppedBrk.localPipelineMs) && stoppedBrk.localPipelineMs >= 20, 'localPipelineMs >= 20');
+      assert(Number.isFinite(stoppedBrk.e2eTxMs) && stoppedBrk.e2eTxMs >= 21, 'latency breakdown e2eTxMs >= half RTT');
+      assertEqual(audio.getDiagnostics().rttMs, 42, 'getDiagnostics reports updated rttMs');
+
+      const startRes = await audio.start();
+      if (startRes && startRes.started) {
+        audio.setMuted(false);
+        const activeBrk = audio.getLatencyBreakdown(42);
+        assert(Number.isFinite(activeBrk.e2eRxMs) && activeBrk.e2eRxMs >= 41, 'active unmuted e2eRxMs >= 41ms');
+      }
+
+      // Mute listener fires cleanly
+      const muteEvents = [];
+      audio.on('mute', (ev) => muteEvents.push(ev));
+      audio.setMuted(false);
+      audio.setMuted(true);
+      assert(muteEvents.length >= 1, 'AudioEngine emits mute events on transitions');
+
+      // AF FFT skip accounting when audio buffer generation is unchanged
+      audio.getAfSpectrum(3200);
+      const skips0 = audio._perf.afFftSkips;
+      audio.getAfSpectrum(3200);
+      assertEqual(audio._perf.afFftSkips, skips0 + 1, '_perf.afFftSkips increments on repeated getAfSpectrum call');
+    } finally {
+      await audio.stop();
+    }
+  });
+
+  // 38. InspectorPanels Item 2/4/5/6/7/8/9/10 labels & controls + lazy dirty-tab skip efficiency
+  test('InspectorPanels exposes overhaul controls and skips off-tab updates in __k4UiPerf', () => {
+    const K4 = globalThis.K4;
+    const state = new K4.RadioState();
+    const audio = new K4.AudioEngine({ state });
+    audio.updateNetworkRtt(36);
+    const client = new K4.Client({ state, gate: new K4.RxOnlyGate('tx-enabled') });
+
+    const drawer = document.createElement('div');
+    const mobileNav = document.createElement('div');
+    const sheet = document.createElement('div');
+    document.body.appendChild(drawer);
+    document.body.appendChild(mobileNav);
+    document.body.appendChild(sheet);
+
+    const inspector = new K4.InspectorPanels({
+      drawerEl: drawer,
+      mobileNavEl: mobileNav,
+      mobileSheetEl: sheet,
+      state,
+      client,
+      audio,
+      getTargetRx: () => 'A',
+      getPalette: () => 'obsidian',
+      getPeakHold: () => false,
+    });
+
+    try {
+      inspector.selectDesktopTab('tx');
+      const txPane = inspector._panes.tx;
+      inspector.update(state.getSnapshot());
+
+      // Item 7: Single continuous TX power slider 0.1..110, zero L/H range segment buttons
+      const pwrSlider = txPane.querySelector('[data-testid="tx-power-slider"]');
+      assert(Boolean(pwrSlider), 'tx-power-slider present');
+      assertEqual(pwrSlider.min, '0.1', 'tx-power-slider min 0.1');
+      assertEqual(pwrSlider.max, '110', 'tx-power-slider max 110');
+      assert(!txPane.querySelector('[data-testid="tx-power-range"]'), 'No L/H range segmented group');
+
+      // Item 4 & 6: Single ATU TUNE button, no atu-full-btn, single ATU & Antenna card + single KAT4 card badge
+      assert(Boolean(txPane.querySelector('[data-testid="atu-tune-btn"]')), 'atu-tune-btn present');
+      assert(!txPane.querySelector('[data-testid="atu-full-btn"]'), 'atu-full-btn absent');
+      const txText = txPane.textContent || '';
+      assertEqual((txText.match(/ATU & Antenna/g) || []).length, 1, 'Exactly one ATU & Antenna header');
+      const katBadges = Array.from(txPane.querySelectorAll('.k4-card-badge')).filter((el) => el.textContent.trim() === 'KAT4');
+      assertEqual(katBadges.length, 1, 'Exactly one KAT4 badge in TX pane');
+
+      // Item 8 & 9: tx-antenna-btn present, tx-antenna-select & Mic Input (MI) removed
+      assert(Boolean(txPane.querySelector('[data-testid="tx-antenna-btn"]')), 'tx-antenna-btn present');
+      assert(!txPane.querySelector('[data-testid="tx-antenna-select"]'), 'tx-antenna-select removed');
+      assert(!txText.includes('Mic Input'), 'Physical Mic Input selector removed');
+
+      // Item 2: Keyer buttons Send / Stop (never Send KY / Abort KY @)
+      const kySend = txPane.querySelector('[data-testid="cw-ky-send"]');
+      const kyAbort = txPane.querySelector('[data-testid="cw-ky-abort"]');
+      assertEqual(kySend.textContent.trim(), 'Send', 'Keyer send button labeled Send');
+      assertEqual(kyAbort.textContent.trim(), 'Stop', 'Keyer abort button labeled Stop');
+      assert(!txText.includes('Transmit Lock') && !txText.includes('Arm live RF'), 'No Transmit Lock copy in TX tab');
+
+      // Item 3: Auto Spot & CW Spot buttons enabled in CW, disabled in USB
+      inspector.selectDesktopTab('dsp');
+      const dspPane = inspector._panes.dsp;
+      const autoSpotBtn = dspPane.querySelector('[data-testid="auto-spot-btn"]');
+      const cwSpotBtn = dspPane.querySelector('[data-testid="cw-spot-btn"]');
+      assert(Boolean(autoSpotBtn) && Boolean(cwSpotBtn), 'auto-spot-btn & cw-spot-btn present in DSP tab');
+      state.applyParsedCat(K4.CatCodec.parseCommand('MD2;'));
+      inspector.update(state.getSnapshot());
+      assertEqual(autoSpotBtn.disabled, true, 'Auto Spot disabled in USB');
+      state.applyParsedCat(K4.CatCodec.parseCommand('MD3;'));
+      inspector.update(state.getSnapshot());
+      assertEqual(autoSpotBtn.disabled, false, 'Auto Spot enabled in CW');
+
+      // Item 5: Audio tab diag-e2eLatency
+      inspector.selectDesktopTab('audio');
+      const e2eEl = inspector._panes.audio.querySelector('[data-testid="diag-e2eLatency"]');
+      assert(Boolean(e2eEl), 'diag-e2eLatency present in Audio tab');
+      assert(e2eEl.textContent.includes('ms'), `diag-e2eLatency formatted with ms, got ${e2eEl.textContent}`);
+
+      // CPU efficiency: updating tx/audio keys on display tab increments inspectorTabSkips & afScopeSkips
+      inspector.selectDesktopTab('display');
+      const perfBefore = Object.assign({}, globalThis.__k4UiPerf || {});
+      state.update({ powerWatts: 25 }, 'powerWatts');
+      inspector.update(state.getSnapshot(), ['powerWatts', 'telemetry']);
+      const perfAfter = globalThis.__k4UiPerf;
+      assert(perfAfter.inspectorTabSkips > perfBefore.inspectorTabSkips, 'Off-tab tx/audio update skipped via inspectorTabSkips');
+      assert(perfAfter.afScopeSkips > perfBefore.afScopeSkips, 'AF scope update skipped when Audio tab hidden');
+      assert(inspector._dirtyTabs.has('tx'), 'tx tab marked dirty for lazy update');
+      inspector.selectDesktopTab('tx');
+      assert(!inspector._dirtyTabs.has('tx'), 'tx tab flushed when selected');
+    } finally {
+      inspector.destroy();
+      drawer.remove();
+      mobileNav.remove();
+      sheet.remove();
+    }
+  });
+
+  // 39. RadioState.batch() coalescing + PanadapterView Dual Mini-Pan & __k4Perf zero-reflow/overlay-skip invariants
+  test('RadioState.batch() coalesces CAT frames and PanadapterView manages dual Mini-Pans & __k4Perf', async () => {
+    const K4 = globalThis.K4;
+    const state = new K4.RadioState();
+    const perf0 = state.getPerf();
+    let emitCount = 0;
+    let lastKeys = null;
+    state.on('change', (_snap, _key, keys) => {
+      emitCount += 1;
+      lastKeys = keys;
+    });
+
+    state.batch(() => {
+      for (const cmd of ['FA00014074000;', 'FB00014025000;', 'MD2;', 'MD$3;', 'FT1;', 'SB1;', 'AN2;', 'PC045H;']) {
+        state.applyParsedCat(K4.CatCodec.parseCommand(cmd));
+      }
+    });
+    const perf1 = state.getPerf();
+    assertEqual(emitCount, 1, '8 CAT commands inside batch() emit exactly 1 change event');
+    assertEqual(perf1.batchedEmits, perf0.batchedEmits + 1, 'getPerf().batchedEmits incremented');
+    assert(perf1.suppressedEmits >= perf0.suppressedEmits + 7, 'getPerf().suppressedEmits recorded intermediate suppression');
+    assert(lastKeys && lastKeys.has('rxA.freqHz') && lastKeys.has('powerWatts'), 'batched changedKeys preserved');
+
+    // Dual Mini-Pan + __k4Perf
+    const container = document.createElement('div');
+    container.style.width = '800px';
+    container.style.height = '420px';
+    container.style.position = 'relative';
+    document.body.appendChild(container);
+    const viewCalls = [];
+    let view = null;
+    try {
+      if (K4.storage) {
+        K4.storage.remove('k4.minipan.pos.a');
+        K4.storage.remove('k4.minipan.pos.b');
+      }
+      state.applyParsedCat(K4.CatCodec.parseCommand('#MP1;'));
+      state.applyParsedCat(K4.CatCodec.parseCommand('#MP$1;'));
+      state.applyParsedCat(K4.CatCodec.parseCommand('SB1;'));
+
+      view = new K4.PanadapterView({
+        container,
+        state,
+        client: {
+          setPanCenter: (rx, hz) => viewCalls.push({ fn: 'center', rx, hz }),
+          setDisplay: (rx, patch) => viewCalls.push({ fn: 'display', rx, patch }),
+        },
+        renderer: '2d',
+      });
+
+      const boxA = container.querySelector('[data-testid="minipan-box-a"]');
+      const boxB = container.querySelector('[data-testid="minipan-box-b"]');
+      assert(Boolean(boxA) && Boolean(boxB), 'Both minipan-box-a and minipan-box-b mounted in container');
+
+      const pktA = new Float32Array(256).fill(-110);
+      view.pushMiniPanPacket({ rx: 'A', spanHz: 10000, bins: pktA, sampleRateHz: 10000 });
+      view.pushMiniPanPacket({ rx: 'B', spanHz: 10000, bins: pktA, sampleRateHz: 10000 });
+      await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+
+      assertEqual(boxA.style.display, 'flex', 'minipan-box-a visible after #MP1 + packet');
+      assertEqual(boxB.style.display, 'flex', 'minipan-box-b visible after #MP$1 + SB1 + packet');
+
+      // Perf counters: __k4Perf initialized with hudMeasures & overlaySkips
+      const panPerf = view.getPerf ? view.getPerf() : (globalThis.__k4Perf || {});
+      assert(typeof panPerf.hudMeasures === 'number', '__k4Perf.hudMeasures tracked');
+      assert(typeof panPerf.overlaySkips === 'number', '__k4Perf.overlaySkips tracked');
+
+      // closeMiniPan('A') sends setDisplay(A, { miniPan: false }) & hides boxA while leaving boxB active
+      view.closeMiniPan('A');
+      await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      assertEqual(viewCalls.some((c) => c.fn === 'display' && c.rx === 'A' && c.patch && c.patch.miniPan === false), true, 'closeMiniPan A invokes setDisplay(A, {miniPan:false})');
+      assertEqual(boxA.style.display, 'none', 'minipan-box-a hidden after close');
+      assertEqual(boxB.style.display, 'flex', 'minipan-box-b remains open when A closes');
+    } finally {
+      if (view && typeof view.destroy === 'function') view.destroy();
+      container.remove();
+    }
   });
 
   async function runAll() {
