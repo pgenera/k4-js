@@ -2240,7 +2240,7 @@ func (r *Radio) execSingleLocked(orig, upper string, tSec float64) string {
 			isSet = true
 			if bn, err := strconv.Atoi(arg); err == nil {
 				if hz, ok := bandDefaults[bn]; ok {
-					target.FreqHz = hz
+					r.setRxFreqLocked(rx, hz)
 					bnCode = bn
 				}
 			}

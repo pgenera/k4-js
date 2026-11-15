@@ -132,6 +132,47 @@ class MarionetteClient:
             {"width": int(width), "height": int(height)},
         )
 
+    def set_viewport_size(self, width: int, height: int):
+        w = int(width)
+        h = int(height)
+        self.set_window_rect(max(w, 500), max(h + 90, 500))
+        self.command("Marionette:SetContext", {"value": "chrome"})
+        try:
+            self.execute_script(
+                """
+                const win = Services.wm.getMostRecentWindow("navigator:browser");
+                const br = win && win.gBrowser ? win.gBrowser.selectedBrowser : null;
+                if (br) {
+                  br.style.setProperty("width", arguments[0] + "px", "important");
+                  br.style.setProperty("min-width", arguments[0] + "px", "important");
+                  br.style.setProperty("max-width", arguments[0] + "px", "important");
+                  br.style.setProperty("height", arguments[1] + "px", "important");
+                  br.style.setProperty("min-height", arguments[1] + "px", "important");
+                  br.style.setProperty("max-height", arguments[1] + "px", "important");
+                }
+                """,
+                [w, h],
+            )
+        finally:
+            self.command("Marionette:SetContext", {"value": "content"})
+
+    def reset_viewport_size(self):
+        self.command("Marionette:SetContext", {"value": "chrome"})
+        try:
+            self.execute_script(
+                """
+                const win = Services.wm.getMostRecentWindow("navigator:browser");
+                const br = win && win.gBrowser ? win.gBrowser.selectedBrowser : null;
+                if (br) {
+                  for (const prop of ["width", "min-width", "max-width", "height", "min-height", "max-height"]) {
+                    br.style.removeProperty(prop);
+                  }
+                }
+                """
+            )
+        finally:
+            self.command("Marionette:SetContext", {"value": "content"})
+
     def find_element(self, css: str):
         res = self.command(
             "WebDriver:FindElement",
@@ -1385,7 +1426,7 @@ def run_http_origin_and_screenshots(
     )
     assert all(r["ok"] for r in ant_atu_persist), f"Top ANT/ATU pills disappeared: {ant_atu_persist}"
 
-    # Item 5 & 11: Live audio + MediaSession metadata/handlers + keep-alive <audio> + zero-shift E2E XXms <-> RTT XXms
+    # Item 5 & 11 & UX Item 4: Live audio + MediaSession + state-only Audio label (no PCM/Opus/12k/48k)
     client.execute_script("globalThis.k4App.inspector.selectDesktopTab('audio');")
     client.click_element(client.find_element('[data-testid="audio-toggle"]'))
     wait_until(
@@ -1395,28 +1436,32 @@ def run_http_origin_and_screenshots(
             const s = globalThis.k4App.state.getSnapshot();
             const rtt = document.querySelector('#conn-btn .k4-conn-rtt');
             const e2e = document.querySelector('[data-testid="diag-e2eLatency"]');
+            const btn = document.getElementById('audio-toggle');
             const lbl = document.querySelector('#audio-toggle .k4-audio-label');
-            return d.started && !d.muted && s.encodeMode === 1 && lbl && lbl.textContent === 'PCM 12k' &&
+            const txt = (btn ? btn.textContent : '') + ' ' + (lbl ? lbl.textContent : '');
+            const hasCodecJargon = /(PCM|Opus|12k|48k)/i.test(txt);
+            return d.started && !d.muted && s.encodeMode === 1 && lbl && lbl.textContent === 'Audio' && !hasCodecJargon &&
+                   btn && /PCM 12k/i.test(btn.title || '') &&
                    rtt && rtt.textContent.startsWith('E2E ') && e2e && e2e.textContent.startsWith('RX ') && e2e.textContent.includes('ms');
             """
         ),
-        "Live audio defaults to EM1 (PCM 12k) and shows E2E XXms in #conn-btn and Telemetry diag-e2eLatency",
+        "Live audio defaults to EM1, shows clean 'Audio' label without PCM/Opus/12k/48k, and shows E2E XXms",
         timeout=10.0,
     )
     if client.execute_script("return Boolean(K4.OpusPacketDecoder && K4.OpusPacketDecoder.isSupported());"):
         client.execute_script("globalThis.k4App.client.setEncodeMode(3);")
         wait_until(
             lambda: client.execute_script(
-                "const s = globalThis.k4App.state.getSnapshot(); const lbl = document.querySelector('#audio-toggle .k4-audio-label'); return s.encodeMode === 3 && lbl && lbl.textContent === 'Opus 48k';"
+                "const s = globalThis.k4App.state.getSnapshot(); const btn = document.getElementById('audio-toggle'); const lbl = document.querySelector('#audio-toggle .k4-audio-label'); return s.encodeMode === 3 && lbl && lbl.textContent === 'Audio' && !/(PCM|Opus|12k|48k)/i.test(btn.textContent || '');"
             ),
-            "Explicit setEncodeMode(3) switches cleanly to Opus 48k",
+            "Explicit setEncodeMode(3) switches cleanly while keeping #audio-toggle text free of Opus/48k",
         )
         client.execute_script("globalThis.k4App.client.setEncodeMode(1);")
         wait_until(
             lambda: client.execute_script(
-                "const s = globalThis.k4App.state.getSnapshot(); const lbl = document.querySelector('#audio-toggle .k4-audio-label'); return s.encodeMode === 1 && lbl && lbl.textContent === 'PCM 12k';"
+                "const s = globalThis.k4App.state.getSnapshot(); const btn = document.getElementById('audio-toggle'); const lbl = document.querySelector('#audio-toggle .k4-audio-label'); return s.encodeMode === 1 && lbl && lbl.textContent === 'Audio' && !/(PCM|Opus|12k|48k)/i.test(btn.textContent || '');"
             ),
-            "setEncodeMode(1) switches cleanly back to PCM 12k",
+            "setEncodeMode(1) switches cleanly back while keeping #audio-toggle text clean",
         )
     media_check = client.execute_script(
         """
@@ -2112,6 +2157,275 @@ def run_http_origin_and_screenshots(
         "STOP TX · RX button aborts cleanly while staying tx-armed",
     )
 
+    # UX Item 6: Subtle ATU Status (#top-atu-btn[data-state="auto"] shows compact 'ATU', not 'ATU AUTO 1.0', and no bright green bg)
+    atu_style = client.execute_script(
+        """
+        const btn = document.getElementById('top-atu-btn');
+        const cs = btn ? getComputedStyle(btn) : null;
+        return {
+          exists: Boolean(btn),
+          state: btn ? btn.dataset.state : null,
+          text: btn ? btn.textContent.trim() : null,
+          bg: cs ? cs.backgroundColor : null,
+        };
+        """
+    )
+    assert atu_style["exists"] and atu_style["state"] == "auto" and atu_style["text"] == "ATU", (
+        f"Expected #top-atu-btn[data-state=auto] text='ATU', got {atu_style}"
+    )
+    bg_m = re.match(r"rgba?\(\s*(\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\s*\)", atu_style["bg"] or "")
+    assert bg_m, f"Unexpected ATU backgroundColor: {atu_style['bg']}"
+    ar, ag, ab = int(bg_m.group(1)), int(bg_m.group(2)), int(bg_m.group(3))
+    aa = float(bg_m.group(4)) if bg_m.group(4) is not None else 1.0
+    assert not (aa > 0.08 and ag - ar > 40 and ag > ab), (
+        f"Expected subtle non-green ATU background, got {atu_style['bg']}"
+    )
+
+    # UX Item 2: Voice Click-to-Tune 1 kHz + Settings Panel ([data-testid="pref-voice-snap-khz"])
+    client.execute_script(
+        "globalThis.k4App.client.sendCat('MD2;FA00014227000;#FXT0;#SPN48000;#MP0;#MP$0;'); globalThis.k4App.client.setStep('A', 2);"
+    )
+    wait_until(
+        lambda: http_get_json(stats_url)["faHz"] == 14227000
+        and client.execute_script(
+            """
+            const s = globalThis.k4App.state.getSnapshot();
+            const m = globalThis.k4App.panadapter.getMetrics();
+            return s.rxA.mode === 2 && s.rxA.stepHz === 100 && Math.abs(m.panCenterHz - 14227000) <= 50 && m.userSpanHz === 48000;
+            """
+        ),
+        "VFO A prepared at 14227000 USB (stepHz=100, 48 kHz span) for Voice 1 kHz click-to-tune test",
+    )
+    step_before_snap = client.execute_script("return globalThis.k4App.state.getSnapshot().rxA.stepHz || 100;")
+    assert step_before_snap == 100, f"Expected initial rxA.stepHz == 100, got {step_before_snap}"
+
+    client.click_element(client.find_element('[data-testid="settings-btn"]'))
+    wait_until(
+        lambda: client.execute_script(
+            """
+            const m = document.querySelector('[data-testid="settings-modal"]');
+            const b = document.querySelector('[data-testid="settings-btn"]');
+            const t = document.querySelector('[data-testid="pref-voice-snap-khz"]');
+            return m && !m.hidden && m.dataset.open === 'true' && b && b.getAttribute('aria-expanded') === 'true' && t && t.classList.contains('is-on');
+            """
+        ),
+        "#settings-btn opens #settings-modal with pref-voice-snap-khz ON",
+    )
+    client.click_element(client.find_element('[data-testid="settings-close-btn"]'))
+    wait_until(
+        lambda: client.execute_script("return document.querySelector('[data-testid=\"settings-modal\"]')?.hidden === true;"),
+        "Settings modal closes cleanly",
+    )
+
+    def click_pan_offset_hz(offset_hz: int):
+        pt = client.execute_script(
+            """
+            const c = document.querySelector('[data-testid="pan-canvas"]');
+            const r = c.getBoundingClientRect();
+            const hit = globalThis.k4App.panadapter._interaction._hitTest(r.width * 0.5, r.height * 0.28);
+            const spec = hit.layout.specRect;
+            const xPx = K4.SpectrumGeometry.xFromRfFreq(
+              hit.panCenterHz + arguments[0],
+              spec.x,
+              spec.w,
+              hit.panCenterHz,
+              hit.userSpanHz
+            );
+            return {
+              x: Math.round(r.left + xPx),
+              y: Math.round(r.top + spec.y + Math.min(spec.h * 0.5, 90)),
+            };
+            """,
+            [offset_hz],
+        )
+        client.perform_actions(
+            [
+                {
+                    "type": "pointer",
+                    "id": "mouse",
+                    "parameters": {"pointerType": "mouse"},
+                    "actions": [
+                        {"type": "pointerMove", "duration": 0, "x": pt["x"], "y": pt["y"], "origin": "viewport"},
+                        {"type": "pointerDown", "button": 0},
+                        {"type": "pointerUp", "button": 0},
+                    ],
+                }
+            ]
+        )
+        client.release_actions()
+
+    click_pan_offset_hz(4340)
+    wait_until(
+        lambda: http_get_json(stats_url)["faHz"] != 14227000,
+        "USB panadapter click tuned VFO A with 1 kHz snap ON",
+    )
+    fa_voice_snapped = http_get_json(stats_url)["faHz"]
+    step_after_on = client.execute_script("return globalThis.k4App.state.getSnapshot().rxA.stepHz;")
+    assert 14230000 <= fa_voice_snapped <= 14232000 and fa_voice_snapped % 1000 == 0, (
+        f"Expected 1 kHz snapped USB click near 14231000, got {fa_voice_snapped}"
+    )
+    assert step_after_on == step_before_snap, f"Voice click snap altered VFO stepHz: {step_before_snap} -> {step_after_on}"
+
+    # Toggle pref-voice-snap-khz OFF in Settings modal and verify stepHz=100 snapping without altering stepHz
+    client.click_element(client.find_element('[data-testid="settings-btn"]'))
+    wait_until(
+        lambda: client.execute_script("return document.querySelector('[data-testid=\"settings-modal\"]')?.dataset.open === 'true';"),
+        "Settings modal reopens",
+    )
+    client.click_element(client.find_element('[data-testid="pref-voice-snap-khz"]'))
+    wait_until(
+        lambda: client.execute_script(
+            "const t = document.querySelector('[data-testid=\"pref-voice-snap-khz\"]'); return K4.ClientPrefs.get('voiceClickSnapKhz') === false && t && !t.classList.contains('is-on');"
+        ),
+        "pref-voice-snap-khz toggles OFF cleanly",
+    )
+    assert client.execute_script("return globalThis.k4App.state.getSnapshot().rxA.stepHz;") == step_before_snap
+    client.click_element(client.find_element('[data-testid="settings-close-btn"]'))
+    wait_until(
+        lambda: client.execute_script("return document.querySelector('[data-testid=\"settings-modal\"]')?.hidden === true;"),
+        "Settings modal closes after toggling OFF",
+    )
+
+    client.execute_script("globalThis.k4App.client.sendCat('FA00014227000;');")
+    wait_until(
+        lambda: http_get_json(stats_url)["faHz"] == 14227000
+        and client.execute_script("return Math.abs(globalThis.k4App.panadapter.getMetrics().panCenterHz - 14227000) <= 50;"),
+        "Reset VFO A to 14227000 before voice snap OFF click test",
+    )
+    click_pan_offset_hz(4340)
+    wait_until(
+        lambda: http_get_json(stats_url)["faHz"] != 14227000,
+        "USB panadapter click tuned VFO A with 1 kHz snap OFF",
+    )
+    fa_step_snapped = http_get_json(stats_url)["faHz"]
+    assert fa_step_snapped % 100 == 0 and fa_step_snapped % 1000 != 0 and 14231100 <= fa_step_snapped <= 14231600, (
+        f"Expected stepHz=100 non-1kHz click near 14231300 when voiceClickSnapKhz=false, got {fa_step_snapped}"
+    )
+
+    # Restore pref-voice-snap-khz ON
+    client.click_element(client.find_element('[data-testid="settings-btn"]'))
+    wait_until(
+        lambda: client.execute_script("return document.querySelector('[data-testid=\"settings-modal\"]')?.dataset.open === 'true';"),
+        "Settings modal reopens to restore voice snap ON",
+    )
+    client.click_element(client.find_element('[data-testid="pref-voice-snap-khz"]'))
+    wait_until(
+        lambda: client.execute_script("return K4.ClientPrefs.get('voiceClickSnapKhz') === true;"),
+        "pref-voice-snap-khz toggles back ON cleanly",
+    )
+    client.perform_actions(
+        [{"type": "key", "id": "keyboard", "actions": [{"type": "keyDown", "value": "\uE00C"}, {"type": "keyUp", "value": "\uE00C"}]}]
+    )
+    client.release_actions()
+    wait_until(
+        lambda: client.execute_script("return document.querySelector('[data-testid=\"settings-modal\"]')?.hidden === true;"),
+        "Escape closes Settings modal",
+    )
+
+    # UX Item 3: VFO A/B Swap Panadapter Stability (in-span keeps panCenterHz steady; cross-band cleanly re-centers)
+    client.execute_script("globalThis.k4App.client.sendCat('#FXT1;#SPN48000;#SPN$48000;FA00014074000;FB00014084000;');")
+    wait_until(
+        lambda: http_get_json(stats_url)["faHz"] == 14074000
+        and http_get_json(stats_url)["fbHz"] == 14084000
+        and client.execute_script(
+            "const m = globalThis.k4App.panadapter.getMetrics(); return globalThis.k4App.state.getSnapshot().fixedTune === true && Math.abs(m.panCenterHz - 14074000) <= 50;"
+        ),
+        "Fixed-Tune in-span VFO A/B prepared at 14074000 / 14084000",
+    )
+    pan_before_inspan = client.execute_script("return globalThis.k4App.panadapter.getMetrics().panCenterHz;")
+    client.click_element(client.find_element('#vfo-ab-btn'))
+    wait_until(
+        lambda: http_get_json(stats_url)["faHz"] == 14084000 and http_get_json(stats_url)["fbHz"] == 14074000,
+        "AB2 swapped in-span VFOs 14074000 <-> 14084000",
+    )
+    time.sleep(0.15)
+    pan_after_inspan = client.execute_script("return globalThis.k4App.panadapter.getMetrics().panCenterHz;")
+    assert abs(pan_after_inspan - pan_before_inspan) <= 50, (
+        f"In-span AB2 swap jumped panCenterHz: {pan_before_inspan} -> {pan_after_inspan}"
+    )
+
+    # Cross-band swap: 14.074 MHz <-> 7.074 MHz cleanly re-centers on 7.074 MHz without stranded offset
+    client.execute_script("globalThis.k4App.client.sendCat('FA00014074000;FB00007074000;');")
+    wait_until(
+        lambda: http_get_json(stats_url)["faHz"] == 14074000
+        and http_get_json(stats_url)["fbHz"] == 7074000
+        and client.execute_script("return Math.abs(globalThis.k4App.panadapter.getMetrics().panCenterHz - 14074000) <= 50;"),
+        "Cross-band VFO A/B prepared at 14074000 / 7074000",
+    )
+    client.click_element(client.find_element('#vfo-ab-btn'))
+    wait_until(
+        lambda: http_get_json(stats_url)["faHz"] == 7074000
+        and http_get_json(stats_url)["fbHz"] == 14074000
+        and client.execute_script("return Math.abs(globalThis.k4App.panadapter.getMetrics().panCenterHz - 7074000) <= 50;"),
+        "Cross-band AB2 swap re-centered panCenterHz cleanly on 7074000",
+    )
+
+    # UX Item 7: K4 Keyboard Shortcuts (ArrowUp/Down +/-10x step, PageUp/PageDown band, digits 14025+Enter, x swap, F1 CW macro, Escape KY @;)
+    client.execute_script(
+        "globalThis.k4App.client.sendCat('#FXT0;FA00014074000;FB00014080000;MD3;'); globalThis.k4App.setTargetRx('A'); if (document.activeElement) document.activeElement.blur();"
+    )
+    wait_until(
+        lambda: http_get_json(stats_url)["faHz"] == 14074000 and http_get_json(stats_url)["fbHz"] == 14080000,
+        "Prepared VFO A=14074000 / VFO B=14080000 for K4 keyboard shortcuts",
+    )
+
+    def send_key(key_val: str):
+        client.perform_actions(
+            [{"type": "key", "id": "keyboard", "actions": [{"type": "keyDown", "value": key_val}, {"type": "keyUp", "value": key_val}]}]
+        )
+        client.release_actions()
+
+    send_key("\uE013")  # ArrowUp (+10x 100 Hz = +1000 Hz)
+    wait_until(lambda: http_get_json(stats_url)["faHz"] == 14075000, "ArrowUp steps VFO A by +10x step (14075000)")
+    send_key("\uE015")  # ArrowDown (-10x 100 Hz = -1000 Hz)
+    wait_until(lambda: http_get_json(stats_url)["faHz"] == 14074000, "ArrowDown steps VFO A by -10x step (14074000)")
+
+    send_key("\uE00E")  # PageUp (20m -> 17m = 18100000)
+    wait_until(lambda: http_get_json(stats_url)["faHz"] == 18100000, "PageUp changes band up to 17m (18100000)")
+    send_key("\uE00F")  # PageDown (17m -> 20m = 14074000)
+    wait_until(lambda: http_get_json(stats_url)["faHz"] == 14074000, "PageDown changes band down to 20m (14074000)")
+
+    for digit_ch in ["1", "4", "0", "2", "5"]:
+        send_key(digit_ch)
+    wait_until(
+        lambda: client.execute_script(
+            "const m = document.querySelector('[data-testid=\"omnibar-modal\"]'); const i = m ? m.querySelector('input') : null; return m && m.dataset.open === 'true' && i && i.value === '14025';"
+        ),
+        "Direct digit entry 14025 preserves leading '1' inside Omnibar",
+    )
+    send_key("\uE007")  # Enter
+    wait_until(
+        lambda: http_get_json(stats_url)["faHz"] == 14025000
+        and client.execute_script("return document.querySelector('[data-testid=\"omnibar-modal\"]')?.hidden === true;"),
+        "Enter tunes VFO A to 14025000 (14.025 MHz) and closes Omnibar",
+    )
+
+    send_key("x")
+    wait_until(
+        lambda: http_get_json(stats_url)["faHz"] == 14080000 and http_get_json(stats_url)["fbHz"] == 14025000,
+        "'x' swaps VFO A and B",
+    )
+
+    tx_cmds_before_f1 = http_get_json(stats_url)["txCatCommands"]
+    send_key("\uE031")  # F1 macro
+    wait_until(
+        lambda: http_get_json(stats_url)["txCatCommands"] > tx_cmds_before_f1 and http_get_json(stats_url)["txActive"] is True,
+        "'F1' queues CW macro text and activates keying",
+    )
+    send_key("\uE00C")  # Escape -> panicAbortTx -> KY @;
+    wait_until(
+        lambda: http_get_json(stats_url)["txActive"] is False
+        and client.execute_script("return globalThis.k4App.state.getSnapshot().txActive === false;"),
+        "'Escape' aborts F1 CW macro via KY @; cleanly",
+    )
+
+    # Restore default VFO state before layout checks and screenshot
+    client.execute_script("globalThis.k4App.client.sendCat('FA00014074000;FB00014025000;MD6;MD$3;');")
+    wait_until(
+        lambda: http_get_json(stats_url)["faHz"] == 14074000 and http_get_json(stats_url)["fbHz"] == 14025000,
+        "Restored clean state before desktop screenshot",
+    )
+
     err_toasts = client.execute_script(
         "return Array.from(document.querySelectorAll('.k4-toast[data-level=\"error\"]')).map(e => e.textContent);"
     )
@@ -2121,8 +2435,9 @@ def run_http_origin_and_screenshots(
     client.take_screenshot(desktop_png)
     assert os.path.getsize(desktop_png) > 5000, f"Desktop screenshot too small: {desktop_png}"
 
-    # Item 13: Verify 0px horizontal overflow, unobscured controls, & persistent top-ant-btn/top-atu-btn across 1440x900, 1280x800, 1024x768 (Single + SB1 Dual RX)
-    def check_desktop_layout(w: int, h: int, dual_rx: bool):
+    # UX Item 1 & Item 13: Verify top-bar non-overlap, VFO B selectors visible & unclipped, and Omnibar modal strictly below #vfo-b-mount
+    # across 1600x900, 1440x900, 1280x800, 1024x768 (Drawer open & closed, Single & SB1 Dual RX)
+    def check_desktop_layout(w: int, h: int, dual_rx: bool, drawer_open: bool):
         ov = client.execute_script(
             """
             const ant = document.getElementById('top-ant-btn');
@@ -2130,10 +2445,30 @@ def run_http_origin_and_screenshots(
             const sub = document.getElementById('vfo-sub-btn');
             const top = document.getElementById('top-bar');
             const ctr = document.querySelector('.k4-topbar-center');
+            const vfoB = document.getElementById('vfo-b-mount');
+            const pills = vfoB ? vfoB.querySelector('.k4-vfo-pills') : null;
+            const omniBtn = document.getElementById('omnibar-btn');
+            const pillSelectors = ['.k4-vfo-sub-btn', '.k4-vfo-band', '.k4-vfo-mode', '.k4-vfo-bw'];
+            const pillMetrics = {};
+            for (const sel of pillSelectors) {
+              const el = vfoB ? vfoB.querySelector(sel) : null;
+              const r = el ? el.getBoundingClientRect() : null;
+              const cs = el ? getComputedStyle(el) : null;
+              pillMetrics[sel] = {
+                ok: Boolean(el && r && r.width > 0 && r.height > 0 && cs && cs.display !== 'none' && cs.visibility !== 'hidden'),
+                left: r ? r.left : 0,
+                right: r ? r.right : 0,
+              };
+            }
             const subR = sub ? sub.getBoundingClientRect() : null;
             const hitSub = subR ? document.elementFromPoint(subR.left + subR.width / 2, subR.top + subR.height / 2) : null;
             const antR = ant ? ant.getBoundingClientRect() : null;
             const hitAnt = antR ? document.elementFromPoint(antR.left + antR.width / 2, antR.top + antR.height / 2) : null;
+            const ctrR = ctr ? ctr.getBoundingClientRect() : null;
+            const vfoBR = vfoB ? vfoB.getBoundingClientRect() : null;
+            const pillsR = pills ? pills.getBoundingClientRect() : null;
+            const omniR = omniBtn ? omniBtn.getBoundingClientRect() : null;
+            const sameRow = Boolean(pillsR && omniR && Math.abs(pillsR.top - omniR.top) < 20);
             return {
               sw: document.documentElement.scrollWidth,
               cw: document.documentElement.clientWidth,
@@ -2144,39 +2479,147 @@ def run_http_origin_and_screenshots(
               antOk: Boolean(ant && ant.offsetParent !== null && (hitAnt === ant || (hitAnt && ant.contains(hitAnt)))),
               atuOk: Boolean(atu && atu.offsetParent !== null),
               subOk: Boolean(sub && sub.offsetParent !== null && (hitSub === sub || (hitSub && sub.contains(hitSub)))),
-              hitSubTag: hitSub ? (hitSub.id || hitSub.className || hitSub.tagName) : null,
+              vfoBOk: Boolean(vfoB && vfoBR && vfoBR.width > 0 && vfoBR.height > 0 && ctrR && vfoBR.left >= ctrR.left - 1 && vfoBR.right <= ctrR.right + 1),
+              pillsUnclipped: Boolean(pillsR && ctrR && pillsR.width > 0 && pillsR.height > 0 && pillsR.left >= ctrR.left - 1 && pillsR.right <= ctrR.right + 1),
+              sameRow,
+              vfoBPillsRight: pillsR ? pillsR.right : 0,
+              omniLeft: omniR ? omniR.left : 0,
+              pillMetrics,
             };
             """
         )
-        mode_tag = "SB1 Dual RX" if dual_rx else "Single RX"
+        mode_tag = f"{'SB1 Dual RX' if dual_rx else 'Single RX'}, drawer={'open' if drawer_open else 'closed'}"
         assert ov["sw"] <= ov["cw"] and ov["antOk"] and ov["atuOk"] and ov["subOk"], (
             f"Overflow, obscured control, or hidden ANT/ATU at {w}x{h} ({mode_tag}): {ov}"
         )
         assert ov["topSw"] <= ov["topCw"] + 1 and ov["ctrSw"] <= ov["ctrCw"] + 1, (
             f"#top-bar/.k4-topbar-center overflow at {w}x{h} ({mode_tag}): {ov}"
         )
+        assert ov["vfoBOk"] and ov["pillsUnclipped"] and all(p["ok"] for p in ov["pillMetrics"].values()), (
+            f"VFO B selectors hidden or clipped at {w}x{h} ({mode_tag}): {ov}"
+        )
+        if ov["sameRow"]:
+            assert ov["vfoBPillsRight"] <= ov["omniLeft"] + 1, (
+                f"VFO B pills overlap Jump button at {w}x{h} ({mode_tag}): {ov}"
+            )
 
-    for w, h in [(1440, 900), (1280, 800), (1024, 768)]:
+    for w, h in [(1600, 900), (1440, 900), (1280, 800), (1024, 768)]:
         client.set_window_rect(w, h)
         wait_until(lambda tw=w: client.execute_script("return Math.abs(window.innerWidth - arguments[0]) <= 20;", [tw]), f"Resize {w}x{h}")
-        check_desktop_layout(w, h, False)
-        client.execute_script("globalThis.k4App.client.setSubRx(true);")
+        for drawer_open in [True, False]:
+            cur_open = client.execute_script("return document.getElementById('inspector-drawer')?.dataset.open === 'true';")
+            if cur_open != drawer_open:
+                client.click_element(client.find_element('#drawer-toggle'))
+                wait_until(
+                    lambda exp=drawer_open: client.execute_script("return document.getElementById('inspector-drawer')?.dataset.open === arguments[0];", ["true" if exp else "false"]),
+                    f"Set drawer open={drawer_open} at {w}x{h}",
+                )
+            check_desktop_layout(w, h, False, drawer_open)
+            client.execute_script("globalThis.k4App.client.setSubRx(true);")
+            wait_until(
+                lambda: client.execute_script("return globalThis.k4App.state.getSnapshot().subRxEnabled === true;"),
+                f"Dual RX enabled at {w}x{h} drawer={drawer_open}",
+            )
+            check_desktop_layout(w, h, True, drawer_open)
+            client.execute_script("globalThis.k4App.client.setSubRx(false);")
+            wait_until(
+                lambda: client.execute_script("return globalThis.k4App.state.getSnapshot().subRxEnabled === false;"),
+                f"SB0 restored at {w}x{h} drawer={drawer_open}",
+            )
+
+        # Ensure drawer open and verify Omnibar modal card opens strictly below #vfo-b-mount
+        if not client.execute_script("return document.getElementById('inspector-drawer')?.dataset.open === 'true';"):
+            client.click_element(client.find_element('#drawer-toggle'))
+        client.click_element(client.find_element('#omnibar-btn'))
         wait_until(
-            lambda: client.execute_script("return globalThis.k4App.state.getSnapshot().subRxEnabled === true;"),
-            f"Dual RX enabled at {w}x{h} overflow check",
+            lambda: client.execute_script("return document.querySelector('[data-testid=\"omnibar-modal\"]')?.dataset.open === 'true';"),
+            f"Omnibar modal opens at {w}x{h}",
         )
-        check_desktop_layout(w, h, True)
-        client.execute_script("globalThis.k4App.client.setSubRx(false);")
+        omni_geom = client.execute_script(
+            """
+            const vfoB = document.getElementById('vfo-b-mount');
+            const card = document.querySelector('#omnibar-modal .k4-omnibar-card');
+            const vr = vfoB ? vfoB.getBoundingClientRect() : null;
+            const cr = card ? card.getBoundingClientRect() : null;
+            const modePill = vfoB ? vfoB.querySelector('.k4-vfo-mode') : null;
+            const mpR = modePill ? modePill.getBoundingClientRect() : null;
+            const hitMp = mpR ? document.elementFromPoint(mpR.left + mpR.width / 2, mpR.top + mpR.height / 2) : null;
+            return {
+              vfoBBottom: vr ? vr.bottom : 0,
+              cardTop: cr ? cr.top : 0,
+              vfoBUnobscured: Boolean(modePill && hitMp && (hitMp === modePill || modePill.contains(hitMp))),
+            };
+            """
+        )
+        assert omni_geom["cardTop"] >= omni_geom["vfoBBottom"] - 0.5 and omni_geom["vfoBUnobscured"], (
+            f"Omnibar modal overlaps VFO B at {w}x{h}: {omni_geom}"
+        )
+        send_key("\uE00C")
         wait_until(
-            lambda: client.execute_script("return globalThis.k4App.state.getSnapshot().subRxEnabled === false;"),
-            f"SB0 restored at {w}x{h}",
+            lambda: client.execute_script("return document.querySelector('[data-testid=\"omnibar-modal\"]')?.hidden === true;"),
+            f"Omnibar modal closes at {w}x{h}",
         )
 
-    # Switch to Mobile 390x844 and verify mobile nav + bottom sheet + persistent ANT/ATU + 0px horizontal overflow
-    client.set_window_rect(390, 844)
+    # UX Item 5: Pixel 10 (412x924) Dual-VFO Visibility & tap-to-select without horizontal overflow
+    client.set_viewport_size(412, 924)
     wait_until(
         lambda: client.execute_script(
-            "const nav = document.querySelector('[data-testid=\"mobile-nav\"]'); return nav && getComputedStyle(nav).display !== 'none';"
+            "const nav = document.querySelector('[data-testid=\"mobile-nav\"]'); return window.innerWidth === 412 && nav && getComputedStyle(nav).display !== 'none';"
+        ),
+        "mobile nav bar visible at 412x924",
+    )
+    pixel_check = client.execute_script(
+        """
+        const va = document.querySelector('[data-testid="vfo-a-freq"]');
+        const vb = document.querySelector('[data-testid="vfo-b-freq"]');
+        const ra = va ? va.getBoundingClientRect() : null;
+        const rb = vb ? vb.getBoundingClientRect() : null;
+        return {
+          iw: window.innerWidth,
+          ih: window.innerHeight,
+          sw: document.documentElement.scrollWidth,
+          cw: document.documentElement.clientWidth,
+          aVis: Boolean(va && ra && ra.width > 0 && ra.height > 0 && getComputedStyle(va).display !== 'none'),
+          bVis: Boolean(vb && rb && rb.width > 0 && rb.height > 0 && getComputedStyle(vb).display !== 'none'),
+        };
+        """
+    )
+    assert pixel_check["iw"] == 412 and pixel_check["sw"] <= 412 and pixel_check["aVis"] and pixel_check["bVis"], (
+        f"Expected both VFO A & B visible with scrollWidth <= 412 at 412x924: {pixel_check}"
+    )
+
+    client.click_element(client.find_element('[data-testid="vfo-b-freq"]'))
+    wait_until(
+        lambda: client.execute_script(
+            """
+            const va = document.querySelector('[data-testid="vfo-a-freq"]');
+            const vb = document.querySelector('[data-testid="vfo-b-freq"]');
+            const slotB = document.querySelector('[data-testid="vfo-b"]');
+            const ra = va ? va.getBoundingClientRect() : null;
+            return slotB && slotB.dataset.target === 'true' && ra && ra.width > 0 && ra.height > 0 && vb && vb.getBoundingClientRect().width > 0;
+            """
+        ),
+        "Tapping VFO B at 412x924 selects B while VFO A remains visible",
+    )
+    client.click_element(client.find_element('[data-testid="vfo-a-freq"]'))
+    wait_until(
+        lambda: client.execute_script(
+            """
+            const va = document.querySelector('[data-testid="vfo-a-freq"]');
+            const vb = document.querySelector('[data-testid="vfo-b-freq"]');
+            const slotA = document.querySelector('[data-testid="vfo-a"]');
+            const rb = vb ? vb.getBoundingClientRect() : null;
+            return slotA && slotA.dataset.target === 'true' && rb && rb.width > 0 && rb.height > 0 && va && va.getBoundingClientRect().width > 0;
+            """
+        ),
+        "Tapping VFO A at 412x924 selects A while VFO B remains visible",
+    )
+
+    # Switch to Mobile 390x844 and verify mobile nav + bottom sheet + persistent ANT/ATU + 0px horizontal overflow
+    client.set_viewport_size(390, 844)
+    wait_until(
+        lambda: client.execute_script(
+            "const nav = document.querySelector('[data-testid=\"mobile-nav\"]'); return window.innerWidth === 390 && nav && getComputedStyle(nav).display !== 'none';"
         ),
         "mobile nav bar visible at 390x844",
     )
@@ -2228,6 +2671,7 @@ def run_http_origin_and_screenshots(
     mobile_png = os.path.join(out_dir, "e2e-mobile.png")
     client.take_screenshot(mobile_png)
     assert os.path.getsize(mobile_png) > 3000, f"Mobile screenshot too small: {mobile_png}"
+    client.reset_viewport_size()
 
     stats = http_get_json(stats_url)
     assert stats["txBlockedViolations"] == 0, f"TX leaked to simulator! stats={stats}"

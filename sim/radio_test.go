@@ -146,3 +146,10 @@ func TestAbCopySingleDirectionFixedTune(t *testing.T) {
 		assertSlicePanState(t, r, 'A', 21074000, 21074000, 0)
 	})
 }
+
+func TestBandSwitchRecentersInFixedTune(t *testing.T) {
+	r := NewRadio()
+	r.HandleCAT("#FXT1;#SPN48000;FA00014074000;FI00014082000;", 0.5)
+	r.HandleCAT("BN06;", 0.6) // Switch VFO A to 17m (18100000)
+	assertSlicePanState(t, r, 'A', 18100000, 18100000, 0)
+}

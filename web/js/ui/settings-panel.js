@@ -277,6 +277,7 @@
   class SettingsPanel {
     constructor(opts = {}) {
       this.modal = opts.modal;
+      this.triggerBtn = opts.triggerBtn || null;
       this.client = opts.client;
       this.prefs = opts.prefs || ClientPrefs;
       this.onNotify = opts.onNotify || (() => {});
@@ -533,6 +534,7 @@
       this._isOpen = true;
       this.modal.hidden = false;
       this.modal.dataset.open = 'true';
+      if (this.triggerBtn) this.triggerBtn.setAttribute('aria-expanded', 'true');
       requestAnimationFrame(() => {
         if (!this._isOpen) return;
         if (focusSection === 'shortcuts' && this._shortcutsSection) {
@@ -551,6 +553,7 @@
     close() {
       if (!this._isOpen || !this.modal) return;
       this._isOpen = false;
+      if (this.triggerBtn) this.triggerBtn.setAttribute('aria-expanded', 'false');
       if (
         typeof document !== 'undefined' &&
         document.activeElement &&

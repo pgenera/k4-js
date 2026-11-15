@@ -460,6 +460,7 @@
       this.settingsPanel = K4.SettingsPanel
         ? new K4.SettingsPanel({
             modal: this._dom.settingsModal,
+            triggerBtn: this._dom.settingsBtn,
             client: this.client,
             prefs: K4.ClientPrefs,
             onNotify: (msg, level) => this.toast(msg, level),
@@ -1437,8 +1438,11 @@
       const rxS = (this._targetRx === 'B' ? snap.rxB : snap.rxA) || {};
       let curIdx = -1;
       if (rxS.band != null) {
-        const bnStr = String(rxS.band).padStart(2, '0');
-        curIdx = bands.findIndex((b) => b.bn === bnStr || String(b.id) === String(rxS.band));
+        const bandKey = typeof rxS.band === 'object' ? (rxS.band.bn || rxS.band.id || '') : rxS.band;
+        if (bandKey !== '') {
+          const bnStr = String(bandKey).padStart(2, '0');
+          curIdx = bands.findIndex((b) => b.bn === bnStr || String(b.id) === String(bandKey));
+        }
       }
       if (curIdx < 0 && Number.isFinite(rxS.freqHz)) {
         curIdx = bands.findIndex((b) => rxS.freqHz >= b.startHz && rxS.freqHz <= b.endHz);

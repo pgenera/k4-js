@@ -3185,6 +3185,165 @@
     }
   });
 
+  test('SpectrumGeometry.dialFreqFromClick voice-mode 1 kHz snap, Alt fine, CW/DATA stepHz & disabled toggle', () => {
+    const G = globalThis.K4.SpectrumGeometry;
+    assertEqual(G.isVoiceMode(1), true, 'mode 1 (LSB) is voice');
+    assertEqual(G.isVoiceMode(2), true, 'mode 2 (USB) is voice');
+    assertEqual(G.isVoiceMode(4), true, 'mode 4 (FM) is voice');
+    assertEqual(G.isVoiceMode(5), true, 'mode 5 (AM) is voice');
+    assertEqual(G.isVoiceMode('USB'), true, 'string USB is voice');
+    assertEqual(G.isVoiceMode('LSB'), true, 'string LSB is voice');
+    assertEqual(G.isVoiceMode('AM'), true, 'string AM is voice');
+    assertEqual(G.isVoiceMode('FM'), true, 'string FM is voice');
+    assertEqual(G.isVoiceMode(3), false, 'mode 3 (CW) is not voice');
+    assertEqual(G.isVoiceMode(6), false, 'mode 6 (DATA) is not voice');
+    assertEqual(G.isVoiceMode(7), false, 'mode 7 (CW-R) is not voice');
+
+    const baseOpts = {
+      xPx: 500,
+      plotLeftPx: 100,
+      plotWidthPx: 800,
+      panCenterHz: 14227340,
+      userSpanHz: 48000,
+      stepHz: 100,
+      fine: false,
+      voiceClickSnapKhz: true,
+    };
+    for (const m of [2, 1, 5, 4, 'USB', 'LSB', 'AM', 'FM']) {
+      assertEqual(
+        G.dialFreqFromClick({ ...baseOpts, mode: m }),
+        14227000,
+        `voice mode ${m} snaps 14227340 -> 14227000 when voiceClickSnapKhz=true`
+      );
+    }
+    assertEqual(
+      G.dialFreqFromClick({ ...baseOpts, panCenterHz: 14227640, mode: 2 }),
+      14228000,
+      'voice mode rounds 14227640 -> 14228000'
+    );
+    assertEqual(
+      G.dialFreqFromClick({ ...baseOpts, mode: 2, fine: true }),
+      14227340,
+      'Alt-click fine=true snaps to 1 Hz on voice mode'
+    );
+    assertEqual(
+      G.dialFreqFromClick({ ...baseOpts, mode: 3, cwPitchHz: 500 }),
+      14226800,
+      'CW mode ignores voiceClickSnapKhz and snaps to stepHz=100'
+    );
+    assertEqual(
+      G.dialFreqFromClick({ ...baseOpts, mode: 6 }),
+      14227300,
+      'DATA mode ignores voiceClickSnapKhz and snaps to stepHz=100'
+    );
+    assertEqual(
+      G.dialFreqFromClick({ ...baseOpts, mode: 2, voiceClickSnapKhz: false }),
+      14227300,
+      'USB snaps to stepHz=100 when voiceClickSnapKhz=false'
+    );
+  });
+
+  test('ClientPrefs, SettingsPanel, Omnibar initial digit cursor, and VFO A/B swap Panadapter framing', async () => {
+    const K4 = globalThis.K4;
+    const saved = K4.ClientPrefs.getAll();
+    const modal = document.createElement('div');
+    const omniModal = document.createElement('div');
+    const panHost = document.createElement('div');
+    panHost.style.width = '900px';
+    panHost.style.height = '420px';
+    document.body.appendChild(modal);
+    document.body.appendChild(omniModal);
+    document.body.appendChild(panHost);
+
+    let panel = null;
+    let panView = null;
+    try {
+      K4.ClientPrefs.reset();
+      const sentCats = [];
+      const sentKeyer = [];
+      const stubClient = {
+        sendCat: (c) => { sentCats.push(c); return { sent: true, allowed: [c], blocked: [] }; },
+        sendKeyerText: (txt, m) => { sentKeyer.push({ txt, m }); return { sent: true, allowed: [], blocked: [] }; },
+        tune: () => {},
+        setBand: () => {},
+      };
+
+      panel = new K4.SettingsPanel({ modal, client: stubClient, prefs: K4.ClientPrefs });
+      panel.open();
+      const snapBtn = modal.querySelector('[data-testid="pref-voice-snap-khz"]');
+      assert(snapBtn, 'pref-voice-snap-khz toggle exists');
+      assertEqual(K4.ClientPrefs.get('voiceClickSnapKhz'), true, 'voiceClickSnapKhz defaults to true');
+      snapBtn.click();
+      assertEqual(K4.ClientPrefs.get('voiceClickSnapKhz'), false, 'clicking pref-voice-snap-khz toggles false');
+      snapBtn.click();
+      assertEqual(K4.ClientPrefs.get('voiceClickSnapKhz'), true, 'clicking pref-voice-snap-khz toggles back true');
+
+      K4.SettingsPanel.executeMacro('CAT:AB2;', stubClient);
+      K4.SettingsPanel.executeMacro('CQ TEST ', stubClient);
+      assertEqual(sentCats[0], 'AB2;', 'CAT: macro sends raw CAT command');
+      assertEqual(sentKeyer[0] && sentKeyer[0].txt, 'CQ TEST ', 'text macro sends via sendKeyerText');
+
+      // Omnibar open('1') keeps cursor at end (not selected) so typing '4' produces '14'
+      const omni = new K4.Omnibar({ modal: omniModal, state: new K4.RadioState(), client: stubClient });
+      omni.open('1');
+      assertEqual(omni.inputEl.value, '1', 'Omnibar initialValue set to 1');
+      assertEqual(omni.inputEl.selectionStart, 1, 'Omnibar cursor placed after initial digit');
+      assertEqual(omni.inputEl.selectionEnd, 1, 'Omnibar initial digit is not selected');
+      omni.close();
+
+      // VFO A/B swap panCenterHz stability in Fixed-Tune and Tracking modes
+      const applyCat = (st, cat) => {
+        for (const frame of K4.CatCodec.splitFrames(cat)) {
+          const parsed = K4.CatCodec.parseCommand(frame);
+          if (parsed) st.applyParsedCat(parsed);
+        }
+      };
+      const state = new K4.RadioState();
+      applyCat(state, '#FXT1;FA00014074000;FB00014084000;#SPN48000;#SPN$48000;');
+      state.updateRx('A', { panCenterHz: 14078000, spanHz: 48000 }, 'rxA.panCenterHz');
+      state.updateRx('B', { panCenterHz: 14080000, spanHz: 48000 }, 'rxB.panCenterHz');
+
+      panView = new K4.PanadapterView({
+        container: panHost,
+        state,
+        client: stubClient,
+        renderer: 'canvas',
+        voiceClickSnapKhz: true,
+      });
+      // Inject customCenterHz within view on pane A to verify in-span swap preserves it
+      panView._panes.A.streamCenterHz = 14078000;
+      panView._panes.A.customCenterHz = 14078000;
+
+      state.applyParsedCat({ kind: 'vfoCopy', rx: null, mode: 2 });
+      let s = state.getSnapshot();
+      assertEqual(s.rxA.freqHz, 14084000, 'AB2 swapped FA -> 14084000');
+      assertEqual(s.rxB.freqHz, 14074000, 'AB2 swapped FB -> 14074000');
+      assertEqual(s.rxA.panCenterHz, 14078000, 'In-span AB2 keeps Fixed-Tune rxA.panCenterHz steady at 14078000');
+      assertEqual(panView._panes.A.customCenterHz, 14078000, 'In-span AB2 keeps in-view customCenterHz steady');
+
+      // Cross-band AB2 swap (14.084 MHz <-> 7.074 MHz) cleanly re-centers and clears customCenterHz
+      applyCat(state, 'FB00007074000;');
+      state.updateRx('B', { panCenterHz: 7074000, spanHz: 48000 }, 'rxB.panCenterHz');
+      state.applyParsedCat({ kind: 'vfoCopy', rx: null, mode: 2 });
+      s = state.getSnapshot();
+      assertEqual(s.rxA.freqHz, 7074000, 'Cross-band AB2 sets FA -> 7074000');
+      assertEqual(s.rxA.panCenterHz, 7074000, 'Cross-band AB2 re-centers rxA.panCenterHz to 7074000');
+      assertEqual(panView._panes.A.streamCenterHz, 7074000, 'Cross-band AB2 updates streamCenterHz to 7074000');
+      assertEqual(panView._panes.A.customCenterHz, null, 'Cross-band AB2 clears stale customCenterHz');
+    } finally {
+      if (panView && typeof panView.destroy === 'function') panView.destroy();
+      if (panel && typeof panel.destroy === 'function') panel.destroy();
+      modal.remove();
+      omniModal.remove();
+      panHost.remove();
+      K4.ClientPrefs.set('voiceClickSnapKhz', saved.voiceClickSnapKhz);
+      K4.ClientPrefs.set('mouseQsyMode', saved.mouseQsyMode);
+      K4.ClientPrefs.set('arrowUpDownMode', saved.arrowUpDownMode);
+      K4.ClientPrefs.set('keyboardShortcuts', saved.keyboardShortcuts);
+      K4.ClientPrefs.set('fnMacros', saved.fnMacros);
+    }
+  });
+
   async function runAll() {
     const resultsEl = document.getElementById('results');
     const summaryEl = document.getElementById('summary');
