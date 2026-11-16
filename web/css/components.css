@@ -162,9 +162,9 @@
   height: 17px;
   padding: 0 4px;
   border-radius: 3px;
-  border: 1px solid transparent;
-  background: rgba(255, 255, 255, 0.03);
-  color: var(--text-dim);
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  background: rgba(148, 163, 184, 0.07);
+  color: #94A3B8;
   font-family: var(--font-mono);
   font-size: 8.5px;
   font-weight: 700;
@@ -422,8 +422,12 @@
   box-shadow: inset 0 0 0 1px rgba(249, 115, 22, 0.34);
 }
 
-.k4-vfo-slot--sub[data-sub-enabled="false"][data-target="false"] {
-  opacity: 0.74;
+.k4-vfo-slot--sub[data-sub-enabled="false"][data-target="false"] .k4-vfo-freq {
+  color: #CBD5E1;
+}
+
+.k4-vfo-slot--sub[data-sub-enabled="false"][data-target="false"] .k4-vfo-digit--dim {
+  color: #94A3B8;
 }
 
 .k4-vfo-badge {
@@ -487,8 +491,12 @@
 }
 
 .k4-vfo-freq[data-locked="true"] {
-  opacity: 0.72;
+  color: #CBD5E1;
   cursor: not-allowed;
+}
+
+.k4-vfo-freq[data-locked="true"] .k4-vfo-digit--dim {
+  color: #94A3B8;
 }
 
 .k4-vfo-digit {
@@ -519,11 +527,11 @@
 }
 
 .k4-vfo-digit--dim {
-  color: var(--text-muted);
+  color: #A8B8CC;
 }
 
 .k4-vfo-sep {
-  color: var(--text-dim);
+  color: #94A3B8;
   padding: 0 1px;
   pointer-events: none;
 }
@@ -533,7 +541,7 @@
   font-family: var(--font-sans);
   font-size: 9.5px;
   font-weight: 600;
-  color: var(--text-dim);
+  color: #94A3B8;
   letter-spacing: 0.03em;
   cursor: pointer;
 }
@@ -1028,14 +1036,9 @@
   display: flex;
   justify-content: space-between;
   font-family: var(--font-mono);
-  font-size: 9px;
+  font-size: 10px;
   color: #CBD5E1;
   line-height: 1;
-}
-
-.k4-smeter-slot.is-dual-rx .k4-smeter-ticks,
-.k4-smeter-slot.is-tx-split .k4-smeter-ticks {
-  font-size: 8px;
 }
 
 .k4-smeter-tick-hi {
@@ -1072,11 +1075,6 @@
   .k4-smeter-slot.is-tx-split .k4-smeter-dbm {
     font-size: 8.5px;
   }
-
-  .k4-smeter-slot.is-dual-rx .k4-smeter-ticks,
-  .k4-smeter-slot.is-tx-split .k4-smeter-ticks {
-    font-size: 7.5px;
-  }
 }
 
 @media (min-width: 960px) and (max-width: 1199px) {
@@ -1100,11 +1098,6 @@
   .k4-smeter-slot .k4-smeter-sep,
   .k4-smeter-slot .k4-smeter-dbm-num {
     display: none;
-  }
-
-  .k4-smeter-slot.is-dual-rx .k4-smeter-ticks,
-  .k4-smeter-slot.is-tx-split .k4-smeter-ticks {
-    font-size: 6.5px;
   }
 }
 
@@ -2190,11 +2183,17 @@
 }
 
 .k4-sheet-grabber {
-  width: 34px;
-  height: 4px;
-  border-radius: 2px;
+  width: 40px;
+  height: 5px;
+  border-radius: 3px;
   background: var(--border-strong);
   margin: 0 auto 2px;
+  cursor: ns-resize;
+}
+
+.k4-sheet-grabber:hover,
+.k4-sheet-grabber:focus-visible {
+  background: var(--accent-vfo-a);
 }
 
 .k4-sheet-title {
@@ -2277,6 +2276,39 @@
   min-height: 44px;
   padding: 4px;
   font-size: 11px;
+}
+
+.k4-mobile-sheet[data-snap="compact"] .k4-sheet-head {
+  padding: 3px 10px 2px;
+}
+
+.k4-mobile-sheet[data-snap="compact"] .k4-pane--tune {
+  gap: 3px;
+}
+
+.k4-mobile-sheet[data-snap="compact"] .k4-pane--tune .k4-card {
+  padding: 3px 6px;
+  gap: 2px;
+}
+
+.k4-mobile-sheet[data-snap="compact"] .k4-tune-rx-group .k4-seg-btn {
+  min-height: 32px;
+  padding: 2px 7px;
+  font-size: 11px;
+}
+
+.k4-mobile-sheet[data-snap="compact"] .k4-key-btn {
+  min-height: 32px;
+  height: 32px;
+  font-size: 13.5px;
+}
+
+.k4-mobile-sheet[data-snap="compact"] .k4-pane--tune .k4-pill-grid .k4-choice-pill,
+.k4-mobile-sheet[data-snap="compact"] .k4-pane--tune .k4-vfo-ops-grid .k4-seg-btn {
+  min-height: 30px;
+  height: 30px;
+  padding: 2px 4px;
+  font-size: 10.5px;
 }
 
 .k4-keypad-display {

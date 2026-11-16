@@ -671,7 +671,7 @@ select option:disabled {
     z-index: var(--z-sheet);
     display: flex;
     flex-direction: column;
-    background: rgba(10, 14, 22, 0.99);
+    background: rgba(10, 14, 22, 0.92);
     backdrop-filter: blur(18px);
     -webkit-backdrop-filter: blur(18px);
     border-top: 1px solid var(--border-medium);
@@ -681,8 +681,20 @@ select option:disabled {
     transform: translateY(106%);
     opacity: 0;
     pointer-events: none;
-    transition: transform 200ms cubic-bezier(0.22, 1, 0.36, 1), opacity 160ms ease;
+    transition: transform 200ms cubic-bezier(0.22, 1, 0.36, 1), opacity 160ms ease, max-height 180ms ease;
     overflow: hidden;
+  }
+
+  .k4-mobile-sheet[data-snap="compact"] {
+    max-height: 34vh;
+  }
+
+  .k4-mobile-sheet[data-snap="mid"] {
+    max-height: 46vh;
+  }
+
+  .k4-mobile-sheet[data-snap="tall"] {
+    max-height: 64vh;
   }
 
   .k4-mobile-sheet[data-open="true"] {
@@ -739,13 +751,9 @@ select option:disabled {
   #top-bar #top-ant-btn,
   #top-bar #top-atu-btn {
     height: 20px;
-    max-width: none;
+    max-width: 64px;
     padding: 0 4px;
     font-size: 8.5px;
-  }
-
-  #top-bar #top-ant-btn .k4-ant-name {
-    display: none;
   }
 
   #top-bar .k4-action-btn,

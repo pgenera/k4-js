@@ -312,6 +312,7 @@
 
       this._activeDesktopTab = 'band-mode';
       this._activeMobileTab = null;
+      this._mobileSheetSnap = 'compact';
       this._panes = {};
       this._refs = {};
       this._dirtyTabs = new Set(['band-mode', 'dsp', 'display', 'audio', 'tune', 'tx']);
@@ -448,7 +449,28 @@
       const sheetHead = el('div', 'k4-sheet-head');
       const titleWrap = el('div', '');
       titleWrap.style.flex = '1';
-      titleWrap.appendChild(el('div', 'k4-sheet-grabber'));
+      const grabber = el('div', 'k4-sheet-grabber');
+      grabber.dataset.testid = 'mobile-sheet-grabber';
+      grabber.setAttribute('role', 'button');
+      grabber.tabIndex = 0;
+      grabber.title = 'Tap or drag to resize sheet';
+      const snapOrder = ['compact', 'mid', 'tall'];
+      const cycleSnap = () => {
+        const idx = snapOrder.indexOf(this._mobileSheetSnap || 'compact');
+        this._mobileSheetSnap = snapOrder[(idx + 1) % snapOrder.length];
+        if (this.mobileSheetEl) this.mobileSheetEl.dataset.snap = this._mobileSheetSnap;
+      };
+      grabber.addEventListener('click', (e) => {
+        e.stopPropagation();
+        cycleSnap();
+      });
+      grabber.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          cycleSnap();
+        }
+      });
+      titleWrap.appendChild(grabber);
       this.sheetTitleEl = el('div', 'k4-sheet-title', 'Controls');
       titleWrap.appendChild(this.sheetTitleEl);
       sheetHead.appendChild(titleWrap);
@@ -460,14 +482,25 @@
       closeBtn.addEventListener('click', () => this.closeMobileSheet());
       sheetHead.appendChild(closeBtn);
 
-      // Touch swipe down to dismiss sheet
+      // Touch swipe up/down on header resizes or dismisses sheet
       let touchStartY = 0;
       sheetHead.addEventListener('touchstart', (e) => {
         if (e.touches && e.touches[0]) touchStartY = e.touches[0].clientY;
       }, { passive: true });
       sheetHead.addEventListener('touchend', (e) => {
-        if (e.changedTouches && e.changedTouches[0] && e.changedTouches[0].clientY - touchStartY > 36) {
-          this.closeMobileSheet();
+        if (!e.changedTouches || !e.changedTouches[0]) return;
+        const dy = e.changedTouches[0].clientY - touchStartY;
+        const curIdx = snapOrder.indexOf(this._mobileSheetSnap || 'compact');
+        if (dy < -28) {
+          this._mobileSheetSnap = snapOrder[Math.min(snapOrder.length - 1, curIdx + 1)];
+          if (this.mobileSheetEl) this.mobileSheetEl.dataset.snap = this._mobileSheetSnap;
+        } else if (dy > 32) {
+          if (curIdx > 0) {
+            this._mobileSheetSnap = snapOrder[curIdx - 1];
+            if (this.mobileSheetEl) this.mobileSheetEl.dataset.snap = this._mobileSheetSnap;
+          } else {
+            this.closeMobileSheet();
+          }
         }
       }, { passive: true });
 
@@ -2802,6 +2835,7 @@
       if (window.innerWidth < 960) {
         if (tabId !== this._activeMobileTab) {
           this._activeMobileTab = tabId;
+          this._mobileSheetSnap = tabId === 'tune' ? 'compact' : 'mid';
         }
       } else {
         if (tabId === 'tune') return;
@@ -2849,6 +2883,7 @@
         return;
       }
       this._activeMobileTab = tabId;
+      this._mobileSheetSnap = tabId === 'tune' ? 'compact' : 'mid';
       this.syncHost();
       this.syncVisibleTab();
     }
@@ -2923,6 +2958,7 @@
           this.sheetScroll.textContent = '';
           this.sheetScroll.appendChild(activePane);
         }
+        this.mobileSheetEl.dataset.snap = this._mobileSheetSnap || 'compact';
         this.mobileSheetEl.dataset.open = 'true';
         this.mobileSheetEl.setAttribute('aria-hidden', 'false');
       } else {

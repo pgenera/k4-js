@@ -2068,13 +2068,16 @@
         this._dom.topAntBtn.replaceChildren();
         const portSpan = document.createElement('span');
         portSpan.className = 'k4-ant-port';
-        portSpan.textContent = `ANT ${ant.port}`;
-        this._dom.topAntBtn.appendChild(portSpan);
         if (ant.hasCustom) {
+          portSpan.textContent = `${ant.port}:`;
+          this._dom.topAntBtn.appendChild(portSpan);
           const nameSpan = document.createElement('span');
           nameSpan.className = 'k4-ant-name';
-          nameSpan.textContent = ` · ${ant.rawName}`;
+          nameSpan.textContent = ant.rawName;
           this._dom.topAntBtn.appendChild(nameSpan);
+        } else {
+          portSpan.textContent = `ANT ${ant.port}`;
+          this._dom.topAntBtn.appendChild(portSpan);
         }
         this._dom.topAntBtn.dataset.port = String(ant.port);
         this._dom.topAntBtn.title = `Active TX Antenna ANT ${ant.port}${ant.hasCustom ? ` (${ant.rawName})` : ''} — click to cycle ANT 1 → 2 → 3`;
@@ -2161,6 +2164,14 @@
       // Connection Pill & E2E/RTT Latency
       const conn = snap.connection || {};
       const status = conn.status || 'disconnected';
+      if (status === 'connected') {
+        this._wasConnectedForWf = true;
+      } else if (this._wasConnectedForWf) {
+        this._wasConnectedForWf = false;
+        if (this.panadapter && typeof this.panadapter.clearWaterfall === 'function') {
+          this.panadapter.clearWaterfall();
+        }
+      }
       this._lastConnStatus = status;
       this._lastAuthStatus = conn.authStatus || null;
       this._lastRadioId = conn.radioId || '';

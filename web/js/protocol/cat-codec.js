@@ -1424,7 +1424,7 @@
       port,
       rawName,
       hasCustom,
-      label: hasCustom ? `ANT ${port} · ${rawName}` : `ANT ${port}`,
+      label: hasCustom ? `${port}:${rawName}` : `ANT ${port}`,
     };
   }
 

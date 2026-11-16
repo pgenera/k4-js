@@ -2,7 +2,7 @@
 (() => {
   const K4 = (globalThis.K4 = globalThis.K4 || {});
 
-  const S_TICK_LABELS = ['S1', '3', '5', '7', '9', '+20', '+40'];
+  const S_TICK_LABELS = ['S1', '5', '9', '+40'];
   const PEAK_HOLD_MS = 350;
   const PEAK_DECAY_DB_PER_SEC = 18;
 
@@ -75,7 +75,7 @@
     for (let i = 0; i < S_TICK_LABELS.length; i++) {
       const sp = document.createElement('span');
       sp.textContent = S_TICK_LABELS[i];
-      if (i >= 4) sp.className = 'k4-smeter-tick-hi';
+      if (i >= 2) sp.className = 'k4-smeter-tick-hi';
       ticks.appendChild(sp);
     }
     return ticks;
