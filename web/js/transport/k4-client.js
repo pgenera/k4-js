@@ -1177,6 +1177,27 @@
     }
 
     /**
+     * Select filter preset 1..3 for the receiver's current mode (FP).
+     * @param {'A'|'B'} rx
+     * @param {number} n
+     */
+    setFilterPreset(rx, n) {
+      const target = rx === 'B' ? 'B' : 'A';
+      const preset = Math.min(3, Math.max(1, Math.round(Number(n)) || 1));
+      this.state.updateRx(target, { filterPreset: preset }, target === 'B' ? 'rxB.filter' : 'rxA.filter');
+      return this.sendCat(K4.CatCodec.builders.filterPreset(target, preset));
+    }
+
+    /**
+     * Normalize the passband to the mode's nominal width/shift (FP~).
+     * The radio echoes the resulting BW/IS, which updates state.
+     * @param {'A'|'B'} rx
+     */
+    normalizeFilter(rx) {
+      return this.sendCat(K4.CatCodec.builders.filterNormalize(rx === 'B' ? 'B' : 'A'));
+    }
+
+    /**
      * Set tuning step index (VT, 0..6).
      * @param {'A'|'B'} rx
      * @param {number} stepIdx

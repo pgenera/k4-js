@@ -77,6 +77,7 @@ type RxState struct {
 	Mode                int
 	DataSubMode         int
 	BwHz                int
+	FilterPreset        int
 	IfShiftHz           int
 	StepIdx             int
 	StepMode            int
@@ -266,6 +267,7 @@ func NewRadio() *Radio {
 		Mode:                ModeDATA,
 		DataSubMode:         0,
 		BwHz:                2700,
+		FilterPreset:        1,
 		IfShiftHz:           1500,
 		StepIdx:             1,
 		StepMode:            6,
@@ -1668,6 +1670,25 @@ func (r *Radio) execSingleLocked(orig, upper string, tSec float64) string {
 			}
 		}
 		resp = fmt.Sprintf("%s%04d;", prefix, target.BwHz/10)
+	case strings.HasPrefix(upper, "FP") && len(upper) >= 3 && !strings.HasPrefix(upper, "FPS"):
+		rx, prefix, arg := splitSubRx(upper, "FP")
+		target := r.rxPtr(rx)
+		arg = strings.TrimSpace(arg)
+		if arg == "~" {
+			isSet = true
+			target.BwHz = r.nominalBwHz(target.Mode)
+			target.IfShiftHz = 1500
+			target.FilterPreset = 1
+			resp = fmt.Sprintf("%s%d;BW%s%04d;IS%s%04d;", prefix, target.FilterPreset, strings.TrimPrefix(prefix, "FP"), target.BwHz/10, strings.TrimPrefix(prefix, "FP"), target.IfShiftHz/10)
+		} else {
+			if arg != "" {
+				isSet = true
+				if v, err := strconv.Atoi(arg); err == nil && v >= 1 && v <= 3 {
+					target.FilterPreset = v
+				}
+			}
+			resp = fmt.Sprintf("%s%d;", prefix, target.FilterPreset)
+		}
 	case strings.HasPrefix(upper, "IS"):
 		rx, prefix, arg := splitSubRx(upper, "IS")
 		target := r.rxPtr(rx)
@@ -3035,4 +3056,18 @@ func absInt64(v int64) int64 {
 		return -v
 	}
 	return v
+}
+
+// nominalBwHz returns a per-mode nominal passband width (simulated NORM).
+func (r *Radio) nominalBwHz(mode int) int {
+	switch mode {
+	case 3, 7: // CW, CW-R
+		return 500
+	case 5: // AM
+		return 6000
+	case 4: // FM
+		return 5000
+	default:
+		return 2700
+	}
 }

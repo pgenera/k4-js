@@ -94,6 +94,7 @@
       dataSubMode: 0, // DATA-A
       bwHz: 2700,
       ifShiftHz: 1500,
+      filterPreset: 1,
       stepHz: 100,
       stepIdx: 2,
       locked: false,
@@ -187,6 +188,7 @@
       mode: 3, // CW
       bwHz: 500,
       ifShiftHz: 500,
+      filterPreset: 1,
     });
     return {
       rxA,
@@ -759,6 +761,10 @@
 
         case 'bw':
           this.updateRx(parsed.rx, { bwHz: parsed.bwHz }, `${rxKey}.bwHz`);
+          return true;
+
+        case 'filterPreset':
+          this.updateRx(parsed.rx, { filterPreset: parsed.preset }, `${rxKey}.filterPreset`);
           return true;
 
         case 'ifShift':

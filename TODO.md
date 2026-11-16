@@ -103,9 +103,15 @@ Verified independently: `go -C sim test` passes, `tests/e2e_verify.py` passes (4
 - [ ] **`components.css` is 4,120 lines, `inspector-panels.js` 3,949, `app.js` 2,424, `e2e_verify.py` 3,294.** *(Skipped per user direction.)*
 
 ### 4b. Needs a real K4 to close (collect before release)
-- [x] **Hardware verification checklist added** at `docs/hardware-verification.md` covering filter presets (`FP`/`FLn`), `MENU`/`Fn`, `MSG I/II`, `NORM` (`IS 9999`), `#FXA` cursor modes, TX bar scaling, Split/VFO Link digits & steps, and S-meter Mini-Pan taps *(live radio execution pending a session with a real K4)*.
+- [x] **Hardware verification checklist added** at `docs/hardware-verification.md` covering filter presets (`FP`/`FLn`), `MENU`/`Fn`, `MSG I/II`, `NORM` (`FP~`), `#FXA` cursor modes, TX bar scaling, Split/VFO Link digits & steps, and S-meter Mini-Pan taps *(live radio execution pending a session with a real K4)*.
 - [ ] **Cross-check mode labels** (`DATA-A`, `AFSK-A`, `FSK-D`, `PSK-D`) against the Programmer's Reference `MD`/`DT` commands on a real radio *(protocol checklist item #9 in `docs/hardware-verification.md`; parser matches `MD1..7,9` / `DT0..3`, awaiting live radio run)*.
 
 ### 4c. Nice-to-have
 - [x] **Compact mobile Tune sheet (`34vh`) + resize grabber**: `inspector-panels.js` opens Tune at `data-snap="compact"` (`34vh`), uncovering the entire spectrum + top waterfall rows at `390×844`, and adds clickable/keyboard/touch-swipe snap cycling (`compact -> mid -> tall`) on `[data-testid="mobile-sheet-grabber"]`; verified in Firefox and Chrome CDP E2E.
 - [x] **Firefox-free Chrome CDP E2E & screenshot path added** to `tests/e2e_verify.py` (`StdlibWsClient`, `CDPClient`, `--browser {auto,firefox,chrome,both}`); verified headless WebGL2 (`renderer=webgl2, liveRows=30`, `43/43` unit tests, desktop + mobile screenshots, `0` console errors) with `--browser chrome`.
+
+## 5. Fixes after first real-radio session (2026-11-16)
+- [x] **NORM and FL1-3 were documented but missing.** Added `FL1`/`FL2`/`FL3` and `NORM` buttons to the DSP pane (`filter-preset-group`, `filter-norm-btn`), the `FP` parser and builders, `rx.filterPreset` state, client `setFilterPreset`/`normalizeFilter`, simulator support and tests. The command is `FP~;` per the Programmer's Reference, not `IS 9999;` as the checklist said.
+- [ ] **Confirm sub-receiver addressing of `FP`** (`FP$n;` vs B SET) on the real radio; see `docs/hardware-verification.md` item 4.
+- [ ] **Tap the filter graphic on the VFO to cycle FL1-3**, as on the K4; currently the graphic opens the DSP tab and the wheel adjusts BW.
+- [ ] **Show `FLn` under each VFO's filter graphic** (K4 shows `FL1`/`FL2`/`FL3` beneath the trapezoid).

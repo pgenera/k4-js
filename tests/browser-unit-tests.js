@@ -157,6 +157,17 @@
     assertEqual(bwB.rx, 'B', 'BW$ rx');
     assertEqual(bwB.bwHz, 500, 'BW$ Hz');
 
+    const fpA = K4.CatCodec.parseCommand('FP2;');
+    assertEqual(fpA.kind, 'filterPreset', 'FP kind');
+    assertEqual(fpA.rx, 'A', 'FP rx');
+    assertEqual(fpA.preset, 2, 'FP preset');
+    const fpB = K4.CatCodec.parseCommand('FP$3;');
+    assertEqual(fpB.rx, 'B', 'FP$ rx');
+    assertEqual(fpB.preset, 3, 'FP$ preset');
+    assertEqual(K4.CatCodec.builders.filterPreset('B', 2), 'FP$2;', 'FP$ builder');
+    assertEqual(K4.CatCodec.builders.filterNormalize('A'), 'FP~;', 'FP~ builder');
+    assertEqual(K4.CatCodec.builders.filterNormalize('B'), 'FP$~;', 'FP$~ builder');
+
     const spnB = K4.CatCodec.parseCommand('#SPN$24000;');
     assertEqual(spnB.kind, 'panSpan', '#SPN$ kind');
     assertEqual(spnB.rx, 'B', '#SPN$ rx');

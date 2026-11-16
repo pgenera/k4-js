@@ -3,7 +3,7 @@
 Items below are implemented against the **Elecraft K4 Programmer's Reference**, **K4 Operating Manual**, or the local `k4sim` simulator (`sim/radio.go`) and need one session with a real Elecraft K4 to confirm on-air behavior and close Section 4b of `TODO.md`.
 
 ## Prerequisites
-- Start the proxy pointing at a live K4 on TCP port `9200` (e.g., `websockify --web=web <listen_port> <k4_ip>:9200` or the K4 Web UI server).
+- Start the proxy pointing at a live K4 on TCP port `9205` (try `9204` if that refuses; the manual's remote-access section mentions 9204) (e.g., `websockify --web=web <listen_port> <k4_ip>:9200` or the K4 Web UI server).
 - Open DevTools Console / Network WebSocket inspector or tail the CAT log while running through each check below.
 
 ---
@@ -28,11 +28,14 @@ Items below are implemented against the **Elecraft K4 Programmer's Reference**, 
 - **Expected UI result**:
   - Tapping `#center-msg-ind` / `MSG` bank matches physical K4 bank selection (`I` / `II`) and highlights orange only while actively transmitting/playing back a message.
 
-## 4. Front-Panel `NORM` Passband Reset
-- **CAT / Commands to verify**:
-  - Offset IF shift (`IS 1200;` in `CW`) and narrow `BW`, then press `NORM` on the radio front panel and send `IS 9999;` from the Web UI (`MAIN RX` / `SUB RX` `NORM` button).
-- **Expected UI result**:
-  - Compare whether real K4 `IS 9999;` resets both shift (`IS`) and width (`BW`) to the mode's default preset, or only centers `IS`, and align `web/js/protocol/cat-codec.js` / `sim/radio.go` if they differ.
+## 4. Filter Presets and `NORM` (`FP$n;`, `FP~;`)
+- **Reference**: Programmer's Reference rev D4, `FP$ (Filter Preset)`: `FP$n;` selects preset 1-3 for the current mode; short format `FP~;` normalizes. The manual does not say how the sub receiver is addressed, so the client sends `FPn;` / `FP~;` for main and `FP$n;` / `FP$~;` for sub, mirroring `BW`/`BW$`.
+- **To verify**:
+  - DSP tab (`BAND`/`MAIN RX`), click `FL1`/`FL2`/`FL3`, then `NORM`; watch the CAT log for what the K4 sends back.
+  - Offset IF shift and narrow BW, press `NORM`, and compare with the front-panel `NORM` result (width and shift both reset?).
+  - Select `SUB RX` and repeat: does `FP$n;` / `FP$~;` change the sub receiver, or the main one? If main is affected, change `builders.filterPreset`/`filterNormalize` in `web/js/protocol/cat-codec.js` to use B SET targeting.
+  - Does the radio echo `FPn;` on front-panel preset changes? If not, `rx.filterPreset` will only track presets set from the web UI.
+- **Expected UI result**: the active `FLn` pill follows the radio, `NORM` restores the mode's nominal passband, and the filter trapezoid redraws.
 
 ## 5. `#FXA0..4` & `#FXC0..1` Fixed-Tune Cursor Modes
 - **CAT / Commands to verify**:

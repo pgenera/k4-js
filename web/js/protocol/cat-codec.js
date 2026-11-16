@@ -279,6 +279,14 @@
       const v = parseIntStrict(arg);
       return v === null ? null : { kind: 'dataSubMode', rx, subMode: v };
     }),
+    makeRxParser('FP$', (arg, rx) => {
+      const v = parseIntStrict(arg);
+      return v === null || v < 1 || v > 3 ? null : { kind: 'filterPreset', rx, preset: v };
+    }),
+    makeRxParser('FP', (arg, rx) => {
+      const v = parseIntStrict(arg);
+      return v === null || v < 1 || v > 3 ? null : { kind: 'filterPreset', rx, preset: v };
+    }),
     makeRxParser('BW$', (arg, rx) => {
       const v = parseIntStrict(arg);
       return v === null ? null : { kind: 'bw', rx, bwHz: v * 10 };
@@ -998,6 +1006,12 @@
     bw(rx, bwHz) {
       const units = Math.round(clamp(Number(bwHz), 50, 5000) / 10);
       return 'BW' + rxDollar(rx) + String(units).padStart(4, '0') + ';';
+    },
+    filterPreset(rx, n) {
+      return 'FP' + rxDollar(rx) + clamp(Math.round(Number(n)), 1, 3) + ';';
+    },
+    filterNormalize(rx) {
+      return 'FP' + rxDollar(rx) + '~;';
     },
     ifShift(rx, hz) {
       const units = Math.round(clamp(Number(hz), 0, 5000) / 10);

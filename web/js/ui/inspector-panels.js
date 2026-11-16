@@ -695,6 +695,30 @@
       });
       filterCard.appendChild(this._refs.bwSlider.row);
 
+      const flRow = el('div', 'k4-pill-grid');
+      flRow.dataset.testid = 'filter-preset-group';
+      this._refs.flBtns = [];
+      for (let n = 1; n <= 3; n++) {
+        const btn = el('button', 'k4-choice-pill', `FL${n}`);
+        btn.type = 'button';
+        btn.dataset.testid = `filter-preset-${n}`;
+        btn.title = `Filter preset ${n} for the current mode (FP${n})`;
+        btn.addEventListener('click', () => {
+          if (typeof this.client.setFilterPreset === 'function') this.client.setFilterPreset(this.getTargetRx(), n);
+        });
+        flRow.appendChild(btn);
+        this._refs.flBtns.push(btn);
+      }
+      const normBtn = el('button', 'k4-choice-pill', 'NORM');
+      normBtn.type = 'button';
+      normBtn.dataset.testid = 'filter-norm-btn';
+      normBtn.title = "Reset passband to the mode's nominal width and shift (FP~)";
+      normBtn.addEventListener('click', () => {
+        if (typeof this.client.normalizeFilter === 'function') this.client.normalizeFilter(this.getTargetRx());
+      });
+      flRow.appendChild(normBtn);
+      filterCard.appendChild(flRow);
+
       const bwPresetGrid = el('div', 'k4-pill-grid');
       const bwPresets = [250, 500, 2400, 2800];
       for (let i = 0; i < bwPresets.length; i++) {
@@ -3218,6 +3242,15 @@
         const bw = Number(rxS.bwHz ?? 2700);
         const bwStr = bw >= 1000 ? `${(bw / 1000).toFixed(2).replace(/0$/, '')}k` : `${bw}`;
         this._refs.dspTrapMeta.textContent = `BW ${bwStr} · IS ${Math.round(rxS.ifShiftHz ?? 1500)}`;
+      }
+
+      if (this._refs.flBtns) {
+        const cur = Number(rxS.filterPreset ?? 1);
+        this._refs.flBtns.forEach((b, i) => {
+          const on = i + 1 === cur;
+          b.classList.toggle('is-active', on);
+          b.setAttribute('aria-pressed', on ? 'true' : 'false');
+        });
       }
 
       // DSP sliders & toggles

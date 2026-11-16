@@ -2853,6 +2853,28 @@ def run_http_origin_and_screenshots(
         "Restored BW 2700 Hz after trapezoid check",
     )
 
+    # 2b. Filter presets (FP) and NORM (FP~): buttons visible, click round-trips through the sim
+    norm_vis = client.execute_script(
+        """
+        const vis = (s) => { const e = document.querySelector(s); if (!e) return false; const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+        return { fl: vis('[data-testid="filter-preset-2"]'), norm: vis('[data-testid="filter-norm-btn"]') };
+        """
+    )
+    assert norm_vis["fl"] and norm_vis["norm"], f"FL1..3 / NORM buttons must be visible in DSP pane: {norm_vis}"
+    client.execute_script("document.querySelector('[data-testid=\"filter-preset-2\"]').click();")
+    wait_until(
+        lambda: client.execute_script("return globalThis.k4App.state.getSnapshot().rxA.filterPreset === 2;"),
+        "FL2 click sets rxA.filterPreset=2 via FP2;",
+    )
+    client.execute_script("globalThis.k4App.client.setFilter('A', { bwHz: 300 });")
+    client.execute_script("document.querySelector('[data-testid=\"filter-norm-btn\"]').click();")
+    wait_until(
+        lambda: client.execute_script(
+            "const s = globalThis.k4App.state.getSnapshot().rxA; return s.bwHz !== 300 && s.filterPreset === 1;"
+        ),
+        "NORM click restores nominal BW and FL1 via FP~;",
+    )
+
     # 3. Side-by-side S-meters (SB1, ticks on both, no MTR, click toggles Mini-Pan A) + Split TX bar placement
     client.execute_script("globalThis.k4App.client.setSubRx(true);")
     wait_until(

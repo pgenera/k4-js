@@ -153,3 +153,23 @@ func TestBandSwitchRecentersInFixedTune(t *testing.T) {
 	r.HandleCAT("BN06;", 0.6) // Switch VFO A to 17m (18100000)
 	assertSlicePanState(t, r, 'A', 18100000, 18100000, 0)
 }
+
+func TestFilterPresetAndNormalize(t *testing.T) {
+	r := NewRadio()
+	r.HandleCAT("MD3;BW0100;IS0120;FP2;", 0.1)
+	if r.RxA.FilterPreset != 2 {
+		t.Fatalf("FP2 should select preset 2, got %d", r.RxA.FilterPreset)
+	}
+	r.HandleCAT("FP$3;", 0.2)
+	if r.RxB.FilterPreset != 3 || r.RxA.FilterPreset != 2 {
+		t.Fatalf("FP$3 should affect only RX B: A=%d B=%d", r.RxA.FilterPreset, r.RxB.FilterPreset)
+	}
+	r.HandleCAT("FP9;", 0.3)
+	if r.RxA.FilterPreset != 2 {
+		t.Fatalf("out-of-range preset must be ignored, got %d", r.RxA.FilterPreset)
+	}
+	r.HandleCAT("FP~;", 0.4)
+	if r.RxA.BwHz != 500 || r.RxA.IfShiftHz != 1500 || r.RxA.FilterPreset != 1 {
+		t.Fatalf("FP~ should restore CW nominal passband: bw=%d is=%d fl=%d", r.RxA.BwHz, r.RxA.IfShiftHz, r.RxA.FilterPreset)
+	}
+}
