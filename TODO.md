@@ -112,6 +112,6 @@ Verified independently: `go -C sim test` passes, `tests/e2e_verify.py` passes (4
 
 ## 5. Fixes after first real-radio session (2026-11-16)
 - [x] **NORM and FL1-3 were documented but missing.** Added `FL1`/`FL2`/`FL3` and `NORM` buttons to the DSP pane (`filter-preset-group`, `filter-norm-btn`), the `FP` parser and builders, `rx.filterPreset` state, client `setFilterPreset`/`normalizeFilter`, simulator support and tests. The command is `FP~;` per the Programmer's Reference, not `IS 9999;` as the checklist said.
-- [ ] **Confirm sub-receiver addressing of `FP`** (`FP$n;` vs B SET) on the real radio; see `docs/hardware-verification.md` item 4.
-- [ ] **Tap the filter graphic on the VFO to cycle FL1-3**, as on the K4; currently the graphic opens the DSP tab and the wheel adjusts BW.
+- [x] **Sub-receiver addressing of `FP` confirmed on a real K4** (2026-11-16): `FP$n;` / `FP$~;` work for sub, `FPn;` / `FP~;` for main, `NORM` and `FL1-3` work on both, and the radio echoes preset changes made on the front panel, including by tapping the filter graphic beside each VFO.
+- [ ] **Tap the filter graphic on the VFO to cycle FL1-3**, as on the K4 (confirmed to send echoes we already handle); currently the graphic opens the DSP tab and the wheel adjusts BW.
 - [ ] **Show `FLn` under each VFO's filter graphic** (K4 shows `FL1`/`FL2`/`FL3` beneath the trapezoid).
