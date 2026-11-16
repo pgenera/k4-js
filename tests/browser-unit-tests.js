@@ -116,6 +116,27 @@
   });
 
   // 3. CatCodec TB/TB$ literal semicolons & Sub-RX $ longest-prefix matching
+  test('MemoryStore quick (per band) and general channels round-trip', () => {
+    const MS = K4.MemoryStore;
+    const saved = K4.storage.get('memories', null);
+    try {
+      K4.storage.set('memories', {});
+      assertEqual(MS.getQuick('20m', 1), null, 'empty quick slot');
+      assertEqual(MS.setQuick('20m', 2, { freqHz: 14074000, mode: 6, dataSubMode: 0, bwHz: 2700 }), true, 'store quick');
+      assertEqual(MS.getQuick('20m', 2).freqHz, 14074000, 'recall quick');
+      assertEqual(MS.getQuick('40m', 2), null, 'quick slots are per band');
+      assertEqual(MS.setQuick('20m', 5, { freqHz: 14074000 }), false, 'slot 5 rejected');
+      assertEqual(MS.setChannel(200, { freqHz: 7074000, mode: 2 }), true, 'channel 200 ok');
+      assertEqual(MS.setChannel(201, { freqHz: 7074000 }), false, 'channel 201 rejected');
+      assertEqual(MS.setChannel(1, { freqHz: 5 }), false, 'out-of-range frequency rejected');
+      assertEqual(MS.getChannel(200).mode, 2, 'channel mode');
+      MS.clearChannel(200);
+      assertEqual(MS.getChannel(200), null, 'cleared channel');
+    } finally {
+      K4.storage.set('memories', saved === null ? {} : saved);
+    }
+  });
+
   test('CatCodec TB$ literal semicolons & $ Sub-RX longest-prefix', () => {
     const K4 = globalThis.K4;
     const raw = 'FA00014074000;TB020CQ DE W6ELE K ; 73 ;;TB$020CQ DE W6ELE K ; 73 ;;SMH$-091;MD$3;BW$0050;#SPN$24000;#SPN46;MXAB.AB;';

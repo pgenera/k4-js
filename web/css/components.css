@@ -4150,3 +4150,25 @@
     scroll-behavior: auto !important;
   }
 }
+
+/* Frequency memories (BAND tab) */
+.k4-mem-pill {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.k4-mem-pill.is-empty,
+.k4-mem-ch.is-empty {
+  color: var(--text-muted);
+}
+.k4-mem-channel {
+  display: grid;
+  grid-template-columns: auto 30px minmax(0, 1fr) 30px;
+  gap: 5px;
+  margin-top: 5px;
+}
+.k4-mem-ch {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}

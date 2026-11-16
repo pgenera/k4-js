@@ -148,6 +148,95 @@
   /**
    * Persistent amateur-band memory & frequency bookmark store backed by K4.storage.
    */
+  /**
+   * Browser-side frequency memories modeled on the K4's: 4 quick memories (M1-M4)
+   * per band and 200 general-purpose channels. These are NOT the radio's own
+   * memories: the Programmer's Reference lists MC (Memory Channel) as TBD.
+   */
+  const MEMORY_CHANNELS = 200;
+  const memoryListeners = new Set();
+
+  function sanitizeMemory(m) {
+    const freqHz = Math.round(Number(m && m.freqHz));
+    if (!Number.isFinite(freqHz) || freqHz < 100000 || freqHz > 54000000) return null;
+    return {
+      freqHz,
+      mode: Number.isFinite(Number(m.mode)) ? Number(m.mode) : 2,
+      dataSubMode: Number.isFinite(Number(m.dataSubMode)) ? Number(m.dataSubMode) : 0,
+      bwHz: Number.isFinite(Number(m.bwHz)) ? Number(m.bwHz) : 2400,
+    };
+  }
+
+  function loadMemories() {
+    const stored = K4.storage.get('memories', null);
+    const out = {};
+    if (stored && typeof stored === 'object') {
+      for (const key of Object.keys(stored)) {
+        const clean = sanitizeMemory(stored[key]);
+        if (clean) out[key] = clean;
+      }
+    }
+    return out;
+  }
+
+  function memoryKey(kind, a, b) {
+    if (kind === 'quick') {
+      const slot = Math.round(Number(b));
+      if (!a || !(slot >= 1 && slot <= 4)) return null;
+      return `q:${a}:${slot}`;
+    }
+    const ch = Math.round(Number(a));
+    return ch >= 1 && ch <= MEMORY_CHANNELS ? `g:${ch}` : null;
+  }
+
+  K4.MemoryStore = {
+    CHANNELS: MEMORY_CHANNELS,
+    getQuick(bandLabel, slot) {
+      const k = memoryKey('quick', bandLabel, slot);
+      return k ? loadMemories()[k] || null : null;
+    },
+    setQuick(bandLabel, slot, entry) {
+      return this._set(memoryKey('quick', bandLabel, slot), entry);
+    },
+    getChannel(ch) {
+      const k = memoryKey('general', ch);
+      return k ? loadMemories()[k] || null : null;
+    },
+    setChannel(ch, entry) {
+      return this._set(memoryKey('general', ch), entry);
+    },
+    clearChannel(ch) {
+      const k = memoryKey('general', ch);
+      if (!k) return false;
+      const all = loadMemories();
+      delete all[k];
+      K4.storage.set('memories', all);
+      this._emit(all);
+      return true;
+    },
+    _set(key, entry) {
+      const clean = sanitizeMemory(entry);
+      if (!key || !clean) return false;
+      const all = loadMemories();
+      all[key] = clean;
+      K4.storage.set('memories', all);
+      this._emit(all);
+      return true;
+    },
+    _emit(all) {
+      for (const fn of memoryListeners) {
+        try {
+          fn(all);
+        } catch (_) {}
+      }
+    },
+    subscribe(fn) {
+      if (typeof fn !== 'function') return () => {};
+      memoryListeners.add(fn);
+      return () => memoryListeners.delete(fn);
+    },
+  };
+
   K4.BookmarkStore = {
     list() {
       return loadBookmarksRaw();

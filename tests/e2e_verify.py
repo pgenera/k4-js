@@ -2875,6 +2875,29 @@ def run_http_origin_and_screenshots(
         "NORM click restores nominal BW and FL1 via FP~;",
     )
 
+    # 2c. Frequency memories in the BAND tab: store a quick memory, retune, recall it
+    client.execute_script("globalThis.k4App.inspector.selectDesktopTab('band-mode');")
+    mem_vis = client.execute_script(
+        """
+        const vis = (s) => { const e = document.querySelector(s); if (!e) return false; const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+        return { card: vis('[data-testid="memory-card"]'), q1: vis('[data-testid="mem-quick-1"]'), ch: vis('[data-testid="mem-channel"]') };
+        """
+    )
+    assert all(mem_vis.values()), f"Memory card, M1 and channel buttons must be visible in BAND tab: {mem_vis}"
+    f0 = client.execute_script("return globalThis.k4App.state.getSnapshot().rxA.freqHz;")
+    client.execute_script("document.querySelector('[data-testid=\"mem-store\"]').click(); document.querySelector('[data-testid=\"mem-quick-1\"]').click();")
+    client.execute_script("globalThis.k4App.client.tune('A', arguments[0] + 5000, { optimistically: true });", [f0])
+    wait_until(
+        lambda: client.execute_script("return globalThis.k4App.state.getSnapshot().rxA.freqHz === arguments[0] + 5000;", [f0]),
+        "Retuned away from stored quick memory",
+    )
+    client.execute_script("document.querySelector('[data-testid=\"mem-rcl\"]').click(); document.querySelector('[data-testid=\"mem-quick-1\"]').click();")
+    wait_until(
+        lambda: client.execute_script("return globalThis.k4App.state.getSnapshot().rxA.freqHz === arguments[0];", [f0]),
+        "Quick memory M1 recalls the stored frequency",
+    )
+    client.execute_script("globalThis.k4App.inspector.selectDesktopTab('dsp');")
+
     # 3. Side-by-side S-meters (SB1, ticks on both, no MTR, click toggles Mini-Pan A) + Split TX bar placement
     client.execute_script("globalThis.k4App.client.setSubRx(true);")
     wait_until(

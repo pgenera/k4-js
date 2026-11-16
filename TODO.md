@@ -115,3 +115,8 @@ Verified independently: `go -C sim test` passes, `tests/e2e_verify.py` passes (4
 - [x] **Sub-receiver addressing of `FP` confirmed on a real K4** (2026-11-16): `FP$n;` / `FP$~;` work for sub, `FPn;` / `FP~;` for main, `NORM` and `FL1-3` work on both, and the radio echoes preset changes made on the front panel, including by tapping the filter graphic beside each VFO.
 - [ ] **Tap the filter graphic on the VFO to cycle FL1-3**, as on the K4 (confirmed to send echoes we already handle); currently the graphic opens the DSP tab and the wheel adjusts BW.
 - [ ] **Show `FLn` under each VFO's filter graphic** (K4 shows `FL1`/`FL2`/`FL3` beneath the trapezoid).
+
+## 6. Memories
+- [x] **Frequency memories card in the BAND tab**: RCL/STORE selector, per-band quick memories M1-M4, and a 200-channel memory stepper (`K4.MemoryStore`, saved in this browser). Recall retunes the target receiver and sets mode, data submode and BW; STORE captures the target receiver's current state.
+- [ ] **Use the radio's own memories when possible.** The Programmer's Reference lists `MC` (Memory Channel) and `MB` (Message Bank) as pending/TBD, so these memories are browser-only. Revisit when Elecraft documents them, and keep the card's layout so the backend can switch.
+- [ ] **Export/import memories** (JSON) so they can move between browsers, and consider a clear/delete action for individual channels.
