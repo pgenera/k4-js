@@ -177,6 +177,7 @@ uniform sampler2D u_lutTex;
 uniform sampler2D u_metaTex;
 uniform int u_writeRow;
 uniform int u_filledRows;
+uniform int u_liveRows;
 uniform int u_binCount;
 uniform float u_visibleRows;
 uniform int u_ringHeight;
@@ -198,7 +199,15 @@ void main() {
   int binIdx = clamp(int(floor(tierU * float(u_binCount))), 0, u_binCount - 1);
   float val = texelFetch(u_wfTex, ivec2(binIdx, ringRow), 0).r;
   int lutIdx = clamp(int(floor(val * 255.0 + 0.5)), 0, 255);
-  fragColor = texelFetch(u_lutTex, ivec2(lutIdx, 0), 0);
+  vec4 baseCol = texelFetch(u_lutTex, ivec2(lutIdx, 0), 0);
+  if (rowAge >= u_liveRows) {
+    vec4 bgCol = texelFetch(u_lutTex, ivec2(0, 0), 0);
+    int stripe = (int(gl_FragCoord.x) + int(gl_FragCoord.y)) % 8;
+    float t = stripe < 2 ? 0.22 : 0.42;
+    fragColor = vec4(mix(bgCol.rgb, baseCol.rgb, t), 1.0);
+    return;
+  }
+  fragColor = baseCol;
 }`;
 
   const SPEC_VERT_SRC = `#version 300 es
@@ -2853,6 +2862,7 @@ void main() {
         binCount: DEFAULT_BINS,
         writeRow: 0,
         filledRows: 0,
+        liveRows: 0,
         rowCenters: new Float64Array(RING_HEIGHT),
         rowTierSpans: new Float64Array(RING_HEIGHT),
         metaUpload: new Float32Array(RING_HEIGHT * 2),
@@ -2879,6 +2889,7 @@ void main() {
         u_metaTex: gl.getUniformLocation(this.wfProg, 'u_metaTex'),
         u_writeRow: gl.getUniformLocation(this.wfProg, 'u_writeRow'),
         u_filledRows: gl.getUniformLocation(this.wfProg, 'u_filledRows'),
+        u_liveRows: gl.getUniformLocation(this.wfProg, 'u_liveRows'),
         u_binCount: gl.getUniformLocation(this.wfProg, 'u_binCount'),
         u_visibleRows: gl.getUniformLocation(this.wfProg, 'u_visibleRows'),
         u_ringHeight: gl.getUniformLocation(this.wfProg, 'u_ringHeight'),
@@ -3011,6 +3022,7 @@ void main() {
         ring.binCount = uint8Row.length;
         ring.writeRow = 0;
         ring.filledRows = 0;
+        ring.liveRows = 0;
         ring.metaFullDirty = true;
         ring.metaUploaded = false;
         ring.metaViewKey = '';
@@ -3030,6 +3042,7 @@ void main() {
       gl.bindTexture(gl.TEXTURE_2D, ring.wfTex);
 
       if (ring.filledRows === 0) {
+        ring.liveRows = 0;
         const neededBytes = ring.binCount * RING_HEIGHT;
         if (!this._zeroWfClearBuf || this._zeroWfClearBuf.length !== neededBytes) {
           this._zeroWfClearBuf = new Uint8Array(neededBytes);
@@ -3086,6 +3099,9 @@ void main() {
       if (ring.filledRows < RING_HEIGHT) {
         ring.filledRows++;
       }
+      if ((ring.liveRows || 0) < RING_HEIGHT) {
+        ring.liveRows = (ring.liveRows || 0) + 1;
+      }
     }
 
     clearWaterfall(paneKey) {
@@ -3095,6 +3111,7 @@ void main() {
         const ring = this._panes[keys[i]];
         ring.writeRow = 0;
         ring.filledRows = 0;
+        ring.liveRows = 0;
         ring.rowCenters.fill(0);
         ring.rowTierSpans.fill(0);
         ring.metaFullDirty = true;
@@ -3106,6 +3123,8 @@ void main() {
           const neededBytes = ring.binCount * RING_HEIGHT;
           if (!this._zeroWfClearBuf || this._zeroWfClearBuf.length !== neededBytes) {
             this._zeroWfClearBuf = new Uint8Array(neededBytes);
+          } else {
+            this._zeroWfClearBuf.fill(0);
           }
           gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
           gl.bindTexture(gl.TEXTURE_2D, ring.wfTex);
@@ -3445,6 +3464,7 @@ void main() {
 
       gl.uniform1i(this.wfLoc.u_writeRow, ring.writeRow);
       gl.uniform1i(this.wfLoc.u_filledRows, ring.filledRows);
+      gl.uniform1i(this.wfLoc.u_liveRows, ring.liveRows || 0);
       gl.uniform1i(this.wfLoc.u_binCount, ring.binCount);
       gl.uniform1f(
         this.wfLoc.u_visibleRows,
@@ -3565,6 +3585,7 @@ void main() {
         binCount: DEFAULT_BINS,
         writeRow: 0,
         filledRows: 0,
+        liveRows: 0,
         indexRing: new Uint8Array(DEFAULT_BINS * RING_HEIGHT),
         rowCenters: new Float64Array(RING_HEIGHT),
         rowTierSpans: new Float64Array(RING_HEIGHT),
@@ -3583,21 +3604,42 @@ void main() {
         : new Uint8Array(1024);
       this._lutBytes = lut;
       const packed = new Uint32Array(256);
+      const dimLo = new Uint32Array(256);
+      const dimHi = new Uint32Array(256);
       // Detect host endianness cleanly via DataView
       const testBuf = new ArrayBuffer(4);
       new Uint8Array(testBuf).set([1, 2, 3, 4]);
       const isLittleEndian = new Uint32Array(testBuf)[0] === 0x04030201;
+      const packRgba = (r, g, b, a) =>
+        isLittleEndian
+          ? ((a << 24) | (b << 16) | (g << 8) | r) >>> 0
+          : ((r << 24) | (g << 16) | (b << 8) | a) >>> 0;
+      const bgR = lut[0];
+      const bgG = lut[1];
+      const bgB = lut[2];
       for (let i = 0; i < 256; i++) {
         const off = i * 4;
         const r = lut[off];
         const g = lut[off + 1];
         const b = lut[off + 2];
         const a = lut[off + 3];
-        packed[i] = isLittleEndian
-          ? ((a << 24) | (b << 16) | (g << 8) | r) >>> 0
-          : ((r << 24) | (g << 16) | (b << 8) | a) >>> 0;
+        packed[i] = packRgba(r, g, b, a);
+        dimLo[i] = packRgba(
+          Math.round(bgR + (r - bgR) * 0.22),
+          Math.round(bgG + (g - bgG) * 0.22),
+          Math.round(bgB + (b - bgB) * 0.22),
+          a
+        );
+        dimHi[i] = packRgba(
+          Math.round(bgR + (r - bgR) * 0.42),
+          Math.round(bgG + (g - bgG) * 0.42),
+          Math.round(bgB + (b - bgB) * 0.42),
+          a
+        );
       }
       this._packedLut = packed;
+      this._dimLutLo = dimLo;
+      this._dimLutHi = dimHi;
     }
 
     setPalette(name) {
@@ -3618,6 +3660,7 @@ void main() {
         ring.indexRing = new Uint8Array(ring.binCount * RING_HEIGHT);
         ring.writeRow = 0;
         ring.filledRows = 0;
+        ring.liveRows = 0;
       }
 
       const nextCenter =
@@ -3628,6 +3671,7 @@ void main() {
           : 0;
 
       if (ring.filledRows === 0) {
+        ring.liveRows = 0;
         seedWaterfallRingNoise(uint8Row, ring.binCount, RING_HEIGHT, ring.indexRing);
         ring.rowCenters.fill(nextCenter);
         ring.rowTierSpans.fill(nextSpan);
@@ -3642,6 +3686,9 @@ void main() {
       if (ring.filledRows < RING_HEIGHT) {
         ring.filledRows++;
       }
+      if ((ring.liveRows || 0) < RING_HEIGHT) {
+        ring.liveRows = (ring.liveRows || 0) + 1;
+      }
       ring.dirty = true;
     }
 
@@ -3651,6 +3698,7 @@ void main() {
         const ring = this._panes[keys[i]];
         ring.writeRow = 0;
         ring.filledRows = 0;
+        ring.liveRows = 0;
         ring.indexRing.fill(0);
         ring.rowCenters.fill(0);
         ring.rowTierSpans.fill(0);
@@ -3790,7 +3838,7 @@ void main() {
       const tierKHz =
         paneState && Number.isFinite(paneState.tierKHz) ? paneState.tierKHz : 48;
 
-      const viewKey = `${w}x${visRows}|${viewCenterHz}|${userSpanHz}|${tierKHz}`;
+      const viewKey = `${w}x${visRows}|${viewCenterHz}|${userSpanHz}|${tierKHz}|${ring.liveRows || 0}`;
       if (ring.wfCanvas.width !== w || ring.wfCanvas.height !== visRows) {
         ring.wfCanvas.width = w;
         ring.wfCanvas.height = visRows;
@@ -3805,6 +3853,8 @@ void main() {
         ring.lastKey = viewKey;
         const px32 = ring.wfPixels32;
         const packed = this._packedLut;
+        const dimLo = this._dimLutLo || packed;
+        const dimHi = this._dimLutHi || packed;
         const bgColor = packed[0];
         const crop = computeViewportCropInto(
           this._cropScratch,
@@ -3816,6 +3866,7 @@ void main() {
         const viewLeftHz = viewCenterHz - userSpanHz * 0.5;
         const binCount = ring.binCount;
         const indexRing = ring.indexRing;
+        const liveRows = ring.liveRows || 0;
 
         for (let y = 0; y < visRows; y++) {
           const rowStart = y * w;
@@ -3823,6 +3874,7 @@ void main() {
             px32.fill(bgColor, rowStart, rowStart + w);
             continue;
           }
+          const isLive = y < liveRows;
           const ringRow =
             ((ring.writeRow - 1 - y) % RING_HEIGHT + RING_HEIGHT) % RING_HEIGHT;
           const rSpan = ring.rowTierSpans[ringRow];
@@ -3842,7 +3894,10 @@ void main() {
               px32[rowStart + x] = bgColor;
             } else {
               const binIdx = Math.min(binCount - 1, Math.floor(tierU * binCount));
-              px32[rowStart + x] = packed[indexRing[srcOff + binIdx]];
+              const lutIdx = indexRing[srcOff + binIdx];
+              px32[rowStart + x] = isLive
+                ? packed[lutIdx]
+                : (((x + y * 2) & 7) < 2 ? dimLo[lutIdx] : dimHi[lutIdx]);
             }
           }
         }

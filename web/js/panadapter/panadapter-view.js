@@ -988,9 +988,12 @@
       const rxSnap = (activeKey === 'B' ? snap.rxB : snap.rxA) || {};
       const vp = this._resolvePaneViewport(activeKey, rxSnap);
       const tierKHz = activePane.tierKHz || rxSnap.panTierKHz || 48;
+      const paneRing =
+        this._renderer && this._renderer._panes ? this._renderer._panes[activeKey] : null;
 
       return {
         framesRendered: this._framesRendered,
+        liveRows: paneRing ? paneRing.liveRows || 0 : 0,
         rendererType: this._renderer.type,
         lastClickFreqHz: this._lastClickFreqHz,
         streamCenterHz: vp.streamCenterHz,
@@ -1046,6 +1049,18 @@
         return Object.assign({}, globalThis.__k4Perf || {});
       }
       return this._renderer.getPerfCounters();
+    }
+
+    /**
+     * Clear waterfall ring history so no synthetic pre-seed remains while offline or switching bands.
+     * @param {'A'|'B'} [rx]
+     */
+    clearWaterfall(rx) {
+      if (this._destroyed || !this._renderer || typeof this._renderer.clearWaterfall !== 'function') {
+        return;
+      }
+      this._renderer.clearWaterfall(rx);
+      this._scheduleRender();
     }
 
     resize() {
