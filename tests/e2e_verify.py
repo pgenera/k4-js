@@ -6,15 +6,18 @@ Pure Python 3 stdlib (Marionette TCP protocol + HTTP /debug/stats + subprocesses
 
 import argparse
 import base64
+import hashlib
 import json
 import os
 import re
 import shutil
 import socket
+import struct
 import subprocess
 import sys
 import tempfile
 import time
+import urllib.parse
 import urllib.request
 
 
@@ -58,11 +61,307 @@ def wait_until(pred, desc: str, timeout: float = 12.0, interval: float = 0.1):
     )
 
 
-def http_get_json(url: str) -> dict:
+def http_get_json(url: str):
     with urllib.request.urlopen(url, timeout=3.0) as resp:
         if resp.status != 200:
             raise AssertionError(f"GET {url} returned HTTP {resp.status}")
         return json.loads(resp.read().decode("utf-8"))
+
+
+def find_chrome_binary(explicit_path: str | None = None) -> str | None:
+    if explicit_path:
+        return explicit_path if os.path.isfile(explicit_path) and os.access(explicit_path, os.X_OK) else None
+    candidates = [
+        shutil.which("google-chrome"),
+        shutil.which("google-chrome-stable"),
+        shutil.which("chromium"),
+        shutil.which("chromium-browser"),
+        "/opt/google/chrome/chrome",
+        "/usr/bin/google-chrome",
+        "/usr/bin/chromium",
+        "/usr/bin/chromium-browser",
+    ]
+    for path in candidates:
+        if path and os.path.isfile(path) and os.access(path, os.X_OK):
+            return path
+    return None
+
+
+class StdlibWsClient:
+    """Minimal pure-stdlib RFC 6455 text WebSocket client for headless Chrome CDP."""
+
+    def __init__(self, ws_url: str, timeout: float = 15.0):
+        parsed = urllib.parse.urlparse(ws_url)
+        host = parsed.hostname or "127.0.0.1"
+        port = parsed.port or 80
+        path = parsed.path or "/"
+        if parsed.query:
+            path = f"{path}?{parsed.query}"
+        self.sock = socket.create_connection((host, port), timeout=timeout)
+        self.sock.settimeout(timeout)
+        self._buf = bytearray()
+
+        ws_key = base64.b64encode(os.urandom(16)).decode("ascii")
+        req = (
+            f"GET {path} HTTP/1.1\r\n"
+            f"Host: {host}:{port}\r\n"
+            f"Upgrade: websocket\r\n"
+            f"Connection: Upgrade\r\n"
+            f"Sec-WebSocket-Key: {ws_key}\r\n"
+            f"Sec-WebSocket-Version: 13\r\n\r\n"
+        ).encode("ascii")
+        self.sock.sendall(req)
+
+        while b"\r\n\r\n" not in self._buf:
+            chunk = self.sock.recv(8192)
+            if not chunk:
+                raise ConnectionError("WebSocket closed during CDP HTTP upgrade")
+            self._buf.extend(chunk)
+        hdr_end = self._buf.index(b"\r\n\r\n")
+        hdr = bytes(self._buf[:hdr_end]).decode("latin1")
+        del self._buf[: hdr_end + 4]
+        if " 101 " not in hdr.splitlines()[0]:
+            raise RuntimeError(f"CDP WebSocket upgrade failed: {hdr.splitlines()[0]}")
+
+    def _read_exact(self, n: int) -> bytes:
+        while len(self._buf) < n:
+            chunk = self.sock.recv(max(8192, n - len(self._buf)))
+            if not chunk:
+                raise ConnectionError("CDP WebSocket closed prematurely")
+            self._buf.extend(chunk)
+        out = bytes(self._buf[:n])
+        del self._buf[:n]
+        return out
+
+    def _send_frame(self, opcode: int, payload: bytes):
+        mask = os.urandom(4)
+        length = len(payload)
+        header = bytearray([0x80 | (opcode & 0x0F)])
+        if length < 126:
+            header.append(0x80 | length)
+        elif length < 65536:
+            header.append(0x80 | 126)
+            header.extend(struct.pack("!H", length))
+        else:
+            header.append(0x80 | 127)
+            header.extend(struct.pack("!Q", length))
+        header.extend(mask)
+        masked = bytearray(length)
+        for i, b in enumerate(payload):
+            masked[i] = b ^ mask[i & 3]
+        self.sock.sendall(bytes(header) + bytes(masked))
+
+    def send_text(self, text: str):
+        self._send_frame(0x1, text.encode("utf-8"))
+
+    def recv_text(self) -> str:
+        fragments = bytearray()
+        while True:
+            b1, b2 = self._read_exact(2)
+            fin = bool(b1 & 0x80)
+            opcode = b1 & 0x0F
+            masked = bool(b2 & 0x80)
+            length = b2 & 0x7F
+            if length == 126:
+                length = struct.unpack("!H", self._read_exact(2))[0]
+            elif length == 127:
+                length = struct.unpack("!Q", self._read_exact(8))[0]
+            mask_key = self._read_exact(4) if masked else None
+            payload = bytearray(self._read_exact(length))
+            if mask_key:
+                for i in range(length):
+                    payload[i] ^= mask_key[i & 3]
+
+            if opcode == 0x8:
+                raise ConnectionError("CDP WebSocket closed by peer")
+            if opcode == 0x9:
+                self._send_frame(0xA, bytes(payload))
+                continue
+            if opcode == 0xA:
+                continue
+            fragments.extend(payload)
+            if fin:
+                return fragments.decode("utf-8")
+
+    def close(self):
+        try:
+            self.sock.close()
+        except Exception:
+            pass
+
+
+class CDPClient:
+    """Minimal pure-stdlib Chrome DevTools Protocol client for Firefox-free E2E checks."""
+
+    def __init__(self, ws_url: str, timeout: float = 20.0):
+        self.ws = StdlibWsClient(ws_url, timeout=timeout)
+        self._msg_id = 0
+        self.console_errors: list[dict] = []
+        self.call("Page.enable")
+        self.call("Runtime.enable")
+        self.call("Log.enable")
+
+    def call(self, method: str, params: dict | None = None) -> dict:
+        self._msg_id += 1
+        req_id = self._msg_id
+        self.ws.send_text(json.dumps({"id": req_id, "method": method, "params": params or {}}))
+        while True:
+            msg = json.loads(self.ws.recv_text())
+            if msg.get("id") == req_id:
+                if "error" in msg:
+                    raise RuntimeError(f"CDP {method} error: {msg['error']}")
+                return msg.get("result", {})
+            ev_method = msg.get("method")
+            ev_params = msg.get("params") or {}
+            if ev_method == "Runtime.exceptionThrown":
+                details = ev_params.get("exceptionDetails") or {}
+                self.console_errors.append(
+                    {
+                        "source": "cdp-exception",
+                        "message": details.get("text") or "Uncaught exception",
+                        "file": details.get("url") or "",
+                        "line": details.get("lineNumber") or 0,
+                    }
+                )
+            elif ev_method == "Log.entryAdded":
+                entry = ev_params.get("entry") or {}
+                if entry.get("level") == "error":
+                    self.console_errors.append(
+                        {
+                            "source": "cdp-log",
+                            "message": entry.get("text") or "",
+                            "file": entry.get("url") or "",
+                            "line": entry.get("lineNumber") or 0,
+                        }
+                    )
+
+    def navigate(self, url: str):
+        self.call("Page.navigate", {"url": url})
+        wait_until(
+            lambda: self.execute_script("return document.readyState === 'complete';"),
+            f"CDP page ready ({url})",
+            timeout=15.0,
+        )
+
+    def execute_script(self, script: str, args: list | None = None):
+        wrapped = f"(function() {{\n{script}\n}}).apply(null, {json.dumps(args or [])})"
+        res = self.call(
+            "Runtime.evaluate",
+            {"expression": wrapped, "returnByValue": True, "awaitPromise": False},
+        )
+        if "exceptionDetails" in res:
+            raise RuntimeError(f"CDP Runtime.evaluate exception: {res['exceptionDetails']}")
+        return (res.get("result") or {}).get("value")
+
+    def set_viewport_size(self, width: int, height: int):
+        self.call(
+            "Emulation.setDeviceMetricsOverride",
+            {
+                "width": int(width),
+                "height": int(height),
+                "deviceScaleFactor": 1,
+                "mobile": bool(width < 960),
+            },
+        )
+        self.execute_script("window.dispatchEvent(new Event('resize'));")
+
+    def reset_viewport_size(self):
+        self.call("Emulation.clearDeviceMetricsOverride")
+        self.execute_script("window.dispatchEvent(new Event('resize'));")
+
+    def find_element(self, css: str):
+        found = self.execute_script("return Boolean(document.querySelector(arguments[0]));", [css])
+        if not found:
+            raise AssertionError(f"CDP element not found: {css}")
+        return {"css": css}
+
+    def click_element(self, elem_ref: dict):
+        css = elem_ref["css"]
+        pos = self.execute_script(
+            """
+            const el = document.querySelector(arguments[0]);
+            if (!el) return null;
+            el.scrollIntoView({ block: 'center', inline: 'center' });
+            const r = el.getBoundingClientRect();
+            return { x: r.left + r.width / 2, y: r.top + r.height / 2, w: r.width, h: r.height };
+            """,
+            [css],
+        )
+        if not pos:
+            raise AssertionError(f"CDP element not found for click: {css}")
+        if pos["w"] <= 0 or pos["h"] <= 0:
+            self.execute_script("document.querySelector(arguments[0])?.click();", [css])
+            return
+        for ev_type in ("mousePressed", "mouseReleased"):
+            self.call(
+                "Input.dispatchMouseEvent",
+                {
+                    "type": ev_type,
+                    "x": pos["x"],
+                    "y": pos["y"],
+                    "button": "left",
+                    "clickCount": 1,
+                },
+            )
+
+    def clear_and_type(self, css: str, text: str):
+        el_ref = self.find_element(css)
+        self.click_element(el_ref)
+        self.execute_script(
+            """
+            const el = document.querySelector(arguments[0]);
+            if (el) {
+              el.focus();
+              el.value = '';
+              el.dispatchEvent(new Event('input', { bubbles: true }));
+            }
+            """,
+            [css],
+        )
+        self.call("Input.insertText", {"text": text})
+        self.execute_script(
+            "document.querySelector(arguments[0])?.dispatchEvent(new Event('change', { bubbles: true }));",
+            [css],
+        )
+
+    def take_screenshot(self, out_path: str):
+        res = self.call("Page.captureScreenshot", {"format": "png"})
+        os.makedirs(os.path.dirname(out_path), exist_ok=True)
+        with open(out_path, "wb") as f:
+            f.write(base64.b64decode(res["data"]))
+
+    def install_page_error_trap(self):
+        self.execute_script(
+            """
+            window.__k4E2ePageErrors = [];
+            window.addEventListener('error', (ev) => {
+              window.__k4E2ePageErrors.push({
+                source: 'window.error',
+                message: ev.message || String(ev.error || 'Error'),
+                file: ev.filename || '',
+                line: ev.lineno || 0,
+              });
+            });
+            window.addEventListener('unhandledrejection', (ev) => {
+              window.__k4E2ePageErrors.push({
+                source: 'unhandledrejection',
+                message: ev.reason ? (ev.reason.stack || String(ev.reason)) : 'Rejected',
+                file: '',
+                line: 0,
+              });
+            });
+            """
+        )
+
+    def reset_console_errors(self):
+        self.console_errors.clear()
+
+    def collect_console_errors(self) -> list[dict]:
+        page_errors = self.execute_script("return window.__k4E2ePageErrors || [];") or []
+        return list(self.console_errors) + list(page_errors)
+
+    def close(self):
+        self.ws.close()
 
 
 class MarionetteClient:
@@ -1802,11 +2101,15 @@ def run_http_origin_and_screenshots(
         wait_until(
             lambda exp=expected_ant: http_get_json(stats_url)["txAntenna"] == exp
             and client.execute_script(
-                "const b = document.querySelector('[data-testid=\"tx-antenna-btn\"]'); return b && b.textContent.includes('ANT ' + arguments[0]);",
+                "const b = document.querySelector('[data-testid=\"tx-antenna-btn\"]'); const t = b ? b.textContent : ''; return Boolean(b && (t.includes(arguments[0] + ':') || t.includes('ANT ' + arguments[0])));",
                 [exp],
             ),
-            f"tx-antenna-btn cycles to ANT {expected_ant}",
+            f"tx-antenna-btn cycles to antenna {expected_ant}",
         )
+    top_ant_fmt = client.execute_script(
+        "return (document.getElementById('top-ant-btn')?.textContent || '').trim();"
+    )
+    assert top_ant_fmt == "1:G5RV", f"Expected K4 antenna format '1:G5RV', got {top_ant_fmt!r}"
 
     # Switch to TX TEST (TS1): warm standby mic opens automatically + steady (non-blinking) TX Test indicators
     client.click_element(client.find_element('[data-testid="tx-mode-test"]'))
@@ -2558,6 +2861,24 @@ def run_http_origin_and_screenshots(
     )
     sb1_meters = client.execute_script(
         """
+        const parseRgb = (s) => {
+          const m = String(s || '').match(/rgba?\\(\\s*(\\d+)\\s*,\\s*(\\d+)\\s*,\\s*(\\d+)(?:\\s*,\\s*([\\d.]+))?\\s*\\)/);
+          return m ? [Number(m[1]), Number(m[2]), Number(m[3]), m[4] === undefined ? 1 : Number(m[4])] : [9, 11, 16, 1];
+        };
+        const lin = (c) => {
+          const s = c / 255;
+          return s <= 0.03928 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4);
+        };
+        const lum = (rgb) => 0.2126 * lin(rgb[0]) + 0.7152 * lin(rgb[1]) + 0.0722 * lin(rgb[2]);
+        const contrastOverBg = (fgStr, bgRgb) => {
+          const fg = parseRgb(fgStr);
+          const a = fg[3];
+          const comp = [fg[0] * a + bgRgb[0] * (1 - a), fg[1] * a + bgRgb[1] * (1 - a), fg[2] * a + bgRgb[2] * (1 - a)];
+          const l1 = lum(comp);
+          const l2 = lum(bgRgb);
+          return (Math.max(l1, l2) + 0.05) / (Math.min(l1, l2) + 0.05);
+        };
+
         const slot = document.querySelector('.k4-smeter-slot');
         const ba = document.querySelector('[data-testid="smeter-block-a"]');
         const bb = document.querySelector('[data-testid="smeter-block-b"]');
@@ -2567,15 +2888,42 @@ def run_http_origin_and_screenshots(
         const rb = bb ? bb.getBoundingClientRect() : null;
         const rta = ta ? ta.getBoundingClientRect() : null;
         const rtb = tb ? tb.getBoundingClientRect() : null;
+        const tickFontA = ta ? parseFloat(getComputedStyle(ta).fontSize) : 0;
+        const tickFontB = tb ? parseFloat(getComputedStyle(tb).fontSize) : 0;
+        const tickLabelsA = ta ? Array.from(ta.children).map((s) => s.textContent.trim()) : [];
+        const voxEl = document.getElementById('center-vox-ind');
+        const splEl = document.getElementById('center-split-ind');
+        const offIconContrast = Math.min(
+          contrastOverBg(voxEl ? getComputedStyle(voxEl).color : '', [15, 23, 42]),
+          contrastOverBg(splEl ? getComputedStyle(splEl).color : '', [15, 23, 42])
+        );
+        const vfoBDig = document.querySelector('[data-testid="vfo-b-freq"] .k4-vfo-digit');
+        const vfoBDim = document.querySelector('[data-testid="vfo-b-freq"] .k4-vfo-digit--dim');
+        const vfoBUnit = document.querySelector('#vfo-b-mount .k4-vfo-unit');
+        const vfoBEls = [vfoBDig, vfoBDim, vfoBUnit].filter(Boolean);
+        const vfoBContrast = vfoBEls.length > 0
+          ? Math.min(...vfoBEls.map((el) => contrastOverBg(getComputedStyle(el).color, [14, 19, 29])))
+          : 0;
         return {
           noMtr: !String(slot ? slot.textContent : '').includes('MTR'),
           sideBySide: Boolean(ra && rb && ra.width > 40 && rb.width > 40 && ra.right <= rb.left + 2 && Math.abs(ra.top - rb.top) < 8),
           ticksVis: Boolean(rta && rtb && rta.height > 0 && rtb.height > 0),
+          tickFontA,
+          tickFontB,
+          tickLabelsA,
+          offIconContrast,
+          vfoBContrast,
         };
         """
     )
     assert sb1_meters["noMtr"] and sb1_meters["sideBySide"] and sb1_meters["ticksVis"], (
         f"Expected side-by-side Main A & Sub B S-meters with ticks and no MTR: {sb1_meters}"
+    )
+    assert sb1_meters["tickFontA"] >= 10.0 and sb1_meters["tickFontB"] >= 10.0 and sb1_meters["tickLabelsA"] == ["S1", "5", "9", "+40"], (
+        f"Expected 10px S-meter ticks ['S1', '5', '9', '+40'] in Dual RX: {sb1_meters}"
+    )
+    assert sb1_meters["offIconContrast"] >= 3.0 and sb1_meters["vfoBContrast"] >= 4.5, (
+        f"Expected >=3.0 off-icon contrast and >=4.5 VFO B digit AA contrast: {sb1_meters}"
     )
     client.click_element(client.find_element('[data-testid="smeter-block-a"]'))
     wait_until(
@@ -2756,11 +3104,13 @@ def run_http_origin_and_screenshots(
     )
     assert not err_toasts, f"Unexpected error toasts in UI: {err_toasts}"
 
-    # Capture Desktop screenshot with BAND tab & SB1 Dual RX S-meters visible
+    # Capture Desktop screenshot with BAND tab, SB1 Dual RX S-meters & live waterfall rows visible
     client.execute_script("globalThis.k4App.inspector.selectDesktopTab('band-mode'); globalThis.k4App.client.setSubRx(true);")
     wait_until(
-        lambda: client.execute_script("return globalThis.k4App.state.getSnapshot().subRxEnabled === true;"),
-        "SB1 enabled for Dual S-meter desktop screenshot",
+        lambda: client.execute_script(
+            "return globalThis.k4App.state.getSnapshot().subRxEnabled === true && (globalThis.k4App.panadapter?.getMetrics().liveRows || 0) >= 15;"
+        ),
+        "SB1 & live waterfall rows ready for Desktop screenshot",
     )
     client.execute_script("document.querySelectorAll('.k4-toast:not([data-level=\"error\"])').forEach(e => e.remove());")
     time.sleep(0.45)
@@ -3133,17 +3483,49 @@ def run_http_origin_and_screenshots(
         lambda: client.execute_script("return globalThis.k4App.state.getSnapshot().subRxEnabled === false;"),
         "Dual RX disabled before mobile screenshot",
     )
-    # Open a mobile bottom sheet tab
+    # Open mobile Tune bottom sheet at compact 34vh snap so spectrum remains uncovered, verify resize grabber
     client.click_element(client.find_element('[data-testid="mobile-nav"] button'))
     wait_until(
         lambda: client.execute_script(
             """
             const sh = document.querySelector('[data-testid="mobile-sheet"]');
             const ops = document.querySelector('[data-testid="mobile-vfo-ops"]');
-            return sh && sh.dataset.open === 'true' && ops && ops.textContent.includes('SPLIT');
+            return sh && sh.dataset.open === 'true' && sh.dataset.snap === 'compact' && ops && ops.textContent.includes('SPLIT');
             """
         ),
-        "mobile bottom Tune sheet opens with VFO A/B/SPLIT/SUB controls",
+        "mobile bottom Tune sheet opens at compact snap with VFO A/B/SPLIT/SUB controls",
+    )
+    time.sleep(0.25)
+    tune_geom = client.execute_script(
+        """
+        const sh = document.querySelector('[data-testid="mobile-sheet"]');
+        const shR = sh ? sh.getBoundingClientRect() : null;
+        const rend = globalThis.k4App?.panadapter?._renderer;
+        const glR = document.querySelector('.k4-pan-gl')?.getBoundingClientRect();
+        const layout = rend && typeof rend.getLayouts === 'function' ? rend.getLayouts()[0] : null;
+        const specBottom = (glR && layout && layout.specRect) ? (glR.top + layout.specRect.y + layout.specRect.h) : 9999;
+        return {
+          snap: sh ? sh.dataset.snap : '',
+          sheetH: shR ? shR.height : 999,
+          maxAllowedH: window.innerHeight * 0.36,
+          specBottom,
+          sheetTop: shR ? shR.top : 0,
+        };
+        """
+    )
+    assert tune_geom["sheetH"] <= tune_geom["maxAllowedH"] and tune_geom["specBottom"] <= tune_geom["sheetTop"] + 1, (
+        f"Expected compact Tune sheet <=36vh with spectrum uncovered: {tune_geom}"
+    )
+    client.click_element(client.find_element('[data-testid="mobile-sheet-grabber"]'))
+    wait_until(
+        lambda: client.execute_script("return document.querySelector('[data-testid=\"mobile-sheet\"]')?.dataset.snap === 'mid';"),
+        "Grabber cycles Tune sheet from compact to mid",
+    )
+    client.click_element(client.find_element('[data-testid="mobile-sheet-grabber"]'))
+    client.click_element(client.find_element('[data-testid="mobile-sheet-grabber"]'))
+    wait_until(
+        lambda: client.execute_script("return document.querySelector('[data-testid=\"mobile-sheet\"]')?.dataset.snap === 'compact';"),
+        "Grabber cycles Tune sheet back to compact before screenshot",
     )
     time.sleep(0.25)
     client.execute_script("document.querySelectorAll('.k4-toast:not([data-level=\"error\"])').forEach(e => e.remove());")
@@ -3158,6 +3540,224 @@ def run_http_origin_and_screenshots(
     errs = client.collect_console_errors()
     assert not errs, f"Console errors during HTTP E2E: {errs}"
     print(f"      PASS: localhost SecureContext, all 13 UI/Sim overhaul checks + Desktop ({desktop_png}) + Mobile ({mobile_png}), 0 console errors")
+
+
+def run_chrome_cdp_e2e(
+    chrome_bin: str,
+    http_url: str,
+    http_ws_url: str,
+    password: str,
+    stats_url: str,
+    out_dir: str,
+    copy_primary_screenshots: bool = False,
+):
+    print(f"[CDP] Running Firefox-free Chrome CDP verification using {chrome_bin} ...")
+    cdp_port = pick_free_port()
+    tmp_chrome_dir = tempfile.mkdtemp(prefix="k4chrome_prof_")
+    chrome_proc = None
+    cdp = None
+    try:
+        chrome_proc = subprocess.Popen(
+            [
+                chrome_bin,
+                "--headless=new",
+                f"--remote-debugging-port={cdp_port}",
+                "--remote-allow-origins=*",
+                f"--user-data-dir={tmp_chrome_dir}",
+                "--no-first-run",
+                "--no-default-browser-check",
+                "--disable-background-networking",
+                "--use-gl=angle",
+                "--use-angle=swiftshader",
+                "--enable-webgl",
+                "--enable-unsafe-swiftshader",
+                "--autoplay-policy=no-user-gesture-required",
+                "--use-fake-ui-for-media-stream",
+                "--use-fake-device-for-media-stream",
+                "--allow-file-access-from-files",
+                "about:blank",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        wait_tcp("127.0.0.1", cdp_port, timeout=15.0)
+        ws_debug_url = wait_until(
+            lambda: next(
+                (
+                    t.get("webSocketDebuggerUrl")
+                    for t in http_get_json(f"http://127.0.0.1:{cdp_port}/json/list")
+                    if t.get("type") == "page" and t.get("webSocketDebuggerUrl")
+                ),
+                None,
+            ),
+            "Chrome CDP page target",
+            timeout=15.0,
+        )
+        cdp = CDPClient(ws_debug_url, timeout=20.0)
+
+        # 1. Unit tests in Chrome on file://
+        test_url = f"file://{os.path.join(WEB_DIR, 'test.html')}"
+        cdp.set_viewport_size(1280, 900)
+        cdp.navigate(test_url)
+        unit_res = wait_until(
+            lambda: cdp.execute_script("return globalThis.__K4_TEST_RESULTS__ || null;"),
+            "Chrome unit test completion",
+            timeout=25.0,
+        )
+        if unit_res["failed"] != 0:
+            raise AssertionError(f"Chrome browser unit test failures: {unit_res['failures']}")
+        assert not cdp.collect_console_errors(), f"Chrome unit test console errors: {cdp.collect_console_errors()}"
+        print(f"      PASS (Chrome {test_url}): {unit_res['passed']}/{unit_res['total']} unit tests passed, 0 console errors")
+
+        # 2. Live http:// origin WebGL2 + Section 4 checks + waiting for live waterfall rows before screenshot
+        cdp.reset_console_errors()
+        cdp.set_viewport_size(1440, 900)
+        cdp.navigate(http_url)
+        cdp.install_page_error_trap()
+        wait_until(
+            lambda: cdp.execute_script(
+                "const d = document.querySelector('[data-testid=\"conn-dialog\"]'); return Boolean(globalThis.k4App && d && d.dataset.open === 'true');"
+            ),
+            "Chrome K4 web app booted on localhost",
+        )
+        cdp.clear_and_type('[data-testid="ws-url-input"]', http_ws_url)
+        cdp.clear_and_type('[data-testid="password-input"]', password)
+        cdp.click_element(cdp.find_element('[data-testid="connect-submit"]'))
+        wait_until(
+            lambda: cdp.execute_script(
+                "const m = globalThis.k4App?.panadapter?.getMetrics(); return globalThis.k4App.state.getSnapshot().connection.status === 'connected' && m && m.liveRows >= 20;"
+            ),
+            "Chrome connected to k4sim with >=20 live waterfall rows",
+            timeout=20.0,
+        )
+
+        # Normalize to default state with SB1 Dual RX for Chrome desktop check + screenshot
+        cdp.execute_script("globalThis.k4App.client.sendCat('FA00014074000;FB00014025000;MD6;MD$3;BW0270;BW$0050;IS1500;IS$0500;SB1;FT0;TS0;AN1;'); globalThis.k4App.inspector.selectDesktopTab('band-mode');")
+        wait_until(
+            lambda: cdp.execute_script(
+                "const s = globalThis.k4App.state.getSnapshot(); return s.subRxEnabled === true && s.rxA.freqHz === 14074000 && s.rxB.freqHz === 14025000;"
+            ),
+            "Chrome state normalized for desktop check",
+        )
+        time.sleep(0.35)
+        chrome_desk = cdp.execute_script(
+            """
+            const pan = globalThis.k4App?.panadapter;
+            const rend = pan?._renderer;
+            const m = pan ? pan.getMetrics() : {};
+            const fontOk = Boolean(document.fonts && document.fonts.check('700 22px "K4 Tabular"', '14.074'));
+            const ta = document.querySelector('[data-testid="smeter-block-a"] .k4-smeter-ticks');
+            const tb = document.querySelector('[data-testid="smeter-block-b"] .k4-smeter-ticks');
+            const glCanvas = document.querySelector('.k4-pan-gl');
+            const layout = rend && typeof rend.getLayouts === 'function' ? rend.getLayouts()[0] : null;
+            let coverages = [];
+            if (glCanvas && layout && layout.wfRect && layout.wfRect.h > 20) {
+              const cssW = Math.round(rend.cssW || glCanvas.clientWidth || 800);
+              const cssH = Math.round(rend.cssH || glCanvas.clientHeight || 400);
+              const probe = document.createElement('canvas');
+              probe.width = cssW;
+              probe.height = cssH;
+              const pctx = probe.getContext('2d');
+              pctx.drawImage(glCanvas, 0, 0, cssW, cssH);
+              const wf = layout.wfRect;
+              const wfX = Math.max(4, Math.floor(wf.x) + 4);
+              const wfW = Math.max(20, Math.floor(wf.w) - 8);
+              for (const frac of [0.08, 0.39, 0.70]) {
+                const by = Math.floor(wf.y + wf.h * frac);
+                const bh = Math.floor(wf.h * 0.22);
+                const data = pctx.getImageData(wfX, by, wfW, bh).data;
+                let nonBg = 0;
+                for (let p = 0; p < data.length; p += 4) {
+                  if (Math.abs(data[p] - 9) + Math.abs(data[p + 1] - 11) + Math.abs(data[p + 2] - 16) > 4) nonBg++;
+                }
+                coverages.push(nonBg / Math.max(1, wfW * bh));
+              }
+            }
+            return {
+              rendererType: m.rendererType || '',
+              liveRows: m.liveRows || 0,
+              fontOk,
+              antLabel: (document.getElementById('top-ant-btn')?.textContent || '').trim(),
+              tickFontA: ta ? parseFloat(getComputedStyle(ta).fontSize) : 0,
+              tickFontB: tb ? parseFloat(getComputedStyle(tb).fontSize) : 0,
+              tickLabelsA: ta ? Array.from(ta.children).map((s) => s.textContent.trim()) : [],
+              coverages,
+            };
+            """
+        )
+        assert chrome_desk["fontOk"] and chrome_desk["liveRows"] >= 20, f"Chrome desktop check failed: {chrome_desk}"
+        assert chrome_desk["antLabel"] == "1:G5RV", f"Chrome antenna format mismatch: {chrome_desk}"
+        assert chrome_desk["tickFontA"] >= 10.0 and chrome_desk["tickFontB"] >= 10.0 and chrome_desk["tickLabelsA"] == ["S1", "5", "9", "+40"], (
+            f"Chrome Dual-RX S-meter ticks mismatch: {chrome_desk}"
+        )
+        assert len(chrome_desk["coverages"]) == 3 and all(c > 0.85 for c in chrome_desk["coverages"]), (
+            f"Chrome waterfall coverage <=85%: {chrome_desk}"
+        )
+        cdp.execute_script("document.querySelectorAll('.k4-toast:not([data-level=\"error\"])').forEach(e => e.remove());")
+        chrome_desk_png = os.path.join(out_dir, "e2e-desktop-chrome.png")
+        cdp.take_screenshot(chrome_desk_png)
+        if copy_primary_screenshots:
+            shutil.copyfile(chrome_desk_png, os.path.join(out_dir, "e2e-desktop.png"))
+
+        # 3. Chrome 390x844 mobile 2-row top bar + compact Tune sheet screenshot
+        cdp.execute_script("globalThis.k4App.client.sendCat('SB0;MD3;');")
+        cdp.set_viewport_size(390, 844)
+        wait_until(
+            lambda: cdp.execute_script(
+                "const nav = document.querySelector('[data-testid=\"mobile-nav\"]'); return window.innerWidth === 390 && nav && getComputedStyle(nav).display !== 'none';"
+            ),
+            "Chrome mobile layout ready",
+        )
+        cdp.click_element(cdp.find_element('[data-testid="mobile-nav"] button'))
+        wait_until(
+            lambda: cdp.execute_script(
+                "const sh = document.querySelector('[data-testid=\"mobile-sheet\"]'); return sh && sh.dataset.open === 'true' && sh.dataset.snap === 'compact';"
+            ),
+            "Chrome mobile Tune sheet compact open",
+        )
+        time.sleep(0.25)
+        chrome_mob = cdp.execute_script(
+            """
+            const topR = document.getElementById('top-bar')?.getBoundingClientRect();
+            const ant = document.getElementById('top-ant-btn');
+            const shR = document.querySelector('[data-testid="mobile-sheet"]')?.getBoundingClientRect();
+            const glR = document.querySelector('.k4-pan-gl')?.getBoundingClientRect();
+            const layout = globalThis.k4App?.panadapter?._renderer?.getLayouts?.()[0];
+            const specBottom = (glR && layout && layout.specRect) ? (glR.top + layout.specRect.y + layout.specRect.h) : 9999;
+            return {
+              sw: document.documentElement.scrollWidth,
+              cw: document.documentElement.clientWidth,
+              topHeight: topR ? topR.height : 999,
+              antLabel: ant ? ant.textContent.trim() : '',
+              antUnclipped: Boolean(ant && ant.scrollWidth <= ant.clientWidth + 1),
+              sheetH: shR ? shR.height : 999,
+              specBottom,
+              sheetTop: shR ? shR.top : 0,
+            };
+            """
+        )
+        assert chrome_mob["sw"] <= chrome_mob["cw"] and chrome_mob["topHeight"] <= 76.5, chrome_mob
+        assert chrome_mob["antLabel"] == "1:G5RV" and chrome_mob["antUnclipped"], chrome_mob
+        assert chrome_mob["sheetH"] <= 844 * 0.36 and chrome_mob["specBottom"] <= chrome_mob["sheetTop"] + 1, chrome_mob
+
+        cdp.execute_script("document.querySelectorAll('.k4-toast:not([data-level=\"error\"])').forEach(e => e.remove());")
+        chrome_mob_png = os.path.join(out_dir, "e2e-mobile-chrome.png")
+        cdp.take_screenshot(chrome_mob_png)
+        if copy_primary_screenshots:
+            shutil.copyfile(chrome_mob_png, os.path.join(out_dir, "e2e-mobile.png"))
+
+        cdp_errs = cdp.collect_console_errors()
+        assert not cdp_errs, f"Chrome CDP console errors: {cdp_errs}"
+        assert http_get_json(stats_url)["txBlockedViolations"] == 0
+        print(
+            f"      PASS (Chrome CDP renderer={chrome_desk['rendererType']}, liveRows={chrome_desk['liveRows']}): "
+            f"{chrome_desk_png} & {chrome_mob_png}, 0 console errors"
+        )
+    finally:
+        if cdp is not None:
+            cdp.close()
+        terminate_proc(chrome_proc, "chrome")
+        shutil.rmtree(tmp_chrome_dir, ignore_errors=True)
 
 
 def terminate_proc(proc: subprocess.Popen | None, name: str):
@@ -3178,7 +3778,24 @@ def main() -> int:
         default=os.path.join(REPO_ROOT, "artifacts"),
         help="Directory to write Desktop/Mobile E2E PNG screenshots",
     )
+    parser.add_argument(
+        "--browser",
+        choices=["auto", "firefox", "chrome", "both"],
+        default="auto",
+        help="Browser backend: firefox (Marionette), chrome (Firefox-free CDP), both, or auto",
+    )
+    parser.add_argument(
+        "--chrome-bin",
+        default=None,
+        help="Optional explicit path to Chrome/Chromium binary for CDP E2E",
+    )
     args = parser.parse_args()
+
+    chrome_bin = find_chrome_binary(args.chrome_bin)
+    if args.browser in ("chrome", "both") and not chrome_bin:
+        raise SystemExit("Chrome/Chromium binary not found for CDP E2E (--browser chrome/both)")
+    run_firefox = args.browser in ("auto", "firefox", "both")
+    run_chrome = (args.browser in ("chrome", "both")) or (args.browser == "auto" and bool(chrome_bin))
 
     sim_tcp_port = pick_free_port()
     sim_http_port = pick_free_port()
@@ -3230,52 +3847,64 @@ def main() -> int:
         )
         wait_tcp("127.0.0.1", ws_port)
 
-        user_js = os.path.join(tmp_profile_dir, "user.js")
-        with open(user_js, "w", encoding="utf-8") as f:
-            f.write(f'user_pref("marionette.port", {marionette_port});\n')
-            f.write('user_pref("browser.shell.checkDefaultBrowser", false);\n')
-            f.write('user_pref("devtools.console.stdout.content", true);\n')
-            f.write('user_pref("media.navigator.streams.fake", true);\n')
-            f.write('user_pref("media.navigator.permission.disabled", true);\n')
-            f.write('user_pref("media.cubeb.force_mock_context", true);\n')
-            f.write('user_pref("media.cubeb.sandbox", false);\n')
-
-        ff_env = dict(os.environ)
-        ff_env["MOZ_HEADLESS"] = "1"
-        ff_proc = subprocess.Popen(
-            [
-                "firefox-esr",
-                "--headless",
-                "--marionette",
-                "--no-remote",
-                "--remote-allow-system-access",
-                "--profile", tmp_profile_dir,
-            ],
-            env=ff_env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-        wait_tcp("127.0.0.1", marionette_port, timeout=20.0)
-
-        marionette = MarionetteClient("127.0.0.1", marionette_port, timeout=15.0)
-        marionette.new_session()
-
         stats_url = f"http://127.0.0.1:{sim_http_port}/debug/stats"
-        run_browser_unit_tests(marionette)
-        run_file_origin_e2e(
-            marionette,
-            f"ws://127.0.0.1:{ws_port}",
-            password,
-            stats_url,
-        )
-        run_http_origin_and_screenshots(
-            marionette,
-            f"http://localhost:{ws_port}/",
-            f"ws://localhost:{ws_port}/ws",
-            password,
-            stats_url,
-            args.out_dir,
-        )
+        if run_firefox:
+            user_js = os.path.join(tmp_profile_dir, "user.js")
+            with open(user_js, "w", encoding="utf-8") as f:
+                f.write(f'user_pref("marionette.port", {marionette_port});\n')
+                f.write('user_pref("browser.shell.checkDefaultBrowser", false);\n')
+                f.write('user_pref("devtools.console.stdout.content", true);\n')
+                f.write('user_pref("media.navigator.streams.fake", true);\n')
+                f.write('user_pref("media.navigator.permission.disabled", true);\n')
+                f.write('user_pref("media.cubeb.force_mock_context", true);\n')
+                f.write('user_pref("media.cubeb.sandbox", false);\n')
+
+            ff_env = dict(os.environ)
+            ff_env["MOZ_HEADLESS"] = "1"
+            ff_proc = subprocess.Popen(
+                [
+                    "firefox-esr",
+                    "--headless",
+                    "--marionette",
+                    "--no-remote",
+                    "--remote-allow-system-access",
+                    "--profile", tmp_profile_dir,
+                ],
+                env=ff_env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            wait_tcp("127.0.0.1", marionette_port, timeout=20.0)
+
+            marionette = MarionetteClient("127.0.0.1", marionette_port, timeout=15.0)
+            marionette.new_session()
+
+            run_browser_unit_tests(marionette)
+            run_file_origin_e2e(
+                marionette,
+                f"ws://127.0.0.1:{ws_port}",
+                password,
+                stats_url,
+            )
+            run_http_origin_and_screenshots(
+                marionette,
+                f"http://localhost:{ws_port}/",
+                f"ws://localhost:{ws_port}/ws",
+                password,
+                stats_url,
+                args.out_dir,
+            )
+
+        if run_chrome and chrome_bin:
+            run_chrome_cdp_e2e(
+                chrome_bin,
+                f"http://localhost:{ws_port}/",
+                f"ws://localhost:{ws_port}/ws",
+                password,
+                stats_url,
+                args.out_dir,
+                copy_primary_screenshots=not run_firefox,
+            )
 
         print("ALL E2E CHECKS PASSED!")
         return 0

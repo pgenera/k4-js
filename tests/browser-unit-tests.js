@@ -2885,8 +2885,13 @@
     assertEqual(K4.quantizePowerWatts(44.6), 45, 'quantizePowerWatts H step 1');
     assertEqual(
       K4.formatTxAntenna({ txAntenna: 2, antennaNames: { 2: 'Hexbeam' } }).label,
-      'ANT 2 · Hexbeam',
+      '2:Hexbeam',
       'shared formatTxAntenna custom label'
+    );
+    assertEqual(
+      K4.formatTxAntenna({ txAntenna: 1, antennaNames: {} }).label,
+      'ANT 1',
+      'shared formatTxAntenna unnamed fallback'
     );
     const mixW = new Float64Array(4);
     K4.computeLinearMixWeights(1.0, 0.5, true, 0.0, 'A.B', mixW);
@@ -3421,7 +3426,7 @@
     assertEqual(st.getSnapshot().rxA.panCenterHz, 14076800, 'SLIDE2 slides near 80% span margin');
   });
 
-  test('PanadapterView synthetic waterfall fill proof (top-edge axis + >85% pixels across top/mid/bottom thirds)', async () => {
+  test('PanadapterView synthetic waterfall fill proof (empty before frames, dimmed/hatched seed vs live rows, top-edge axis)', async () => {
     const K4 = globalThis.K4;
     const host = document.createElement('div');
     host.style.width = '640px';
@@ -3437,12 +3442,6 @@
         client: { sendCat: () => {}, tune: () => {}, setDisplay: () => {} },
         renderer: '2d',
       });
-      const bins = new Uint8Array(1024);
-      for (let i = 0; i < 1024; i++) bins[i] = 42 + Math.round(Math.sin(i * 0.37) * 3);
-      for (let k = -4; k <= 4; k++) bins[512 + k] = 102 - Math.abs(k) * 6;
-      for (let f = 0; f < 90; f++) {
-        view.pushPanPacket({ rx: 'A', centerFreqHz: 14074000, spanHz: 48000, sampleRateKHz: 48, bins });
-      }
       view._renderNow(true);
 
       const glCanvas = host.querySelector('.k4-pan-gl');
@@ -3458,17 +3457,10 @@
       probe.width = cssW;
       probe.height = cssH;
       const pctx = probe.getContext('2d');
-      pctx.drawImage(glCanvas, 0, 0, cssW, cssH);
       const wf = layout.wfRect;
       const wfX = Math.max(4, Math.floor(wf.x) + 4);
       const wfW = Math.max(20, Math.floor(wf.w) - 8);
-      const bands = [
-        [Math.floor(wf.y + wf.h * 0.08), Math.floor(wf.h * 0.22)],
-        [Math.floor(wf.y + wf.h * 0.39), Math.floor(wf.h * 0.22)],
-        [Math.floor(wf.y + wf.h * 0.70), Math.floor(wf.h * 0.22)],
-      ];
-      for (let bIdx = 0; bIdx < bands.length; bIdx++) {
-        const [by, bh] = bands[bIdx];
+      const countNonBgRatio = (by, bh) => {
         const data = pctx.getImageData(wfX, by, wfW, bh).data;
         let nonBg = 0;
         const total = wfW * bh;
@@ -3477,7 +3469,61 @@
             nonBg++;
           }
         }
-        const pct = nonBg / Math.max(1, total);
+        return nonBg / Math.max(1, total);
+      };
+
+      // Before any frame arrives, waterfall pane stays dark/empty (never pre-seeded offline)
+      pctx.drawImage(glCanvas, 0, 0, cssW, cssH);
+      assert(
+        countNonBgRatio(Math.floor(wf.y + wf.h * 0.1), Math.floor(wf.h * 0.8)) < 0.01,
+        'Waterfall stays blank before any live frame arrives'
+      );
+
+      const bins = new Uint8Array(1024);
+      for (let i = 0; i < 1024; i++) bins[i] = 42 + Math.round(Math.sin(i * 0.37) * 3);
+      for (let k = -4; k <= 4; k++) bins[512 + k] = 102 - Math.abs(k) * 6;
+
+      // After 12 live frames (~24px), top live noise floor is noticeably brighter than dimmed/hatched seeded noise below
+      for (let f = 0; f < 12; f++) {
+        view.pushPanPacket({ rx: 'A', centerFreqHz: 14074000, spanHz: 48000, sampleRateKHz: 48, bins });
+      }
+      view._renderNow(true);
+      pctx.clearRect(0, 0, cssW, cssH);
+      pctx.drawImage(glCanvas, 0, 0, cssW, cssH);
+      const bgLum = 9 + 11 + 16;
+      const liveNoisePx = pctx.getImageData(Math.floor(wf.x + wf.w * 0.15), Math.floor(wf.y + 8), 1, 1).data;
+      const seedNoisePx = pctx.getImageData(Math.floor(wf.x + wf.w * 0.15), Math.floor(wf.y + wf.h * 0.75), 1, 1).data;
+      const liveAboveBg = liveNoisePx[0] + liveNoisePx[1] + liveNoisePx[2] - bgLum;
+      const seedAboveBg = seedNoisePx[0] + seedNoisePx[1] + seedNoisePx[2] - bgLum;
+      assert(
+        liveAboveBg > seedAboveBg * 1.5,
+        `Live rows must stay clearly brighter than dimmed seeded rows (${liveAboveBg} vs ${seedAboveBg})`
+      );
+
+      // clearWaterfall resets pane back to blank until new frames arrive
+      view.clearWaterfall('A');
+      view._renderNow(true);
+      pctx.clearRect(0, 0, cssW, cssH);
+      pctx.drawImage(glCanvas, 0, 0, cssW, cssH);
+      assert(
+        countNonBgRatio(Math.floor(wf.y + wf.h * 0.1), Math.floor(wf.h * 0.8)) < 0.01,
+        'clearWaterfall clears seeded & live rows back to dark background'
+      );
+
+      for (let f = 0; f < 95; f++) {
+        view.pushPanPacket({ rx: 'A', centerFreqHz: 14074000, spanHz: 48000, sampleRateKHz: 48, bins });
+      }
+      view._renderNow(true);
+      pctx.clearRect(0, 0, cssW, cssH);
+      pctx.drawImage(glCanvas, 0, 0, cssW, cssH);
+      const bands = [
+        [Math.floor(wf.y + wf.h * 0.08), Math.floor(wf.h * 0.22)],
+        [Math.floor(wf.y + wf.h * 0.39), Math.floor(wf.h * 0.22)],
+        [Math.floor(wf.y + wf.h * 0.70), Math.floor(wf.h * 0.22)],
+      ];
+      for (let bIdx = 0; bIdx < bands.length; bIdx++) {
+        const [by, bh] = bands[bIdx];
+        const pct = countNonBgRatio(by, bh);
         assert(pct > 0.85, `Waterfall third #${bIdx + 1} non-bg coverage ${(pct * 100).toFixed(1)}% <= 85%`);
       }
 
