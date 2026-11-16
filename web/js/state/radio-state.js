@@ -257,6 +257,7 @@
       displayMode: 1,
       waterfallHeightPct: 60,
       fixedTune: false,
+      fixedTuneMode: 1,
       hasSubRx: true,
       hasKrx4: true,
       hasDiversity: true,
@@ -405,6 +406,7 @@
         displayMode: this._state.displayMode,
         waterfallHeightPct: this._state.waterfallHeightPct,
         fixedTune: this._state.fixedTune,
+        fixedTuneMode: this._state.fixedTuneMode,
         hasSubRx: this._state.hasSubRx,
         hasKrx4: this._state.hasKrx4,
         hasDiversity: this._state.hasDiversity,
@@ -680,6 +682,10 @@
 
     _syncSlicePanCenterAfterQsy(slice, oldFreq, newFreq, fixedTune) {
       if (!slice || !Number.isFinite(newFreq)) return;
+      if (!fixedTune) {
+        slice.panCenterHz = newFreq;
+        return;
+      }
       const oldCenter =
         Number.isFinite(slice.panCenterHz) && slice.panCenterHz > 0
           ? slice.panCenterHz
@@ -691,13 +697,25 @@
           ? slice.spanHz
           : 48000;
       const halfSpan = rawSpan / 2;
-      if (fixedTune) {
-        slice.panCenterHz =
-          Number.isFinite(oldCenter) && Math.abs(oldCenter - newFreq) <= halfSpan
-            ? oldCenter
-            : newFreq;
+      const mode = Number.isFinite(this._state.fixedTuneMode) ? this._state.fixedTuneMode : 1;
+      const diff = newFreq - oldCenter;
+      const absDiff = Math.abs(diff);
+      if (mode === 3) {
+        slice.panCenterHz = oldCenter;
+      } else if (mode === 0) {
+        if (absDiff <= halfSpan) {
+          slice.panCenterHz = oldCenter;
+        } else {
+          const shifted = oldCenter + (diff >= 0 ? rawSpan : -rawSpan);
+          slice.panCenterHz = Math.abs(newFreq - shifted) <= halfSpan ? shifted : newFreq;
+        }
+      } else if (mode === 2) {
+        slice.panCenterHz = absDiff <= halfSpan ? oldCenter : (diff >= 0 ? newFreq - halfSpan : newFreq + halfSpan);
+      } else if (mode === 4) {
+        const edge = halfSpan * 0.8;
+        slice.panCenterHz = absDiff <= edge ? oldCenter : (diff >= 0 ? newFreq - edge : newFreq + edge);
       } else {
-        slice.panCenterHz = newFreq;
+        slice.panCenterHz = absDiff <= halfSpan ? oldCenter : newFreq;
       }
     }
 
@@ -891,6 +909,11 @@
         case 'fixedTune':
           this._state.fixedTune = Boolean(parsed.fixedTune);
           this._emitChange('fixedTune');
+          return true;
+
+        case 'fixedTuneMode':
+          this._state.fixedTuneMode = Number(parsed.fixedTuneMode);
+          this._emitChange('fixedTuneMode');
           return true;
 
         case 'optionModule':

@@ -200,6 +200,10 @@
       const v = parseIntStrict(arg);
       return v === null ? null : { kind: 'fixedTune', rx: null, fixedTune: v === 1 };
     }),
+    makeGlobalParser('#FXA', (arg) => {
+      const v = parseIntStrict(arg);
+      return v === null ? null : { kind: 'fixedTuneMode', rx: null, fixedTuneMode: clamp(v, 0, 4) };
+    }),
     makeGlobalParser('#FPS', (arg) => {
       const v = parseIntStrict(arg);
       return v === null ? null : { kind: 'panFps', rx: null, panFps: clamp(v, 1, 30) };
@@ -1153,6 +1157,9 @@
     },
     fixedTune(on) {
       return '#FXT' + (on ? '1' : '0') + ';';
+    },
+    fixedTuneMode(mode) {
+      return '#FXA' + clamp(Math.round(Number(mode) || 0), 0, 4) + ';';
     },
     textDecode(rx, mode = 0, threshold = 0, lines = undefined) {
       const m = Math.round(clamp(Number(mode) || 0, 0, 4));

@@ -108,6 +108,7 @@ type RxState struct {
 	WfBlack             int
 	AutoRef             bool
 	FixedTune           bool
+	FixedTuneMode       int
 	MiniPan             bool
 	PanNbMode           int
 	PanNbLevel          int
@@ -156,6 +157,8 @@ type DebugStats struct {
 	TxAntenna           int     `json:"txAntenna"`
 	AtuMode             int     `json:"atuMode"`
 	OptionModules       string  `json:"optionModules"`
+	FixedTune           bool    `json:"fixedTune"`
+	FixedTuneMode       int     `json:"fixedTuneMode"`
 }
 
 type Radio struct {
@@ -287,6 +290,7 @@ func NewRadio() *Radio {
 		WfBlack:             14,
 		AutoRef:             true,
 		FixedTune:           false,
+		FixedTuneMode:       1,
 		TextDecodeMode:      2,
 		TextDecodeThreshold: 0,
 		TextDecodeLines:     1,
@@ -951,6 +955,8 @@ func (r *Radio) Stats() DebugStats {
 		TxAntenna:           r.TxAntenna,
 		AtuMode:             r.AtuMode,
 		OptionModules:       r.OptionModules,
+		FixedTune:           r.RxA.FixedTune,
+		FixedTuneMode:       r.RxA.FixedTuneMode,
 	}
 }
 
@@ -1153,6 +1159,7 @@ func (r *Radio) fullSnapshotLocked(tSec float64) string {
 	sb.WriteString(fmt.Sprintf("#WBS%d;", r.RxA.WfBlack))
 	sb.WriteString(fmt.Sprintf("#AR1206-02%d;", bool01(r.RxA.AutoRef)))
 	sb.WriteString(fmt.Sprintf("#FXT%d;", bool01(r.RxA.FixedTune)))
+	sb.WriteString(fmt.Sprintf("#FXA%d;", r.RxA.FixedTuneMode))
 	sb.WriteString(fmt.Sprintf("TD%d%d%d;", r.RxA.TextDecodeMode, r.RxA.TextDecodeThreshold, r.RxA.TextDecodeLines))
 	sb.WriteString(fmt.Sprintf("TD$%d%d%d;", r.RxB.TextDecodeMode, r.RxB.TextDecodeThreshold, r.RxB.TextDecodeLines))
 	sb.WriteString(fmt.Sprintf("#DPM%d;", r.DualPanMode))
@@ -1882,16 +1889,17 @@ func (r *Radio) execSingleLocked(orig, upper string, tSec float64) string {
 			r.setRxFreqSwapLocked('B', freqA)
 			return fmt.Sprintf("FA%011d;FB%011d;", r.RxA.FreqHz, r.RxB.FreqHz)
 		case '3': // Copy VFO A full slice params -> VFO B
-			copySliceParams(&r.RxB, &r.RxA, r.RxA.FixedTune)
+			copySliceParams(&r.RxB, &r.RxA, r.RxA.FixedTune, r.RxA.FixedTuneMode)
 			return formatSliceCAT('B', r.RxB)
 		case '4': // Copy VFO B full slice params -> VFO A
-			copySliceParams(&r.RxA, &r.RxB, r.RxA.FixedTune)
+			copySliceParams(&r.RxA, &r.RxB, r.RxA.FixedTune, r.RxA.FixedTuneMode)
 			return formatSliceCAT('A', r.RxA)
 		case '5': // Swap VFO A <-> VFO B full slice params
 			fixedTune := r.RxA.FixedTune
+			fixedMode := r.RxA.FixedTuneMode
 			origA := r.RxA
-			copySliceParams(&r.RxA, &r.RxB, fixedTune)
-			copySliceParams(&r.RxB, &origA, fixedTune)
+			copySliceParams(&r.RxA, &r.RxB, fixedTune, fixedMode)
+			copySliceParams(&r.RxB, &origA, fixedTune, fixedMode)
 			return formatSliceCAT('A', r.RxA) + formatSliceCAT('B', r.RxB)
 		}
 	case strings.HasPrefix(upper, "XT"):
@@ -2524,6 +2532,17 @@ func (r *Radio) execSingleLocked(orig, upper string, tSec float64) string {
 			}
 		}
 		resp = fmt.Sprintf("#FXT%d;", bool01(r.RxA.FixedTune))
+	case strings.HasPrefix(upper, "#FXA$"):
+		return "#FXA?;"
+	case strings.HasPrefix(upper, "#FXA"):
+		arg := strings.TrimPrefix(upper, "#FXA")
+		if arg != "" {
+			isSet = true
+			if v, err := strconv.Atoi(arg); err == nil {
+				r.RxA.FixedTuneMode = clampInt(v, 0, 4)
+			}
+		}
+		resp = fmt.Sprintf("#FXA%d;", r.RxA.FixedTuneMode)
 	case strings.HasPrefix(upper, "#DPM"):
 		arg := strings.TrimPrefix(upper, "#DPM")
 		if arg != "" {
@@ -2702,12 +2721,58 @@ func panHalfSpanHz(rx RxState) int64 {
 	return 24000
 }
 
-func reframePanOffset(dst *RxState, oldCenter, newFreq, maxOffset int64, fixedTune bool) {
-	if fixedTune && absInt64(oldCenter-newFreq) <= maxOffset {
-		dst.PanCenterOffsetHz = oldCenter - newFreq
+func reframePanOffset(dst *RxState, oldCenter, newFreq, maxOffset int64, fixedTune bool, fixedMode int) {
+	if !fixedTune || maxOffset <= 0 {
+		dst.PanCenterOffsetHz = 0
 		return
 	}
-	dst.PanCenterOffsetHz = 0
+	diff := newFreq - oldCenter
+	absDiff := absInt64(diff)
+	switch fixedMode {
+	case 3: // STATIC: never shift pan center
+		dst.PanCenterOffsetHz = oldCenter - newFreq
+	case 0: // FIXED1: full-span shift when cursor hits edge
+		if absDiff <= maxOffset {
+			dst.PanCenterOffsetHz = oldCenter - newFreq
+		} else {
+			step := maxOffset * 2
+			shifted := oldCenter + step
+			if diff < 0 {
+				shifted = oldCenter - step
+			}
+			if absInt64(newFreq-shifted) <= maxOffset {
+				dst.PanCenterOffsetHz = shifted - newFreq
+			} else {
+				dst.PanCenterOffsetHz = 0
+			}
+		}
+	case 2: // SLIDE1: smooth slide at edge
+		if absDiff <= maxOffset {
+			dst.PanCenterOffsetHz = oldCenter - newFreq
+		} else if diff > 0 {
+			dst.PanCenterOffsetHz = -maxOffset
+		} else {
+			dst.PanCenterOffsetHz = maxOffset
+		}
+	case 4: // SLIDE2: smooth slide near edge (80% of half-span)
+		edge := (maxOffset * 80) / 100
+		if edge < 1 {
+			edge = maxOffset
+		}
+		if absDiff <= edge {
+			dst.PanCenterOffsetHz = oldCenter - newFreq
+		} else if diff > 0 {
+			dst.PanCenterOffsetHz = -edge
+		} else {
+			dst.PanCenterOffsetHz = edge
+		}
+	default: // 1 = FIXED2: half-span re-center when cursor hits edge
+		if absDiff <= maxOffset {
+			dst.PanCenterOffsetHz = oldCenter - newFreq
+		} else {
+			dst.PanCenterOffsetHz = 0
+		}
+	}
 }
 
 func (r *Radio) setRxFreqLocked(rx byte, hz int64) {
@@ -2718,14 +2783,14 @@ func (r *Radio) setRxFreqLocked(rx byte, hz int64) {
 	if tierHalf := int64(target.PanTierKHz) * 1000 / 2; tierHalf > maxOffset {
 		maxOffset = tierHalf
 	}
-	reframePanOffset(target, oldCenter, target.FreqHz, maxOffset, r.RxA.FixedTune)
+	reframePanOffset(target, oldCenter, target.FreqHz, maxOffset, r.RxA.FixedTune, r.RxA.FixedTuneMode)
 }
 
 func (r *Radio) setRxFreqSwapLocked(rx byte, hz int64) {
 	target := r.rxPtr(rx)
 	oldCenter := target.FreqHz + target.PanCenterOffsetHz
 	target.FreqHz = clampInt64(hz, 100000, 54000000)
-	reframePanOffset(target, oldCenter, target.FreqHz, panHalfSpanHz(*target), r.RxA.FixedTune)
+	reframePanOffset(target, oldCenter, target.FreqHz, panHalfSpanHz(*target), r.RxA.FixedTune, r.RxA.FixedTuneMode)
 }
 
 func (r *Radio) execAutoSpotLocked(rx byte, tSec float64) string {
@@ -2747,9 +2812,9 @@ func (r *Radio) execAutoSpotLocked(rx byte, tSec float64) string {
 	return fmt.Sprintf("%s%011d;", freqPrefix, target.FreqHz)
 }
 
-func copySliceParams(dst, src *RxState, fixedTune bool) {
+func copySliceParams(dst, src *RxState, fixedTune bool, fixedMode int) {
 	oldCenter := dst.FreqHz + dst.PanCenterOffsetHz
-	reframePanOffset(dst, oldCenter, src.FreqHz, panHalfSpanHz(*dst), fixedTune)
+	reframePanOffset(dst, oldCenter, src.FreqHz, panHalfSpanHz(*dst), fixedTune, fixedMode)
 	dst.FreqHz = src.FreqHz
 	dst.Mode = src.Mode
 	dst.DataSubMode = src.DataSubMode

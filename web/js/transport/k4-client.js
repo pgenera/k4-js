@@ -1015,6 +1015,12 @@
         cmds.push(K4.CatCodec.builders.fixedTune(v));
       }
 
+      if (patch.fixedTuneMode !== undefined) {
+        const m = Math.round(clamp(Number(patch.fixedTuneMode) || 0, 0, 4));
+        topPatch.fixedTuneMode = m;
+        cmds.push(K4.CatCodec.builders.fixedTuneMode(m));
+      }
+
       if (patch.miniPan !== undefined) {
         const v = Boolean(patch.miniPan);
         rxPatch.miniPan = v;
