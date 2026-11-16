@@ -13,3 +13,7 @@
 *~
 *.swp
 .claude/
+
+# Python test bytecode
+__pycache__/
+*.pyc
