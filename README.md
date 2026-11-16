@@ -1,10 +1,10 @@
-# Elecraft K4 Web Observatory (Receive-Only)
+# k4-js — Elecraft K4 Browser Client
 
-A zero-dependency, receive-only web panadapter, waterfall, decoded-text ticker, and 12 kHz stereo Web Audio client for the **Elecraft K4** transceiver over its native TCP `:9205` network protocol.
+A zero-dependency, pure client-side browser panadapter, waterfall, decoded-text ticker, CAT control deck, and stereo Web Audio (`EM0`/`EM1` PCM + `EM2`/`EM3` Opus) interface for the **Elecraft K4** transceiver over its native TCP `:9205` protocol.
 
 - **Zero Node.js / Zero build step**: Pure HTML, CSS, and classic deferred ES scripts (`globalThis.K4`).
-- **Works on `file://` and `https://`**: Includes pure-`BigInt` FIPS 180-4 SHA-384 auth, `ScriptProcessorNode` audio fallback, and `Canvas2D` waterfall fallback when WebGL2 or SecureContext APIs (`crypto.subtle`, `AudioWorklet`, `AudioDecoder`) are absent.
-- **Strict Receive-Only Safety**: Client-side `K4.RxOnlyGate` enforces `'rx-only'` policy by stripping/blocking all TX, tune, keyer, DVR, power, and outbound `0x01` audio frames before socket transmission.
+- **Works on `file://` and `http(s)://`**: Includes pure-`BigInt` FIPS 180-4 SHA-384 auth, `ScriptProcessorNode` audio fallback, and `Canvas2D` waterfall fallback when WebGL2 or SecureContext APIs (`crypto.subtle`, `AudioWorklet`, `AudioDecoder`) are absent.
+- **Receive-Only by Default, Hold-PTT Capable**: `K4.RxOnlyGate` defaults every session to `'rx-only'` (blocking TX, tune, keyer, DVR, power, and outbound `0x01` audio frames) until explicitly armed for TX Test or Hold-PTT operation.
 
 ---
 
