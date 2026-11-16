@@ -89,3 +89,23 @@ Second look at the implemented section 2 (1440×900, 1100×700, 393×852, plus `
 ### 3d. Font and workflow
 - [x] **Self-hosted tabular-figure font via inline base64 `data:` URI**: embedded subsetted Noto Sans Mono Regular & Bold WOFF2 (`"K4 Tabular"`) in `web/css/tokens.css`, verified active on `http://` (`document.fonts.check(...) === true`) and zero `file://` CORS errors (`43/43 unit tests passed`).
 - [x] **Commit workflow & `.gitignore`**: added `__pycache__/` and `*.pyc` to `.gitignore`, and committed changes and `TODO.md` edits in 7 separate logical local commits.
+
+## 4. UI Review, third pass (2026-11-16)
+
+Verified independently: `go -C sim test` passes, `tests/e2e_verify.py` passes (43/43 unit tests, file:// and http:// E2E), working tree clean. The refreshed screenshots show the K4 layout now in place: per-receiver S-meters, center TX icon area with RIT/XIT box, 22px VFO digits, top-edge axis, K4 tab names, a full-height waterfall, and a two-row mobile bar. Remaining items:
+
+### 4a. Regressions and polish
+- [ ] **S-meter tick labels are 8px in dual-RX mode** (`.k4-smeter-slot.is-dual-rx .k4-smeter-ticks`, `components.css:1036`; 9px otherwise). Section 2d asked for ≥10px at AA contrast, and the screenshot shows the labels nearly unreadable. Keep two meters but drop the tick set to `S1 5 9 +40` at 10px instead of shrinking all seven labels.
+- [ ] **Antenna label reads `ANT 1- G5RV`** in the center icon area. The K4 format is `2:YAGI` (number, colon, name); use `1:G5RV`, falling back to `ANT 1` when unnamed.
+- [ ] **Off-state center icons (`SPL`, `MSG I`, `VOX`, `QSK`) are very dim** against the bar. Keep them visible enough to read as present-but-off (≥3:1) so the operator can tell what exists, and keep orange only for the active state.
+- [ ] **Waterfall pre-seed shows synthetic noise as data.** The seeded noise floor makes the pane look live before any frames arrive and cannot be told apart from real data. Dim or hatch the seeded rows, or clear them as soon as the first real frame lands, and never seed when the connection is down.
+- [ ] **VFO B digits are smaller than VFO A** (19px vs 22px). Fine for a sub receiver, but check that the dimmed B digits still meet AA contrast on the dark background.
+- [ ] **`components.css` is 4,120 lines, `inspector-panels.js` 3,949, `app.js` 2,424, `e2e_verify.py` 3,294.** Split by area (topbar, hud, inspector, tx, mobile; one inspector file per tab) with classic `<script>` / `<link>` tags so `file://` keeps working. This keeps future agent edits reviewable.
+
+### 4b. Needs a real K4 to close (collect before release)
+- [ ] **Hardware verification checklist** for everything marked deferred or sim-only: filter preset cycling (`FLn`), `MENU`/`Fn` pages, `MSG I/II` behavior, front-panel `NORM`, `#FXA` fixed-tune cursor modes (implemented in the simulator and client but not seen on a radio), TX bar graph scaling (power/SWR/ALC/compression), VFO digit/step behavior in split, and mini-pan open from S-meter tap. Add a short `docs/hardware-verification.md` listing each item with the expected result, so one session with a real radio can close them.
+- [ ] **Cross-check mode labels** (`DATA-A`, `AFSK-A`, `FSK-D`, `PSK-D`) against the Programmer's Reference `MD` command on a real radio.
+
+### 4c. Nice-to-have
+- [ ] Mobile Tune sheet covers about half the spectrum (~46vh as specced); consider dimming rather than covering the pan, or a drag handle to a shorter height, so the signal being tuned stays visible.
+- [ ] Add a Firefox-free path for screenshots (CDP via Chrome) to `tests/e2e_verify.py`; headless Chrome captured at load and could not wait for the waterfall, so a second engine would catch renderer differences.
