@@ -75,6 +75,7 @@
     for (let i = 0; i < S_TICK_LABELS.length; i++) {
       const sp = document.createElement('span');
       sp.textContent = S_TICK_LABELS[i];
+      if (i >= 4) sp.className = 'k4-smeter-tick-hi';
       ticks.appendChild(sp);
     }
     return ticks;
@@ -83,16 +84,14 @@
   class SMeterWidget {
     constructor(opts) {
       this.container = opts.container;
+      this.onToggleMiniPan = typeof opts.onToggleMiniPan === 'function' ? opts.onToggleMiniPan : null;
       this._peakStateA = { peakDbm: -127, peakAt: 0, lastDecayAt: 0 };
       this._peakStateB = { peakDbm: -127, peakAt: 0, lastDecayAt: 0 };
       this._peakDbm = -127;
       this._peakDbmB = -127;
       this._peakRaf = 0;
-      this._manualMode = null; // null = auto (TX when transmitting/tuning), 'tx', or 'rx'
-      this._wasAutoTx = false;
       this._currentlyShowingTx = false;
       this._showingDualRx = false;
-      this._txHeadMountedShowTx = false;
       this._buildDom();
     }
 
@@ -127,6 +126,7 @@
 
       const track = document.createElement('div');
       track.className = 'k4-smeter-track';
+      track.title = `Click meter to toggle Mini-Pan ${rx}`;
 
       const s9Mark = document.createElement('div');
       s9Mark.className = 'k4-smeter-s9-mark';
@@ -143,6 +143,16 @@
 
       root.appendChild(track);
       root.appendChild(createTicks());
+
+      root.title = `Click meter to toggle Mini-Pan ${rx}`;
+      root.addEventListener('click', (e) => {
+        if (e.target && typeof e.target.closest === 'function' && e.target.closest('button')) {
+          return;
+        }
+        if (this.onToggleMiniPan) {
+          this.onToggleMiniPan(rx);
+        }
+      });
 
       return {
         root,
@@ -166,38 +176,23 @@
       const root = this.container;
       root.textContent = '';
 
-      this.txVfoEl = document.createElement('span');
-      this.txVfoEl.className = 'k4-tx-vfo-ind';
-      this.txVfoEl.dataset.testid = 'k4-tx-vfo-indicator';
-      this.txVfoEl.dataset.state = 'standby';
-      this.txVfoEl.textContent = '◀ TX';
-
-      this.modeBtn = document.createElement('button');
-      this.modeBtn.type = 'button';
-      this.modeBtn.className = 'k4-meter-mode-btn';
-      this.modeBtn.dataset.testid = 'meter-mode-toggle';
-      this.modeBtn.textContent = 'MTR';
-      this.modeBtn.title = 'Inspect RX S-meter or TX meter cluster';
-      this.modeBtn.addEventListener('click', () => {
-        if (this._currentlyShowingTx) {
-          this._manualMode = this._wasAutoTx ? 'rx' : null;
-        } else {
-          this._manualMode = 'tx';
-        }
-        if (this._lastSnapshot) {
-          this.update(this._lastSnapshot, this._lastTargetRx);
-        }
-      });
+      this.txVfoEl =
+        typeof document !== 'undefined'
+          ? document.querySelector('[data-testid="k4-tx-vfo-indicator"]')
+          : null;
+      if (!this.txVfoEl) {
+        this.txVfoEl = document.createElement('span');
+        this.txVfoEl.className = 'k4-tx-vfo-ind';
+        this.txVfoEl.dataset.testid = 'k4-tx-vfo-indicator';
+        this.txVfoEl.dataset.state = 'standby';
+        this.txVfoEl.textContent = '◀ TX';
+      }
 
       this.blocksWrap = document.createElement('div');
       this.blocksWrap.className = 'k4-smeter-blocks';
 
       this._blockA = this._createRxBlock('A');
       this._blockB = this._createRxBlock('B');
-
-      // Mount TX VFO indicator and mode toggle inside Main RX block header by default
-      this._blockA.head.insertBefore(this.txVfoEl, this._blockA.ovfBadge);
-      this._blockA.head.insertBefore(this.modeBtn, this._blockA.ovfBadge);
 
       // Preserve direct property references for existing callers/tests
       this.ovfBadge = this._blockA.ovfBadge;
@@ -209,10 +204,6 @@
       this.fillElB = this._blockB.fillEl;
       this.peakElB = this._blockB.peakEl;
 
-      this.blocksWrap.appendChild(this._blockA.root);
-      this.blocksWrap.appendChild(this._blockB.root);
-      root.appendChild(this.blocksWrap);
-
       // TX Meter Cluster (PWR, SWR, ALC 0..7 + sweet spot 4..5, CMP 0..30 dB)
       this.txCluster = document.createElement('div');
       this.txCluster.className = 'k4-tx-meter-cluster';
@@ -221,6 +212,11 @@
 
       this.txHead = document.createElement('div');
       this.txHead.className = 'k4-tx-meter-head';
+
+      this.txHeadVfoBadge = document.createElement('span');
+      this.txHeadVfoBadge.className = 'k4-smeter-vfo-badge k4-smeter-vfo-badge--tx';
+      this.txHeadVfoBadge.textContent = 'TX A';
+      this.txHead.appendChild(this.txHeadVfoBadge);
 
       this.txHeadTag = document.createElement('span');
       this.txHeadTag.className = 'k4-tx-meter-tag';
@@ -272,21 +268,11 @@
         cmp: makeBarCell('CMP', 'tx-meter-cmp', 'k4-tx-bar-fill--cmp', false),
       };
       this.txCluster.appendChild(grid);
-      root.appendChild(this.txCluster);
-    }
 
-    _syncHeaderPlacement(showTx) {
-      if (this._txHeadMountedShowTx === showTx) return;
-      this._txHeadMountedShowTx = showTx;
-      const refocusModeBtn = typeof document !== 'undefined' && document.activeElement === this.modeBtn;
-      if (showTx) {
-        this.txHead.insertBefore(this.txVfoEl, this.txHeadTag);
-        this.txHead.insertBefore(this.modeBtn, this.txHeadTag);
-      } else {
-        this._blockA.head.insertBefore(this.txVfoEl, this._blockA.ovfBadge);
-        this._blockA.head.insertBefore(this.modeBtn, this._blockA.ovfBadge);
-      }
-      if (refocusModeBtn) this.modeBtn.focus();
+      this.blocksWrap.appendChild(this._blockA.root);
+      this.blocksWrap.appendChild(this._blockB.root);
+      this.blocksWrap.appendChild(this.txCluster);
+      root.appendChild(this.blocksWrap);
     }
 
     _updateRxBlock(block, rxState, now, peakState, allowOvf) {
@@ -339,20 +325,23 @@
     }
 
     _tickPeaks() {
-      if (this._currentlyShowingTx) return;
       const now = performance.now();
+      let needsMore = false;
 
-      const peakA = stepPeak(now, this._blockA.lastDbm, this._peakStateA);
-      this._peakDbm = peakA;
-      const peakPctA = Math.round(dbmToPct(peakA) * 10) / 10;
-      if (this._blockA.lastPeakPct !== peakPctA) {
-        this._blockA.lastPeakPct = peakPctA;
-        this._blockA.peakEl.style.left = `${peakPctA}%`;
+      if (!this._blockA.root.hidden) {
+        const peakA = stepPeak(now, this._blockA.lastDbm, this._peakStateA);
+        this._peakDbm = peakA;
+        const peakPctA = Math.round(dbmToPct(peakA) * 10) / 10;
+        if (this._blockA.lastPeakPct !== peakPctA) {
+          this._blockA.lastPeakPct = peakPctA;
+          this._blockA.peakEl.style.left = `${peakPctA}%`;
+        }
+        if (peakA > this._blockA.lastDbm + 0.05) {
+          needsMore = true;
+        }
       }
 
-      let needsMore = peakA > this._blockA.lastDbm + 0.05;
-
-      if (this._showingDualRx) {
+      if (!this._blockB.root.hidden) {
         const peakB = stepPeak(now, this._blockB.lastDbm, this._peakStateB);
         this._peakDbmB = peakB;
         const peakPctB = Math.round(dbmToPct(peakB) * 10) / 10;
@@ -374,35 +363,28 @@
       this._lastSnapshot = snapshot;
       this._lastTargetRx = targetRx;
 
-      const autoTx = Boolean(snapshot.txActive || snapshot.atuTuning || snapshot.isTransmitting);
-      if (autoTx && !this._wasAutoTx && this._manualMode === 'rx') {
-        this._manualMode = null;
-      }
-      if (!autoTx && this._wasAutoTx && this._manualMode === 'rx') {
-        this._manualMode = null;
-      }
-      this._wasAutoTx = autoTx;
-
-      const showTx = this._manualMode === 'tx' ? true : (this._manualMode === 'rx' ? false : autoTx);
+      const showTx = Boolean(snapshot.txActive || snapshot.atuTuning || snapshot.isTransmitting);
       this._currentlyShowingTx = showTx;
 
-      const showDualRx = Boolean(snapshot.subRxEnabled) && !showTx;
+      const split = Boolean(snapshot.splitEnabled);
+      const subOn = Boolean(snapshot.subRxEnabled);
+      const showBlockA = !showTx || split;
+      const showBlockB = subOn && !(showTx && split);
+      const showDualRx = subOn && !showTx;
       this._showingDualRx = showDualRx;
 
-      this._syncHeaderPlacement(showTx);
+      this.blocksWrap.hidden = false;
+      this.container.classList.toggle('is-dual-rx', showDualRx || (showTx && !split && subOn));
+      this.container.classList.toggle('is-tx-split', showTx && split);
+      this.container.classList.toggle('is-tx-main', showTx && !split);
 
-      this.container.classList.toggle('is-dual-rx', showDualRx);
-      this.blocksWrap.hidden = showTx;
-      this._blockA.root.hidden = showTx;
-      this._blockB.root.hidden = !showDualRx;
+      this._blockA.root.hidden = !showBlockA;
+      this._blockB.root.hidden = !showBlockB;
       this.txCluster.hidden = !showTx;
-      this.modeBtn.textContent = showTx ? 'S-MTR' : 'MTR';
-      this.modeBtn.classList.toggle('is-tx', showTx);
 
-      this._blockA.root.classList.toggle('is-target', showDualRx && targetRx !== 'B');
-      this._blockB.root.classList.toggle('is-target', showDualRx && targetRx === 'B');
+      this._blockA.root.classList.toggle('is-target', (showBlockA && showBlockB) && targetRx !== 'B');
+      this._blockB.root.classList.toggle('is-target', showBlockB && targetRx === 'B');
 
-      const split = Boolean(snapshot.splitEnabled);
       const isTestHead = Boolean(snapshot.txTestMode || snapshot.txPosture === 'tx-test');
       let txIndText = split ? 'TX ▶' : '◀ TX';
       let txIndState = 'standby';
@@ -430,10 +412,18 @@
       const rxB = snapshot.rxB || {};
       const now = performance.now();
 
-      this._updateRxBlock(this._blockA, rxA, now, this._peakStateA, !showTx);
-      this._peakDbm = this._peakStateA.peakDbm;
+      if (showBlockA) {
+        this._updateRxBlock(this._blockA, rxA, now, this._peakStateA, true);
+        this._peakDbm = this._peakStateA.peakDbm;
+      } else {
+        this._peakDbm = stepPeak(
+          now,
+          Number.isFinite(Number(rxA.sMeterDbm)) ? Number(rxA.sMeterDbm) : -115,
+          this._peakStateA
+        );
+      }
 
-      if (showDualRx) {
+      if (showBlockB) {
         this._updateRxBlock(this._blockB, rxB, now, this._peakStateB, true);
         this._peakDbmB = this._peakStateB.peakDbm;
       } else {
@@ -441,7 +431,6 @@
           this._blockB.lastOvf = false;
           this._blockB.ovfBadge.hidden = true;
         }
-        // Keep _peakStateB decayed/synced even if hidden
         this._peakDbmB = stepPeak(
           now,
           Number.isFinite(Number(rxB.sMeterDbm)) ? Number(rxB.sMeterDbm) : -115,
@@ -449,14 +438,12 @@
         );
       }
 
-      if (showTx) {
+      const needsTickA = showBlockA && this._peakStateA.peakDbm > this._blockA.lastDbm + 0.05;
+      const needsTickB = showBlockB && this._peakStateB.peakDbm > this._blockB.lastDbm + 0.05;
+      if (needsTickA || needsTickB) {
+        this._schedulePeakTick();
+      } else if (showTx && !showBlockA && !showBlockB) {
         this._cancelPeakTick();
-      } else {
-        const needsTickA = this._peakStateA.peakDbm > this._blockA.lastDbm + 0.05;
-        const needsTickB = showDualRx && this._peakStateB.peakDbm > this._blockB.lastDbm + 0.05;
-        if (needsTickA || needsTickB) {
-          this._schedulePeakTick();
-        }
       }
 
       if (showTx) {
@@ -466,6 +453,10 @@
         const alc = Math.max(0, Math.min(7, Number(tm.alcBars) || 0));
         const cmp = Math.max(0, Math.min(30, Number(tm.compDb) || 0));
         const isTest = Boolean(snapshot.txTestMode || snapshot.txPosture === 'tx-test');
+
+        if (this.txHeadVfoBadge) {
+          this.txHeadVfoBadge.textContent = split ? 'TX B' : 'TX A';
+        }
 
         if (snapshot.atuTuning) {
           this.txHeadTag.textContent = 'ATU TUNE';

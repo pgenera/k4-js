@@ -3,20 +3,30 @@
   const K4 = (globalThis.K4 = globalThis.K4 || {});
 
   const DESKTOP_TABS = [
-    { id: 'band-mode', label: 'Band/Mode' },
-    { id: 'dsp', label: 'DSP' },
-    { id: 'display', label: 'Display' },
-    { id: 'audio', label: 'Audio' },
-    { id: 'tx', label: 'TX / ATU' },
+    { key: 'band', id: 'band-mode', label: 'BAND', rx: null },
+    { key: 'main-rx', id: 'dsp', label: 'MAIN RX', rx: 'A' },
+    { key: 'sub-rx', id: 'dsp', label: 'SUB RX', rx: 'B' },
+    { key: 'display', id: 'display', label: 'DISPLAY', rx: null },
+    { key: 'audio', id: 'audio', label: 'AUDIO', rx: null },
+    { key: 'tx', id: 'tx', label: 'TX', rx: null },
   ];
 
   const MOBILE_TABS = [
     { id: 'tune', label: 'Tune' },
-    { id: 'band-mode', label: 'Band/Mode' },
-    { id: 'dsp', label: 'DSP' },
-    { id: 'display', label: 'Display' },
-    { id: 'audio', label: 'Audio' },
-    { id: 'tx', label: 'TX / ATU' },
+    { id: 'band-mode', label: 'BAND' },
+    { id: 'dsp', label: 'MAIN RX' },
+    { id: 'display', label: 'DISPLAY' },
+    { id: 'audio', label: 'AUDIO' },
+    { id: 'tx', label: 'TX' },
+  ];
+
+  const CURSOR_MODES = [
+    { key: 'TRACK', label: 'TRACK', fixedTune: false, mode: null },
+    { key: 'FIXED1', label: 'FIXED1', fixedTune: true, mode: 0 },
+    { key: 'FIXED2', label: 'FIXED2', fixedTune: true, mode: 1 },
+    { key: 'SLIDE1', label: 'SLIDE1', fixedTune: true, mode: 2 },
+    { key: 'SLIDE2', label: 'SLIDE2', fixedTune: true, mode: 4 },
+    { key: 'STATIC', label: 'STATIC', fixedTune: true, mode: 3 },
   ];
 
   const MODE_CHOICES = [
@@ -24,12 +34,12 @@
     { id: 'USB', label: 'USB', code: 2, key: 'USB', sub: null },
     { id: 'CW', label: 'CW', code: 3, key: 'CW', sub: null },
     { id: 'CW-R', label: 'CW-R', code: 7, key: 'CW-R', sub: null },
+    { id: 'AM', label: 'AM', code: 5, key: 'AM', sub: null },
+    { id: 'FM', label: 'FM', code: 4, key: 'FM', sub: null },
     { id: 'DATA-A', label: 'DATA-A', code: 6, key: 'DATA', sub: 0 },
     { id: 'AFSK-A', label: 'AFSK-A', code: 6, key: 'DATA', sub: 1 },
     { id: 'FSK-D', label: 'FSK-D', code: 6, key: 'DATA', sub: 2 },
     { id: 'PSK-D', label: 'PSK-D', code: 6, key: 'DATA', sub: 3 },
-    { id: 'AM', label: 'AM', code: 5, key: 'AM', sub: null },
-    { id: 'FM', label: 'FM', code: 4, key: 'FM', sub: null },
   ];
 
   const STEP_LABELS = ['1 Hz', '10 Hz', '100 Hz', '1 kHz', '2.5 kHz', '5 kHz', '10 kHz'];
@@ -324,6 +334,7 @@
       this._msgBank = 1;
       this._selectedSensorKey = null;
       this._sensorWindowSec = 180;
+      this._statusModeIdx = 0;
 
       this._buildDrawerShell();
       this._buildMobileShell();
@@ -352,28 +363,53 @@
       this.drawerEl.textContent = '';
       this.drawerTabBar = el('div', 'k4-panel-tabs');
       this._desktopTabBtns = {};
+      this._desktopTabItems = [];
       for (let i = 0; i < DESKTOP_TABS.length; i++) {
         const t = DESKTOP_TABS[i];
-        const btn = el('button', 'k4-tab-btn', t.label);
+        const btn = el('button', `k4-tab-btn${t.rx === 'B' ? ' is-vfo-b' : ''}`, t.label);
         btn.type = 'button';
         btn.dataset.tab = t.id;
-        btn.addEventListener('click', () => this.selectDesktopTab(t.id));
-        this._desktopTabBtns[t.id] = btn;
+        btn.dataset.tabKey = t.key;
+        if (t.rx) btn.dataset.rx = t.rx;
+        btn.addEventListener('click', () => {
+          if (t.rx) this.onSetTargetRx(t.rx);
+          this.selectDesktopTab(t.id);
+        });
+        if (!this._desktopTabBtns[t.id]) this._desktopTabBtns[t.id] = btn;
+        this._desktopTabItems.push({ ...t, btn });
         this.drawerTabBar.appendChild(btn);
       }
       this.drawerEl.appendChild(this.drawerTabBar);
 
-      // Compact always-visible live sensor strip in inspector drawer
+      this.drawerScroll = el('div', 'k4-panel-scroll');
+      this.drawerEl.appendChild(this.drawerScroll);
+
+      // Compact always-visible K4 Status Area + live sensor telemetry footer
       this.sensorStrip = el('div', 'k4-sensor-strip');
       this.sensorStrip.setAttribute('role', 'group');
-      this.sensorStrip.setAttribute('aria-label', 'Live telemetry sensors');
+      this.sensorStrip.setAttribute('aria-label', 'K4 status area and telemetry sensors');
       this.sensorStrip.dataset.testid = 'sensor-strip';
+
+      const statusCycler = el('button', 'k4-sensor-pill k4-sensor-pill--clock');
+      statusCycler.type = 'button';
+      statusCycler.dataset.testid = 'status-area-cycler';
+      statusCycler.title = 'Tap to cycle Status Area (UTC / RTT / Supply / Radio)';
+      const cyclerVal = el('span', 'k4-sensor-pill-val', 'UTC --:--Z');
+      statusCycler.appendChild(cyclerVal);
+      statusCycler.addEventListener('click', () => {
+        this._statusModeIdx = (this._statusModeIdx + 1) % 4;
+        this._updateSensorStrip(this._snap());
+      });
+      this.sensorStrip.appendChild(statusCycler);
+      this._statusCyclerBtn = statusCycler;
+      this._statusCyclerVal = cyclerVal;
+
       const makeStripPill = (key, lbl) => {
         const pill = el('button', 'k4-sensor-pill');
         pill.type = 'button';
         pill.dataset.sensorKey = key;
         pill.dataset.testid = `strip-sensor-${key}`;
-        pill.title = `Open ${lbl} graph in TX / ATU`;
+        pill.title = `Open ${lbl} graph in TX`;
         const lblEl = el('span', 'k4-sensor-pill-lbl', lbl);
         pill.appendChild(lblEl);
         const val = el('span', 'k4-sensor-pill-val', '--');
@@ -386,15 +422,12 @@
         return { pill, lbl: lblEl, val };
       };
       this._strip = {
-        vs: makeStripPill('vs', 'VS'),
-        is: makeStripPill('is', 'IS'),
-        pt: makeStripPill('pt', 'PA TEMP'),
+        vs: makeStripPill('vs', 'V'),
+        is: makeStripPill('is', 'I'),
+        pt: makeStripPill('pt', 'PA'),
         swr: makeStripPill('swr', 'SWR'),
       };
       this.drawerEl.appendChild(this.sensorStrip);
-
-      this.drawerScroll = el('div', 'k4-panel-scroll');
-      this.drawerEl.appendChild(this.drawerScroll);
     }
 
     _buildMobileShell() {
@@ -456,7 +489,7 @@
       const pane = el('div', 'k4-panel-pane');
 
       // Receiver Target & Sub RX
-      const rxCard = makeCard('Target Receiver');
+      const rxCard = makeCard('Target receiver');
       const targetGroup = el('div', 'k4-seg-group');
       const btnA = el('button', 'k4-seg-btn', 'VFO A (Main)');
       btnA.type = 'button';
@@ -481,7 +514,7 @@
       rxCard.appendChild(subRow.row);
       this._refs.subSwitch = subRow;
 
-      const linkRow = makeSwitchRow('Link VFOs', () => {
+      const linkRow = makeSwitchRow('VFO LNK', () => {
         const next = !this._snap().vfoLinked;
         if (this.state && typeof this.state.update === 'function') {
           this.state.update({ vfoLinked: next }, 'vfoLinked');
@@ -506,7 +539,7 @@
       pane.appendChild(rxCard);
 
       // Band Grid
-      const bandCard = makeCard('Amateur Bands');
+      const bandCard = makeCard('Amateur bands');
       const bandGrid = el('div', 'k4-pill-grid');
       const bands = Array.isArray(K4.BANDS) ? K4.BANDS : [];
       this._refs.bandBtns = [];
@@ -523,9 +556,9 @@
       bandCard.appendChild(bandGrid);
       pane.appendChild(bandCard);
 
-      // Mode Grid
-      const modeCard = makeCard('Operating Mode');
-      const modeGrid = el('div', 'k4-pill-grid k4-pill-grid--3');
+      // Mode Grid (5 columns x 2 rows)
+      const modeCard = makeCard('Operating mode');
+      const modeGrid = el('div', 'k4-pill-grid k4-pill-grid--5');
       this._refs.modeBtns = [];
       for (let i = 0; i < MODE_CHOICES.length; i++) {
         const mc = MODE_CHOICES[i];
@@ -541,7 +574,7 @@
       pane.appendChild(modeCard);
 
       // Tuning Step
-      const stepCard = makeCard('Tuning Step');
+      const stepCard = makeCard('Tuning step');
       const stepGrid = el('div', 'k4-pill-grid');
       this._refs.stepBtns = [];
       for (let i = 0; i < STEP_LABELS.length; i++) {
@@ -564,46 +597,46 @@
       stepCard.appendChild(stepGrid);
       pane.appendChild(stepCard);
 
-      // Frequency Bookmarks
-      const bmCard = makeCard('Frequency Bookmarks');
-      const bmForm = el('div', 'k4-bookmark-form');
-      const bmInput = document.createElement('input');
-      bmInput.type = 'text';
-      bmInput.className = 'k4-input';
-      bmInput.placeholder = 'Label (e.g. 20m DX)...';
-      bmInput.dataset.testid = 'bookmark-label-input';
-      const bmSaveBtn = el('button', 'k4-btn-secondary', '+ Save VFO');
-      bmSaveBtn.type = 'button';
-      bmSaveBtn.dataset.testid = 'bookmark-save-btn';
-      bmSaveBtn.addEventListener('click', () => this._saveCurrentBookmark());
-      bmInput.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter') {
-          e.preventDefault();
-          this._saveCurrentBookmark();
-        }
-      });
-      bmForm.appendChild(bmInput);
-      bmForm.appendChild(bmSaveBtn);
-      bmCard.appendChild(bmForm);
-
-      const bmList = el('div', 'k4-bookmark-list');
-      bmList.dataset.testid = 'bookmark-list';
-      bmCard.appendChild(bmList);
-      this._refs.bookmarkInput = bmInput;
-      this._refs.bookmarkList = bmList;
-      this._renderBookmarkList();
-      if (K4.BookmarkStore && typeof K4.BookmarkStore.subscribe === 'function') {
-        this._unsubBookmarks = K4.BookmarkStore.subscribe(() => this._renderBookmarkList());
-      }
-      pane.appendChild(bmCard);
-
       return pane;
     }
 
     _buildDspPane() {
       const pane = el('div', 'k4-panel-pane');
 
-      const filterCard = makeCard('IF Filter & Pitch');
+      const filterCard = makeCard('IF filter & pitch');
+      const trapWrap = el('div', 'k4-dsp-trap-wrap');
+      const trapSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      trapSvg.setAttribute('viewBox', '0 0 240 36');
+      trapSvg.setAttribute('class', 'k4-dsp-trap-svg');
+      trapSvg.dataset.testid = 'dsp-filter-trapezoid';
+      trapSvg.setAttribute('aria-hidden', 'true');
+      const trapCenter = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+      trapCenter.setAttribute('x1', '120');
+      trapCenter.setAttribute('y1', '2');
+      trapCenter.setAttribute('x2', '120');
+      trapCenter.setAttribute('y2', '34');
+      trapCenter.setAttribute('stroke-dasharray', '2 2');
+      trapCenter.setAttribute('class', 'k4-vfo-trap-center');
+      const trapBase = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+      trapBase.setAttribute('x1', '4');
+      trapBase.setAttribute('y1', '33');
+      trapBase.setAttribute('x2', '236');
+      trapBase.setAttribute('y2', '33');
+      trapBase.setAttribute('class', 'k4-vfo-trap-center');
+      const trapPoly = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
+      trapPoly.setAttribute('class', 'k4-vfo-trap-poly');
+      trapPoly.setAttribute('points', '72,33 90,7 150,7 168,33');
+      trapSvg.appendChild(trapBase);
+      trapSvg.appendChild(trapCenter);
+      trapSvg.appendChild(trapPoly);
+      const trapMeta = el('div', 'k4-dsp-trap-meta', 'BW 2.70k\nIS 1500');
+      trapWrap.appendChild(trapSvg);
+      trapWrap.appendChild(trapMeta);
+      filterCard.appendChild(trapWrap);
+      this._refs.dspTrapSvg = trapSvg;
+      this._refs.dspTrapPoly = trapPoly;
+      this._refs.dspTrapMeta = trapMeta;
+
       const applyFilter = (rx, patch) => {
         if (typeof this.client.setFilter === 'function') {
           this.client.setFilter(rx, patch);
@@ -1106,7 +1139,7 @@
 
       const panBadge = el('span', 'k4-pane-badge', 'PAN A');
       this._refs.dispBadge = panBadge;
-      const spanCard = makeCard('Spectrum Geometry', panBadge);
+      const spanCard = makeCard('PAN & REF LVL', panBadge);
       const spanGrid = el('div', 'k4-pill-grid');
       this._refs.spanBtns = [];
       for (let i = 0; i < SPAN_PRESETS.length; i++) {
@@ -1126,7 +1159,7 @@
       spanCard.appendChild(spanGrid);
 
       this._refs.spanSlider = makeSliderRow({
-        label: 'Span',
+        label: 'PAN Span',
         min: 6,
         max: 368,
         step: 1,
@@ -1143,7 +1176,7 @@
       spanCard.appendChild(this._refs.spanSlider.row);
 
       this._refs.refSlider = makeSliderRow({
-        label: 'Reference',
+        label: 'REF LVL',
         min: -160,
         max: 0,
         step: 1,
@@ -1169,7 +1202,7 @@
       spanCard.appendChild(this._refs.scaleSlider.row);
 
       this._refs.avgSlider = makeSliderRow({
-        label: 'Averaging',
+        label: 'PAN Averaging',
         min: 1,
         max: 20,
         step: 1,
@@ -1182,7 +1215,7 @@
       spanCard.appendChild(this._refs.avgSlider.row);
 
       this._refs.wbsSlider = makeSliderRow({
-        label: 'Waterfall Black',
+        label: 'WTR CLRS Floor',
         min: 5,
         max: 30,
         step: 1,
@@ -1227,14 +1260,26 @@
       actRow.appendChild(arNowBtn);
       spanCard.appendChild(actRow);
 
-      this._refs.fixedTuneSwitch = makeSwitchRow('Fixed Tune', () => {
-        if (this.panadapter) this.panadapter._autoFixedTuneFromDrag = false;
-        const s = this._snap();
-        this.client.setDisplay(this._dispRx(), { fixedTune: !s.fixedTune });
-      });
-      spanCard.appendChild(this._refs.fixedTuneSwitch.row);
+      spanCard.appendChild(el('span', 'k4-slider-label', 'Cursor Mode'));
+      const cursorGrid = el('div', 'k4-pill-grid k4-pill-grid--3');
+      cursorGrid.dataset.testid = 'cursor-mode-group';
+      this._refs.cursorModeBtns = [];
+      for (let i = 0; i < CURSOR_MODES.length; i++) {
+        const cm = CURSOR_MODES[i];
+        const btn = el('button', 'k4-choice-pill', cm.label);
+        btn.type = 'button';
+        btn.dataset.cursorMode = cm.key;
+        btn.addEventListener('click', () => {
+          if (this.panadapter) this.panadapter._autoFixedTuneFromDrag = false;
+          const patch = cm.mode === null ? { fixedTune: false } : { fixedTune: true, fixedTuneMode: cm.mode };
+          this.client.setDisplay(this._dispRx(), patch);
+        });
+        cursorGrid.appendChild(btn);
+        this._refs.cursorModeBtns.push({ cm, btn });
+      }
+      spanCard.appendChild(cursorGrid);
 
-      this._refs.freezeSwitch = makeSwitchRow('Freeze Waterfall', () => {
+      this._refs.freezeSwitch = makeSwitchRow('Freeze WTRFALL', () => {
         const s = this._snap();
         this.client.setDisplay(this._dispRx(s), { panFrozen: !s.panFrozen });
       });
@@ -1253,7 +1298,7 @@
       this._refs.fpsSlider.input.dataset.testid = 'fps-slider';
       spanCard.appendChild(this._refs.fpsSlider.row);
 
-      spanCard.appendChild(el('span', 'k4-slider-label', 'Pan DDC Blanker'));
+      spanCard.appendChild(el('span', 'k4-slider-label', 'PAN DDC Blanker'));
       const panNbSeg = el('div', 'k4-seg-group');
       const panNbModes = [
         [0, 'Off'],
@@ -1286,7 +1331,7 @@
 
       pane.appendChild(spanCard);
 
-      const layoutCard = makeCard('Panadapter Layout & LUT');
+      const layoutCard = makeCard('WTRFALL & WTR CLRS');
       const dpmGroup = el('div', 'k4-seg-group');
       const dpmMain = el('button', 'k4-seg-btn', '1x Main (A)');
       dpmMain.type = 'button';
@@ -1327,7 +1372,7 @@
       this._refs.peakHoldSwitch.btn.dataset.testid = 'peak-hold-switch';
       layoutCard.appendChild(this._refs.peakHoldSwitch.row);
 
-      layoutCard.appendChild(el('span', 'k4-slider-label', 'Waterfall Palette'));
+      layoutCard.appendChild(el('span', 'k4-slider-label', 'WTR CLRS Palette'));
       const palGrid = el('div', 'k4-pill-grid k4-pill-grid--2');
       this._refs.paletteBtns = {};
       for (let i = 0; i < PALETTES.length; i++) {
@@ -1364,7 +1409,7 @@
       this._refs.dsmBtns = [specWfBtn, specOnlyBtn];
 
       this._refs.wfhSlider = makeSliderRow({
-        label: 'Waterfall Split',
+        label: 'WTRFALL Height',
         min: 20,
         max: 80,
         step: 5,
@@ -1603,7 +1648,43 @@
 
     _buildTunePane() {
       const pane = el('div', 'k4-panel-pane k4-pane--tune');
-      const card = makeCard('Direct Frequency Entry');
+      const card = makeCard('Direct frequency entry');
+
+      const vfoOpRow = el('div', 'k4-pill-grid');
+      vfoOpRow.dataset.testid = 'mobile-vfo-ops';
+      const abBtn = el('button', 'k4-choice-pill', 'A/B');
+      abBtn.type = 'button';
+      abBtn.addEventListener('click', () => {
+        if (typeof this.client.vfoSwap === 'function') this.client.vfoSwap(false);
+        else this._sendCat('SW;');
+      });
+      const a2bBtn = el('button', 'k4-choice-pill', 'A►B');
+      a2bBtn.type = 'button';
+      a2bBtn.addEventListener('click', () => {
+        if (typeof this.client.vfoCopyAtoB === 'function') this.client.vfoCopyAtoB(false);
+        else this._sendCat('SWT11;');
+      });
+      const splitBtn = el('button', 'k4-choice-pill', 'SPLIT');
+      splitBtn.type = 'button';
+      splitBtn.addEventListener('click', () => {
+        const next = !this._snap().splitEnabled;
+        if (typeof this.client.setSplit === 'function') this.client.setSplit(next);
+        else this._sendCat(`FT${next ? '1' : '0'};`);
+      });
+      const subBtn = el('button', 'k4-choice-pill is-vfo-b', 'SUB');
+      subBtn.type = 'button';
+      subBtn.addEventListener('click', () => {
+        const next = !this._snap().subRxEnabled;
+        if (typeof this.client.setSubRx === 'function') this.client.setSubRx(next);
+        else this._sendCat(`SB${next ? '1' : '0'};`);
+      });
+      vfoOpRow.appendChild(abBtn);
+      vfoOpRow.appendChild(a2bBtn);
+      vfoOpRow.appendChild(splitBtn);
+      vfoOpRow.appendChild(subBtn);
+      card.appendChild(vfoOpRow);
+      this._refs.mobileSplitBtn = splitBtn;
+      this._refs.mobileSubBtn = subBtn;
 
       const topRow = el('div', 'k4-tune-top-row');
 
@@ -1739,60 +1820,6 @@
       }
     }
 
-    _saveCurrentBookmark() {
-      if (!K4.BookmarkStore || !this._refs.bookmarkInput) return;
-      const snap = this._snap();
-      const rx = this.getTargetRx();
-      const rxS = this._rxSnap(rx);
-      const rawLabel = this._refs.bookmarkInput.value.trim();
-      const label = rawLabel || `${((rxS.freqHz || 7074000) / 1e6).toFixed(4)} MHz`;
-      K4.BookmarkStore.add({
-        label,
-        freqHz: rxS.freqHz || 7074000,
-        mode: rxS.mode,
-        dataSubMode: rxS.dataSubMode || 0,
-        bwHz: rxS.bwHz,
-      });
-      this._refs.bookmarkInput.value = '';
-    }
-
-    _recallBookmark(bm) {
-      if (!bm || !this.client) return;
-      const rx = this.getTargetRx();
-      this.client.tune(rx, bm.freqHz, { optimistically: true });
-      if (bm.mode != null) {
-        this.client.setMode(rx, bm.mode, bm.dataSubMode || 0);
-      }
-      if (bm.bwHz != null && typeof this.client.setFilter === 'function') {
-        this.client.setFilter(rx, { bwHz: bm.bwHz });
-      }
-    }
-
-    _renderBookmarkList() {
-      const listEl = this._refs.bookmarkList;
-      if (!listEl || !K4.BookmarkStore) return;
-      listEl.textContent = '';
-      const bookmarks = K4.BookmarkStore.list();
-      for (let i = 0; i < bookmarks.length; i++) {
-        const bm = bookmarks[i];
-        const row = el('div', 'k4-bookmark-row');
-        const recallBtn = el('button', 'k4-bookmark-recall', `${bm.label} · ${(bm.freqHz / 1e6).toFixed(4)}`);
-        recallBtn.type = 'button';
-        recallBtn.dataset.bookmarkId = bm.id;
-        recallBtn.addEventListener('click', () => this._recallBookmark(bm));
-
-        const delBtn = el('button', 'k4-bookmark-del', '×');
-        delBtn.type = 'button';
-        delBtn.title = `Delete bookmark ${bm.label}`;
-        delBtn.dataset.bookmarkDel = bm.id;
-        delBtn.addEventListener('click', () => K4.BookmarkStore.remove(bm.id));
-
-        row.appendChild(recallBtn);
-        row.appendChild(delBtn);
-        listEl.appendChild(row);
-      }
-    }
-
     _uiPerf() {
       if (typeof window === 'undefined') return null;
       return (window.__k4UiPerf = window.__k4UiPerf || {
@@ -1912,7 +1939,7 @@
       if (rxS.notchOn && rxS.notchHz > 0 && rxS.notchHz <= maxHz) {
         const nx = (rxS.notchHz / maxHz) * w;
         ctx.save();
-        ctx.strokeStyle = 'rgba(245, 158, 11, 0.75)';
+        ctx.strokeStyle = 'rgba(34, 197, 94, 0.80)';
         ctx.setLineDash([3, 3]);
         ctx.beginPath();
         ctx.moveTo(nx, 0);
@@ -2853,12 +2880,27 @@
       this._syncAfScopeLoop();
     }
 
-    syncHost() {
-      const isMobile = window.innerWidth < 960;
-
+    _syncDesktopTabHighlights() {
+      const targetRx = this.getTargetRx();
+      if (Array.isArray(this._desktopTabItems)) {
+        for (let i = 0; i < this._desktopTabItems.length; i++) {
+          const item = this._desktopTabItems[i];
+          const active =
+            item.id === this._activeDesktopTab &&
+            (item.rx === null || item.rx === targetRx);
+          item.btn.classList.toggle('is-active', active);
+        }
+        return;
+      }
       for (const id of Object.keys(this._desktopTabBtns)) {
         this._desktopTabBtns[id].classList.toggle('is-active', id === this._activeDesktopTab);
       }
+    }
+
+    syncHost() {
+      const isMobile = window.innerWidth < 960;
+
+      this._syncDesktopTabHighlights();
 
       for (const id of Object.keys(this._mobileNavBtns)) {
         this._mobileNavBtns[id].classList.toggle('is-active', id === this._activeMobileTab);
@@ -2958,6 +3000,7 @@
           k === 'displayMode' ||
           k === 'waterfallHeightPct' ||
           k === 'fixedTune' ||
+          k === 'fixedTuneMode' ||
           k === 'panScaleDb' ||
           k === 'wfBlack' ||
           k === 'autoRef'
@@ -3006,6 +3049,7 @@
       if (perf) perf.inspectorUpdates += 1;
 
       const targetRx = this.getTargetRx();
+      this._syncDesktopTabHighlights();
 
       // Target buttons
       if (this._refs.targetBtns) {
@@ -3114,9 +3158,31 @@
       if (this._refs.mobileLockBtn) {
         this._refs.mobileLockBtn.textContent = rxS.locked ? 'Unlock VFO' : 'Lock VFO';
       }
+      if (this._refs.mobileSplitBtn) {
+        this._refs.mobileSplitBtn.classList.toggle('is-active', Boolean(snapshot.splitEnabled));
+      }
+      if (this._refs.mobileSubBtn) {
+        this._refs.mobileSubBtn.classList.toggle('is-active', Boolean(snapshot.subRxEnabled));
+      }
     }
 
     _updateDspTab(snapshot, rxS) {
+      const isB = this.getTargetRx() === 'B';
+      if (this._refs.dspTrapPoly) {
+        const trap =
+          typeof K4.computeFilterTrapezoidPoints === 'function'
+            ? K4.computeFilterTrapezoidPoints(rxS, snapshot.cwPitchHz ?? 500, 240, 34)
+            : null;
+        const pts = trap && trap.points ? trap.points : '72,32 88,6 152,6 168,32';
+        this._refs.dspTrapPoly.setAttribute('points', pts);
+        this._refs.dspTrapPoly.style.stroke = isB ? '#22C55E' : '#38BDF8';
+        this._refs.dspTrapPoly.style.fill = isB ? 'rgba(34, 197, 94, 0.28)' : 'rgba(56, 189, 248, 0.28)';
+      }
+      if (this._refs.dspTrapMeta) {
+        const bw = Number(rxS.bwHz ?? 2700);
+        const bwStr = bw >= 1000 ? `${(bw / 1000).toFixed(2).replace(/0$/, '')}k` : `${bw}`;
+        this._refs.dspTrapMeta.textContent = `BW ${bwStr} · IS ${Math.round(rxS.ifShiftHz ?? 1500)}`;
+      }
 
       // DSP sliders & toggles
       if (this._refs.bwSlider) this._refs.bwSlider.sync(rxS.bwHz ?? 2700);
@@ -3247,7 +3313,16 @@
       if (this._refs.avgSlider) this._refs.avgSlider.sync(snapshot.panAvg ?? 4);
       if (this._refs.wbsSlider) this._refs.wbsSlider.sync(dispS.wfBlack ?? 14);
       if (this._refs.autoRefSwitch) this._refs.autoRefSwitch.sync(dispS.autoRef);
-      if (this._refs.fixedTuneSwitch) this._refs.fixedTuneSwitch.sync(snapshot.fixedTune);
+      if (this._refs.cursorModeBtns) {
+        const ftOn = Boolean(snapshot.fixedTune);
+        const ftMode = Number.isFinite(Number(snapshot.fixedTuneMode)) ? Number(snapshot.fixedTuneMode) : 1;
+        for (let i = 0; i < this._refs.cursorModeBtns.length; i++) {
+          const { cm, btn } = this._refs.cursorModeBtns[i];
+          const active = cm.mode === null ? !ftOn : (ftOn && ftMode === cm.mode);
+          btn.classList.toggle('is-active', active);
+          btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+        }
+      }
       if (this._refs.freezeSwitch) this._refs.freezeSwitch.sync(snapshot.panFrozen);
       if (this._refs.fpsSlider) this._refs.fpsSlider.sync(snapshot.panFps ?? 20);
       if (this._refs.panNbBtns) {
@@ -3393,28 +3468,49 @@
     _updateSensorStrip(snapshot) {
       if (!this._strip) return;
       const { vs, isAmps, peakIs, pt, tf, swr } = extractSensorReadings(snapshot);
+      const conn = (snapshot && snapshot.connection) || {};
+
+      if (this._statusCyclerVal) {
+        const modeIdx = this._statusModeIdx || 0;
+        let statusText = '';
+        if (modeIdx === 0) {
+          statusText = `UTC ${new Date().toISOString().slice(11, 16)}Z`;
+        } else if (modeIdx === 1) {
+          statusText = conn.rttMs !== null && conn.rttMs !== undefined ? `RTT ${conn.rttMs}ms` : 'RTT —';
+        } else if (modeIdx === 2) {
+          const vTxt = vs != null ? `${vs.toFixed(1)}V` : '—';
+          const aTxt = isAmps != null ? `${isAmps.toFixed(1)}A` : '';
+          statusText = aTxt ? `${vTxt} ${aTxt}` : vTxt;
+        } else {
+          statusText = snapshot.serialNumber ? `K4 #${snapshot.serialNumber}` : (snapshot.radioId || 'K4');
+        }
+        this._statusCyclerVal.textContent = statusText;
+        if (this._statusCyclerBtn) {
+          this._statusCyclerBtn.dataset.mode = ['utc', 'rtt', 'dc', 'radio'][modeIdx] || 'utc';
+        }
+      }
 
       this._strip.vs.val.textContent = vs != null ? `${vs.toFixed(1)}V` : '—';
       this._strip.vs.pill.dataset.level = sensorVoltLevel(vs);
       this._strip.vs.pill.classList.toggle('is-selected', this._selectedSensorKey === 'vs');
 
       this._strip.is.val.textContent = isAmps != null
-        ? (peakIs != null && peakIs > isAmps + 0.3 ? `${isAmps.toFixed(1)}/${peakIs.toFixed(0)}A` : `${isAmps.toFixed(1)}A`)
+        ? (peakIs != null && peakIs > isAmps + 0.3 ? `${isAmps.toFixed(1)}A` : `${isAmps.toFixed(1)}A`)
         : '—';
       this._strip.is.pill.dataset.level = isAmps != null && isAmps > 21 ? 'warn' : 'ok';
       this._strip.is.pill.classList.toggle('is-selected', this._selectedSensorKey === 'is');
 
       const stripTempKey = pt == null && tf != null ? 'tf' : 'pt';
       const stripTempVal = pt != null ? pt : tf;
-      const stripTempLbl = stripTempKey === 'tf' ? 'FP TEMP' : 'PA TEMP';
+      const stripTempLbl = stripTempKey === 'tf' ? 'FP' : 'PA';
       this._strip.pt.lbl.textContent = stripTempLbl;
       this._strip.pt.pill.dataset.sensorKey = stripTempKey;
-      this._strip.pt.pill.title = `Open ${stripTempLbl} graph in TX / ATU`;
-      this._strip.pt.val.textContent = stripTempVal != null ? `${stripTempVal.toFixed(0)}°C` : '—';
+      this._strip.pt.pill.title = `Open ${stripTempKey === 'tf' ? 'Front Panel' : 'PA'} temp graph in TX`;
+      this._strip.pt.val.textContent = stripTempVal != null ? `${stripTempVal.toFixed(0)}°` : '—';
       this._strip.pt.pill.dataset.level = stripTempKey === 'tf' ? sensorTfLevel(stripTempVal) : sensorTempLevel(stripTempVal);
       this._strip.pt.pill.classList.toggle('is-selected', this._selectedSensorKey === stripTempKey);
 
-      this._strip.swr.val.textContent = `${swr.toFixed(2)}:1`;
+      this._strip.swr.val.textContent = `${swr.toFixed(1)}`;
       this._strip.swr.pill.dataset.level = sensorSwrLevel(swr);
       this._strip.swr.pill.classList.toggle('is-selected', this._selectedSensorKey === 'swr');
     }

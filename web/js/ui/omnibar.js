@@ -134,6 +134,50 @@
       wrap.appendChild(escHint);
       card.appendChild(wrap);
 
+      const bmSection = document.createElement('div');
+      bmSection.className = 'k4-omnibar-bookmarks';
+      const bmForm = document.createElement('div');
+      bmForm.className = 'k4-bookmark-form';
+      this.bmInputEl = document.createElement('input');
+      this.bmInputEl.type = 'text';
+      this.bmInputEl.className = 'k4-input';
+      this.bmInputEl.placeholder = 'Bookmark label (e.g. 20m DX)...';
+      this.bmInputEl.dataset.testid = 'bookmark-label-input';
+      this.bmInputEl.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          e.stopPropagation();
+          this._saveCurrentBookmark();
+        } else if (e.key === 'Escape') {
+          e.preventDefault();
+          e.stopPropagation();
+          this.close();
+        }
+      });
+      this.bmSaveBtn = document.createElement('button');
+      this.bmSaveBtn.type = 'button';
+      this.bmSaveBtn.className = 'k4-btn-secondary';
+      this.bmSaveBtn.textContent = '+ Save VFO';
+      this.bmSaveBtn.dataset.testid = 'bookmark-save-btn';
+      this.bmSaveBtn.addEventListener('click', () => this._saveCurrentBookmark());
+      bmForm.appendChild(this.bmInputEl);
+      bmForm.appendChild(this.bmSaveBtn);
+      bmSection.appendChild(bmForm);
+
+      this.bmListEl = document.createElement('div');
+      this.bmListEl.className = 'k4-bookmark-list';
+      this.bmListEl.dataset.testid = 'bookmark-list';
+      bmSection.appendChild(this.bmListEl);
+      card.appendChild(bmSection);
+
+      this._renderBookmarkBar();
+      if (K4.BookmarkStore && typeof K4.BookmarkStore.subscribe === 'function') {
+        this._unsubBookmarks = K4.BookmarkStore.subscribe(() => {
+          this._renderBookmarkBar();
+          if (this._isOpen) this._refresh();
+        });
+      }
+
       this.listEl = document.createElement('div');
       this.listEl.className = 'k4-omnibar-list';
       this.listEl.setAttribute('role', 'listbox');
@@ -168,6 +212,59 @@
       });
     }
 
+    _saveCurrentBookmark() {
+      if (!K4.BookmarkStore || !this.bmInputEl) return;
+      const snap = this.state && typeof this.state.getSnapshot === 'function' ? this.state.getSnapshot() : this.state;
+      const rx = typeof this.getTargetRx === 'function' ? this.getTargetRx() : 'A';
+      const rxS = (rx === 'B' ? snap && snap.rxB : snap && snap.rxA) || {};
+      const freqHz = Number(rxS.freqHz) || 7074000;
+      const rawLabel = this.bmInputEl.value.trim();
+      const label = rawLabel || `${(freqHz / 1e6).toFixed(4)} MHz`;
+      K4.BookmarkStore.add({
+        label,
+        freqHz,
+        mode: rxS.mode,
+        dataSubMode: rxS.dataSubMode || 0,
+        bwHz: rxS.bwHz,
+      });
+      this.bmInputEl.value = '';
+      if (typeof this.onNotify === 'function') {
+        this.onNotify(`Saved bookmark ${label}`, 'info');
+      }
+    }
+
+    _renderBookmarkBar() {
+      if (!this.bmListEl || !K4.BookmarkStore) return;
+      this.bmListEl.textContent = '';
+      const bookmarks = K4.BookmarkStore.list();
+      for (let i = 0; i < bookmarks.length; i++) {
+        const bm = bookmarks[i];
+        const row = document.createElement('div');
+        row.className = 'k4-bookmark-row';
+        const recallBtn = document.createElement('button');
+        recallBtn.type = 'button';
+        recallBtn.className = 'k4-bookmark-recall';
+        recallBtn.textContent = `${bm.label} · ${(bm.freqHz / 1e6).toFixed(4)}`;
+        recallBtn.dataset.bookmarkId = bm.id;
+        recallBtn.addEventListener('click', () => {
+          this._recallBookmark(bm);
+          this.close();
+        });
+
+        const delBtn = document.createElement('button');
+        delBtn.type = 'button';
+        delBtn.className = 'k4-bookmark-del';
+        delBtn.textContent = '×';
+        delBtn.title = `Delete bookmark ${bm.label}`;
+        delBtn.dataset.bookmarkDel = bm.id;
+        delBtn.addEventListener('click', () => K4.BookmarkStore.remove(bm.id));
+
+        row.appendChild(recallBtn);
+        row.appendChild(delBtn);
+        this.bmListEl.appendChild(row);
+      }
+    }
+
     isOpen() {
       return this._isOpen;
     }
@@ -179,6 +276,7 @@
       this.modal.dataset.open = 'true';
       this.inputEl.value = initial;
       this._selectedIdx = 0;
+      this._renderBookmarkBar();
       this._refresh();
       this.inputEl.focus();
       if (initial.length > 0 && typeof this.inputEl.setSelectionRange === 'function') {

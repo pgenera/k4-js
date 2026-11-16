@@ -68,6 +68,52 @@
     return `${hz}Hz`;
   }
 
+  function computeFilterTrapezoidPoints(rxState, cwPitchHz, w, h) {
+    const s = rxState || {};
+    const mode = Number(s.mode) || 2;
+    const bwHz = Math.max(50, Math.min(5000, Number(s.bwHz) || 2400));
+    let shiftHz = 0;
+    if (mode === 3 || mode === 7) {
+      const nom = Number.isFinite(Number(cwPitchHz)) ? Number(cwPitchHz) : 500;
+      shiftHz = (Number.isFinite(Number(s.ifShiftHz)) ? Number(s.ifShiftHz) : nom) - nom;
+    } else if (mode === 1 || mode === 2 || mode === 6 || mode === 9) {
+      const nom = 1500;
+      shiftHz = (Number.isFinite(Number(s.ifShiftHz)) ? Number(s.ifShiftHz) : nom) - nom;
+    }
+    const maxHz = 4500;
+    const topHalf = Math.max(2, Math.min(w * 0.42, (bwHz / maxHz) * (w * 0.72)));
+    const skirt = Math.max(1.4, w * 0.08);
+    const botHalf = Math.min(w * 0.48, topHalf + skirt);
+    const rawCx = w * 0.5 + (shiftHz / maxHz) * (w * 0.55);
+    const cx = Math.max(botHalf + 1, Math.min(w - botHalf - 1, rawCx));
+    const topY = 2;
+    const botY = h - 1.5;
+    const points = `${(cx - botHalf).toFixed(1)},${botY} ${(cx - topHalf).toFixed(1)},${topY} ${(cx + topHalf).toFixed(1)},${topY} ${(cx + botHalf).toFixed(1)},${botY}`;
+    return { points, cx, topY, botY };
+  }
+
+  K4.computeFilterTrapezoidPoints = computeFilterTrapezoidPoints;
+
+  function mapDigitStepToVtIdx(digitStepHz) {
+    if (digitStepHz <= 1) return 0;
+    if (digitStepHz <= 10) return 1;
+    if (digitStepHz <= 100) return 2;
+    if (digitStepHz <= 1000) return 3;
+    return 6; // 10 kHz max K4 VT step
+  }
+
+  function stepHzToDigitIndex(stepHz) {
+    const hz = Number(stepHz) || 100;
+    if (hz <= 1) return 7;
+    if (hz <= 10) return 6;
+    if (hz <= 100) return 5;
+    if (hz <= 5000) return 4;
+    if (hz <= 10000) return 3;
+    if (hz <= 100000) return 2;
+    if (hz <= 1000000) return 1;
+    return 0;
+  }
+
   function createLockIconSvg() {
     const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
     svg.setAttribute('viewBox', '0 0 16 16');
@@ -109,6 +155,7 @@
       this._locked = false;
       this._isTarget = this.rx === 'A';
       this._freqHz = this.rx === 'A' ? 14074000 : 14025000;
+      this._lastBwHz = this.rx === 'A' ? 2700 : 500;
       this._subRxEnabled = false;
 
       this._buildDom();
@@ -131,10 +178,15 @@
       });
       root.appendChild(this.badgeBtn);
 
+      this.bodyEl = document.createElement('div');
+      this.bodyEl.className = 'k4-vfo-body';
+      this.topRowEl = document.createElement('div');
+      this.topRowEl.className = 'k4-vfo-top-row';
+
       this.freqEl = document.createElement('div');
       this.freqEl.className = 'k4-vfo-freq';
       this.freqEl.dataset.testid = this.rx === 'A' ? 'vfo-a-freq' : 'vfo-b-freq';
-      this.freqEl.title = 'Hover and scroll or click digit top/bottom to tune; double-click to jump';
+      this.freqEl.title = 'Scroll or click digit top/bottom to tune; right-click digit to set step; double-click to jump';
       this.freqEl.addEventListener('dblclick', (e) => {
         e.preventDefault();
         this.onOpenOmnibar();
@@ -154,7 +206,7 @@
         span.tabIndex = 0;
         span.setAttribute('role', 'spinbutton');
         span.dataset.step = String(step);
-        span.title = `Scroll or click top/bottom (±${formatStepLabel(step)})`;
+        span.title = `Scroll/click ±${formatStepLabel(step)} · Right-click: set ${formatStepLabel(Math.min(step, 10000))} tuning step`;
         span.textContent = '0';
 
         span.addEventListener('wheel', (e) => {
@@ -183,6 +235,18 @@
           this._tuneBy(dir * effStep);
         });
 
+        span.addEventListener('contextmenu', (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          this.onSelectTarget(this.rx);
+          const stepIdx = mapDigitStepToVtIdx(step);
+          if (this.client && typeof this.client.setStep === 'function') {
+            this.client.setStep(this.rx, stepIdx);
+          } else if (this.client && typeof this.client.sendCat === 'function') {
+            this.client.sendCat(`VT${this.rx === 'B' ? '$' : ''}${stepIdx};`);
+          }
+        });
+
         span.addEventListener('keydown', (e) => {
           if (e.key === 'ArrowUp') {
             e.preventDefault();
@@ -200,8 +264,14 @@
       const unit = document.createElement('span');
       unit.className = 'k4-vfo-unit';
       unit.textContent = 'MHz';
+      unit.title = 'Click MHz unit to open Quick Jump & Bookmarks';
+      unit.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.onSelectTarget(this.rx);
+        this.onOpenOmnibar();
+      });
       this.freqEl.appendChild(unit);
-      root.appendChild(this.freqEl);
+      this.topRowEl.appendChild(this.freqEl);
 
       root.addEventListener('click', (e) => {
         const tgt = e.target;
@@ -213,6 +283,8 @@
         }
         if (
           tgt === root ||
+          tgt === this.bodyEl ||
+          tgt === this.topRowEl ||
           tgt === this.freqEl ||
           tgt === this.pillsEl ||
           (tgt &&
@@ -224,13 +296,46 @@
         }
       });
 
+      this.txBadge = document.createElement('span');
+      this.txBadge.className = 'k4-tx-target-tag';
+      this.txBadge.dataset.testid = this.rx === 'A' ? 'vfo-a-tx-badge' : 'vfo-b-tx-badge';
+      this.txBadge.textContent = 'TX';
+      this.txBadge.hidden = true;
+      this.topRowEl.appendChild(this.txBadge);
+
+      this.ritBadge = document.createElement('span');
+      this.ritBadge.className = 'k4-vfo-rit-badge';
+      this.ritBadge.dataset.testid = `vfo-${this.rx}-rit-badge`;
+      this.ritBadge.textContent = 'RIT';
+      this.ritBadge.hidden = true;
+      this.topRowEl.appendChild(this.ritBadge);
+
+      this.lockBtn = document.createElement('button');
+      this.lockBtn.type = 'button';
+      this.lockBtn.className = 'k4-mini-pill k4-vfo-lock';
+      this.lockBtn.title = `Lock/unlock VFO ${this.rx}`;
+      this.lockBtn.appendChild(createLockIconSvg());
+      this.lockBtn.addEventListener('click', () => {
+        const next = !this._locked;
+        if (typeof this.client.setLock === 'function') {
+          this.client.setLock(this.rx, next);
+        } else {
+          const cmd = K4.CatCodec && K4.CatCodec.builders && K4.CatCodec.builders.lock
+            ? K4.CatCodec.builders.lock(this.rx, next)
+            : `LK${this.rx === 'B' ? '$' : ''}${next ? '1' : '0'};`;
+          this.client.sendCat(cmd);
+        }
+      });
+      this.topRowEl.appendChild(this.lockBtn);
+      this.bodyEl.appendChild(this.topRowEl);
+
       this.pillsEl = document.createElement('div');
       this.pillsEl.className = 'k4-vfo-pills';
 
       if (this.rx === 'B') {
         this.subBtn = document.createElement('button');
         this.subBtn.type = 'button';
-        this.subBtn.className = 'k4-mini-pill k4-vfo-sub-btn is-amber';
+        this.subBtn.className = 'k4-mini-pill k4-vfo-sub-btn is-vfo-b is-amber';
         this.subBtn.textContent = 'SUB';
         this.subBtn.title = 'Toggle Sub Receiver';
         this.subBtn.addEventListener('click', () => {
@@ -253,13 +358,6 @@
         this.splitBadge.hidden = true;
         this.pillsEl.appendChild(this.splitBadge);
       }
-
-      this.txBadge = document.createElement('span');
-      this.txBadge.className = 'k4-tx-target-tag';
-      this.txBadge.dataset.testid = this.rx === 'A' ? 'vfo-a-tx-badge' : 'vfo-b-tx-badge';
-      this.txBadge.textContent = 'TX';
-      this.txBadge.hidden = true;
-      this.pillsEl.appendChild(this.txBadge);
 
       this.bandBtn = document.createElement('button');
       this.bandBtn.type = 'button';
@@ -285,39 +383,70 @@
       this.bwBtn = document.createElement('button');
       this.bwBtn.type = 'button';
       this.bwBtn.className = 'k4-mini-pill k4-vfo-bw';
-      this.bwBtn.title = 'Open Filter & DSP controls';
+      this.bwBtn.title = 'Click to open DSP · Scroll wheel to adjust filter width';
+      const svgNs = 'http://www.w3.org/2000/svg';
+      this.bwTrapSvg = document.createElementNS(svgNs, 'svg');
+      this.bwTrapSvg.setAttribute('viewBox', '0 0 22 11');
+      this.bwTrapSvg.setAttribute('class', 'k4-vfo-trap-svg');
+      this.bwTrapSvg.dataset.testid = this.rx === 'A' ? 'vfo-a-filter-trapezoid' : 'vfo-b-filter-trapezoid';
+      this.bwTrapSvg.setAttribute('aria-hidden', 'true');
+      const centerMark = document.createElementNS(svgNs, 'line');
+      centerMark.setAttribute('x1', '11');
+      centerMark.setAttribute('y1', '1');
+      centerMark.setAttribute('x2', '11');
+      centerMark.setAttribute('y2', '10');
+      centerMark.setAttribute('class', 'k4-vfo-trap-center');
+      this.bwTrapPoly = document.createElementNS(svgNs, 'polygon');
+      this.bwTrapPoly.setAttribute('class', 'k4-vfo-trap-poly');
+      this.bwTrapPoly.setAttribute('points', '3,9.5 6,2 16,2 19,9.5');
+      this.bwTrapSvg.appendChild(centerMark);
+      this.bwTrapSvg.appendChild(this.bwTrapPoly);
+      this.bwTextEl = document.createElement('span');
+      this.bwTextEl.className = 'k4-vfo-bw-text';
+      this.bwTextEl.textContent = '2.7k';
+      this.bwBtn.appendChild(this.bwTrapSvg);
+      this.bwBtn.appendChild(this.bwTextEl);
       this.bwBtn.addEventListener('click', () => {
         this.onSelectTarget(this.rx);
         this.onOpenInspector('dsp');
       });
-      this.pillsEl.appendChild(this.bwBtn);
-
-      this.ritBadge = document.createElement('span');
-      this.ritBadge.className = 'k4-vfo-rit-badge';
-      this.ritBadge.dataset.testid = `vfo-${this.rx}-rit-badge`;
-      this.ritBadge.textContent = 'RIT';
-      this.ritBadge.hidden = true;
-      this.pillsEl.appendChild(this.ritBadge);
-
-      this.lockBtn = document.createElement('button');
-      this.lockBtn.type = 'button';
-      this.lockBtn.className = 'k4-mini-pill k4-vfo-lock';
-      this.lockBtn.title = `Lock/unlock VFO ${this.rx}`;
-      this.lockBtn.appendChild(createLockIconSvg());
-      this.lockBtn.addEventListener('click', () => {
-        const next = !this._locked;
-        if (typeof this.client.setLock === 'function') {
-          this.client.setLock(this.rx, next);
-        } else {
-          const cmd = K4.CatCodec && K4.CatCodec.builders && K4.CatCodec.builders.lock
-            ? K4.CatCodec.builders.lock(this.rx, next)
-            : `LK${this.rx === 'B' ? '$' : ''}${next ? '1' : '0'};`;
+      this.bwBtn.addEventListener('wheel', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        this.onSelectTarget(this.rx);
+        const cur = Number(this._lastBwHz) || 2400;
+        const stepBw = cur < 1000 ? 50 : 100;
+        const dir = e.deltaY < 0 ? 1 : -1;
+        const nextBw = Math.max(50, Math.min(4000, Math.round((cur + dir * stepBw) / 50) * 50));
+        if (nextBw === cur) return;
+        this._lastBwHz = nextBw;
+        if (this.client && typeof this.client.setFilter === 'function') {
+          this.client.setFilter(this.rx, { bwHz: nextBw });
+        } else if (this.client && typeof this.client.sendCat === 'function') {
+          const cmd = K4.CatCodec && K4.CatCodec.builders && K4.CatCodec.builders.bw
+            ? K4.CatCodec.builders.bw(this.rx, nextBw)
+            : `BW${this.rx === 'B' ? '$' : ''}${String(Math.round(nextBw / 10)).padStart(4, '0')};`;
           this.client.sendCat(cmd);
         }
-      });
-      this.pillsEl.appendChild(this.lockBtn);
+      }, { passive: false });
+      this.pillsEl.appendChild(this.bwBtn);
 
-      root.appendChild(this.pillsEl);
+      this.dspFlagsEl = document.createElement('span');
+      this.dspFlagsEl.className = 'k4-vfo-dsp-flags';
+      this._dspFlagEls = {};
+      for (const flagKey of ['PRE', 'ATT', 'NB', 'NR', 'APF', 'NTCH']) {
+        const tag = document.createElement('span');
+        tag.className = 'k4-vfo-dsp-tag';
+        tag.dataset.flag = flagKey;
+        tag.textContent = flagKey;
+        tag.hidden = true;
+        this.dspFlagsEl.appendChild(tag);
+        this._dspFlagEls[flagKey] = tag;
+      }
+      this.pillsEl.appendChild(this.dspFlagsEl);
+
+      this.bodyEl.appendChild(this.pillsEl);
+      root.appendChild(this.bodyEl);
     }
 
     _tuneBy(deltaHz) {
@@ -412,6 +541,17 @@
         }
       }
 
+      const stepDigitIdx = stepHzToDigitIndex(rxState.stepHz);
+      if (this._lastCache.stepDigitIdx !== stepDigitIdx) {
+        this._lastCache.stepDigitIdx = stepDigitIdx;
+        for (let i = 0; i < 8; i++) {
+          const el = this._digitEls[i];
+          const active = i === stepDigitIdx;
+          el.classList.toggle('is-step-digit', active);
+          el.dataset.stepActive = active ? 'true' : 'false';
+        }
+      }
+
       if (this._lastCache.locked !== this._locked) {
         this._lastCache.locked = this._locked;
         this.freqEl.dataset.locked = this._locked ? 'true' : 'false';
@@ -431,10 +571,21 @@
         this.modeBtn.textContent = modeLabel;
       }
 
-      const bwLabel = formatBwText(rxState.bwHz);
+      const bwHzNum = Number(rxState.bwHz) || 2400;
+      this._lastBwHz = bwHzNum;
+      const bwLabel = formatBwText(bwHzNum);
       if (this._lastCache.bw !== bwLabel) {
         this._lastCache.bw = bwLabel;
-        this.bwBtn.textContent = bwLabel;
+        if (this.bwTextEl) this.bwTextEl.textContent = bwLabel;
+        else this.bwBtn.textContent = bwLabel;
+      }
+      if (this.bwTrapPoly) {
+        const trapSig = `${bwHzNum}:${rxState.ifShiftHz ?? ''}:${rxState.mode ?? ''}:${snapshot.cwPitchHz ?? ''}`;
+        if (this._lastCache.trapSig !== trapSig) {
+          this._lastCache.trapSig = trapSig;
+          const geom = computeFilterTrapezoidPoints(rxState, snapshot.cwPitchHz, 22, 11);
+          this.bwTrapPoly.setAttribute('points', geom.points);
+        }
       }
 
       const ritOn = Boolean(rxState.ritOn);
@@ -445,6 +596,24 @@
         this._lastCache.ritText = ritText;
         this.ritBadge.hidden = !ritOn;
         this.ritBadge.textContent = ritText;
+      }
+
+      if (this._dspFlagEls) {
+        const flags = {
+          PRE: Number(rxState.preamp) > 0,
+          ATT: Number(rxState.attenDb) > 0,
+          NB: Boolean(rxState.nbOn),
+          NR: Boolean(rxState.nrOn),
+          APF: Boolean(rxState.apfOn),
+          NTCH: Boolean(rxState.notchOn),
+        };
+        const flagSig = `${flags.PRE ? 1 : 0}${flags.ATT ? 1 : 0}${flags.NB ? 1 : 0}${flags.NR ? 1 : 0}${flags.APF ? 1 : 0}${flags.NTCH ? 1 : 0}`;
+        if (this._lastCache.flagSig !== flagSig) {
+          this._lastCache.flagSig = flagSig;
+          for (const key of Object.keys(this._dspFlagEls)) {
+            this._dspFlagEls[key].hidden = !flags[key];
+          }
+        }
       }
     }
   }

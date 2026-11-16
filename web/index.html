@@ -50,19 +50,35 @@
       </div>
 
       <div id="vfo-cluster" class="k4-vfo-cluster" data-testid="vfo-cluster" role="group" aria-label="VFO Operations">
-        <button type="button" id="vfo-ab-btn" class="k4-cluster-btn" data-testid="vfo-ab-btn" title="Swap VFO A &amp; B frequency (Shift+Click or hold: swap all)">A/B</button>
-        <button type="button" id="vfo-a2b-btn" class="k4-cluster-btn" data-testid="vfo-a2b-btn" title="Copy VFO A to B frequency (2nd tap within 3s or Shift+Click: copy all)">A►B</button>
-        <button type="button" id="vfo-split-btn" class="k4-cluster-btn" data-testid="vfo-split-btn" aria-pressed="false" title="Toggle Split TX on VFO B (Shift+Click: Quick Split +1 kHz)">SPLIT</button>
+        <button type="button" id="vfo-ab-btn" class="k4-cluster-btn" data-testid="vfo-ab-btn" data-hold="ALL" title="Swap VFO A &amp; B frequency (Shift+Click or hold: swap all)">A/B</button>
+        <button type="button" id="vfo-a2b-btn" class="k4-cluster-btn" data-testid="vfo-a2b-btn" data-hold="ALL" title="Copy VFO A to B frequency (2nd tap within 3s or Shift+Click: copy all)">A►B</button>
+        <button type="button" id="vfo-split-btn" class="k4-cluster-btn" data-testid="vfo-split-btn" data-hold="+1k" aria-pressed="false" title="Toggle Split TX on VFO B (Shift+Click: Quick Split +1 kHz)">SPLIT</button>
         <button type="button" id="vfo-sub-btn" class="k4-cluster-btn" data-testid="vfo-sub-btn" aria-pressed="false" title="Toggle Sub Receiver">SUB</button>
       </div>
 
       <div class="k4-topbar-center">
+        <div id="k4-center-icons" class="k4-center-icons" data-testid="k4-center-icons" role="group" aria-label="TX &amp; Receiver Status">
+          <div class="k4-center-icons-top">
+            <span class="k4-tx-vfo-ind" data-testid="k4-tx-vfo-indicator" data-state="standby">◀ TX</span>
+            <button type="button" id="center-split-ind" class="k4-cicon" data-testid="center-split-ind" aria-pressed="false" title="Split TX on VFO B (Shift+Click: Quick Split +1 kHz)">SPL</button>
+            <button type="button" id="center-msg-ind" class="k4-cicon" data-testid="center-msg-ind" title="Message Bank I/II (Shift+Click: open TX messages)">MSG I</button>
+            <button type="button" id="center-vox-ind" class="k4-cicon" data-testid="center-vox-ind" aria-pressed="false" title="Toggle VOX for active mode">VOX</button>
+            <button type="button" id="center-qsk-ind" class="k4-cicon" data-testid="center-qsk-ind" aria-pressed="false" title="Toggle CW QSK / Break-In">QSK</button>
+          </div>
+          <div class="k4-center-icons-bot">
+            <button type="button" id="center-rit-xit-box" class="k4-rit-xit-box" data-testid="center-rit-xit-box" aria-pressed="false" title="RIT/XIT offset · Click: toggle RIT · Shift+Click: toggle XIT · Wheel: ±10/50 Hz · Dbl-click: clear">RIT +0.00</button>
+            <div class="k4-top-rf-status" role="group" aria-label="Antenna and ATU Status">
+              <button type="button" id="top-ant-btn" class="k4-top-pill-btn" data-testid="top-ant-btn" title="Active TX Antenna (click to cycle ANT 1 → 2 → 3)">ANT 1</button>
+              <button type="button" id="top-atu-btn" class="k4-top-pill-btn" data-testid="top-atu-btn" data-state="auto" data-hold="TUNE" title="ATU Mode (click: AUTO/BYPASS · Shift+Click: ATU Tune · 2nd tap: Full Search)">ATU</button>
+            </div>
+          </div>
+        </div>
         <div id="smeter-mount" class="k4-smeter-slot" data-testid="smeter"></div>
         <div id="vfo-b-mount" class="k4-vfo-slot k4-vfo-slot--sub" data-testid="vfo-b"></div>
       </div>
 
       <div class="k4-topbar-right">
-        <button type="button" id="omnibar-btn" class="k4-action-btn k4-omnibar-trigger" data-testid="omnibar-btn" title="Quick jump &amp; commands (Cmd/Ctrl+K)">
+        <button type="button" id="omnibar-btn" class="k4-action-btn k4-omnibar-trigger" data-testid="omnibar-btn" title="Quick jump &amp; bookmarks (Cmd/Ctrl+K)">
           <svg class="k4-icon" viewBox="0 0 16 16" width="15" height="15" aria-hidden="true">
             <circle cx="7" cy="7" r="4.8" fill="none" stroke="currentColor" stroke-width="1.5"/>
             <path d="M10.7 10.7L14 14" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
@@ -79,11 +95,6 @@
           </svg>
           <span class="k4-audio-label">Audio Off</span>
         </button>
-
-        <div class="k4-top-rf-status" role="group" aria-label="Antenna and ATU Status">
-          <button type="button" id="top-ant-btn" class="k4-top-pill-btn" data-testid="top-ant-btn" title="Active TX Antenna (click to cycle ANT 1 → 2 → 3)">ANT 1</button>
-          <button type="button" id="top-atu-btn" class="k4-top-pill-btn" data-testid="top-atu-btn" data-state="auto" title="ATU Mode (click: AUTO/BYPASS · Shift+Click: ATU Tune · 2nd tap: Full Search)">ATU</button>
-        </div>
 
         <div id="tx-posture-bar" class="k4-tx-posture-bar" data-testid="tx-posture-bar" data-posture="tx-armed" role="group" aria-label="Transmit Mode &amp; Hold PTT">
           <button type="button" id="tx-mode-test" class="k4-posture-btn k4-test-switch" data-testid="tx-mode-test" aria-pressed="false" title="K4 TEST switch: toggle off-air TX Test mode (zero RF output)">TEST</button>

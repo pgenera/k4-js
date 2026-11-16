@@ -201,8 +201,16 @@ select option:disabled {
   display: none;
 }
 
-/* Desktop VFO B & pills never crush */
+/* Desktop VFO B & pills never crush; single-row <= 56px top bar */
 @media (min-width: 960px) {
+  #top-bar {
+    height: var(--topbar-h);
+    max-height: var(--topbar-h);
+    flex-wrap: nowrap;
+    gap: 5px;
+    padding: 0 8px;
+  }
+
   #top-bar #vfo-a-mount,
   #top-bar #vfo-b-mount,
   #top-bar .k4-vfo-pills {
@@ -210,7 +218,7 @@ select option:disabled {
   }
 }
 
-/* Mid-size desktop icon compaction (960px..1760px) — keep ALL VFO B selectors visible */
+/* Mid-size desktop icon compaction (960px..1760px) — keep single 56px row + ALL VFO B selectors visible */
 @media (min-width: 960px) and (max-width: 1760px) {
   #top-bar {
     gap: 4px;
@@ -224,7 +232,7 @@ select option:disabled {
   }
 
   .k4-conn-pill .k4-conn-label {
-    max-width: 56px;
+    max-width: 68px;
   }
 
   .k4-omnibar-trigger .k4-btn-label,
@@ -234,157 +242,150 @@ select option:disabled {
   }
 
   .k4-audio-btn {
-    width: 30px;
-    min-width: 30px;
+    width: 28px;
+    min-width: 28px;
     padding: 0;
     justify-content: center;
   }
 
   #top-bar .k4-vfo-slot {
-    padding: 2px 6px;
-    gap: 5px;
+    padding: 2px 5px;
+    gap: 4px;
+  }
+}
+
+@media (min-width: 960px) {
+  .k4-conn-pill:not([data-status="connected"]) .k4-conn-label {
+    display: inline-block !important;
+    min-width: 82px;
+    max-width: none;
+    overflow: visible;
+    text-overflow: clip;
+  }
+}
+
+/* Hide VFO B unit below 1380px, and all VFO units + locks below 1320px */
+@media (min-width: 960px) and (max-width: 1379px) {
+  #vfo-b-mount .k4-vfo-unit {
+    display: none;
   }
 
-  .k4-vfo-slot[data-rx="A"] .k4-vfo-unit {
+  #top-bar .k4-vfo-freq,
+  #top-bar .k4-vfo-slot--sub .k4-vfo-freq {
+    font-size: 19px;
+  }
+}
+
+@media (min-width: 960px) and (max-width: 1320px) {
+  #top-bar .k4-vfo-lock:not(.is-locked) {
     display: none;
   }
 }
 
-/* Tighter 1-row desktop spacing (1461px..1600px) so Dual RX + VFO B selectors never crowd */
-@media (min-width: 1461px) and (max-width: 1600px) {
-  .k4-vfo-slot[data-rx="A"] .k4-vfo-band,
-  .k4-vfo-slot .k4-vfo-lock:not(.is-locked) {
-    display: none;
-  }
-
-  #top-bar .k4-vfo-freq {
-    font-size: 15px;
-    min-width: 0;
-  }
-
-  #top-bar .k4-vfo-slot--sub .k4-vfo-freq {
-    font-size: 13px;
-    min-width: 0;
-  }
-
+/* Compact 2x2 VFO Cluster & horizontal RF Status inside center icons for <= 1680px single-row fit */
+@media (min-width: 960px) and (max-width: 1680px) {
   #top-bar .k4-vfo-cluster {
-    gap: 1px;
-    padding: 1px;
+    display: grid;
+    grid-template-columns: repeat(2, auto);
+    gap: 2px;
+    padding: 2px;
+    border-radius: var(--radius-sm);
   }
 
   #top-bar .k4-cluster-btn {
-    height: 24px;
+    height: 19px;
     padding: 0 5px;
-    font-size: 10px;
+    font-size: 9.5px;
+    border-radius: var(--radius-xs);
   }
 
-  #top-bar #top-ant-btn {
-    height: 24px;
-    padding: 0 6px;
-    font-size: 10px;
+  #top-bar .k4-top-rf-status {
+    flex-direction: row;
+    gap: 2px;
+    padding: 0;
+    border: 0;
+    background: transparent;
+  }
+
+  #top-bar #top-ant-btn,
+  #top-bar #top-atu-btn {
+    height: 18px;
+    min-width: 34px;
+    width: auto;
+    padding: 0 4px;
+    font-size: 9px;
+    border-radius: var(--radius-xs);
+  }
+}
+
+/* Hide redundant connected hostname ONLY on <= 1440px (always show Connecting/Error/Disconnected) */
+@media (min-width: 960px) and (max-width: 1440px) {
+  .k4-conn-pill[data-status="connected"] .k4-conn-label {
+    display: none;
   }
 
   #top-bar .k4-tx-posture-bar {
-    gap: 3px;
-    padding: 2px 4px;
+    gap: 2px;
+    padding: 2px 3px;
   }
 
-  #top-bar .k4-posture-btn {
+  #top-bar .k4-posture-btn,
+  #top-bar .k4-mic-pill,
+  #top-bar .k4-ptt-btn {
+    height: 22px;
     padding: 0 5px;
-  }
-
-  #top-bar .k4-mic-pill {
-    padding: 0 5px;
-    gap: 3px;
+    font-size: 9.5px;
   }
 
   #top-bar .k4-ptt-btn {
-    min-width: 36px;
-    padding: 0 6px;
+    min-width: 34px;
   }
 }
 
-@media (min-width: 1461px) and (max-width: 1540px) {
-  .k4-conn-pill .k4-conn-label {
+@media (min-width: 960px) and (max-width: 1180px) {
+  .k4-conn-pill[data-status="connected"] .k4-conn-rtt {
     display: none;
   }
 }
 
-/* Clean 2-row Top Bar (960px..1460px): Row 1 = Conn + VFO A + S-Meter + VFO B; Row 2 = Cluster + Actions */
-@media (min-width: 960px) and (max-width: 1460px) {
-  #top-bar {
-    display: grid;
-    grid-template-columns: auto minmax(0, 1fr);
-    grid-template-rows: auto auto;
-    align-items: center;
-    height: auto;
-    min-height: var(--topbar-h);
-    padding: 4px 8px;
-    row-gap: 4px;
-    column-gap: 8px;
-  }
-
-  .k4-topbar-left {
-    grid-column: 1;
-    grid-row: 1;
-    justify-self: start;
-  }
-
-  .k4-topbar-center {
-    grid-column: 2;
-    grid-row: 1;
-    width: 100%;
-    justify-content: flex-end;
-    gap: 8px;
-  }
-
-  .k4-topbar-center .k4-smeter-slot {
-    margin: 0 auto;
-  }
-
-  #vfo-cluster {
-    grid-column: 1;
-    grid-row: 2;
-    justify-self: start;
-  }
-
-  .k4-topbar-right {
-    grid-column: 2;
-    grid-row: 2;
-    justify-self: end;
-    gap: 5px;
-  }
-
-  #top-bar .k4-vfo-freq {
-    font-size: 15px;
-    min-width: 0;
-  }
-
-  #top-bar .k4-vfo-slot--sub .k4-vfo-freq {
-    font-size: 13.5px;
-    min-width: 0;
-  }
-
-  #top-bar .k4-cluster-btn {
-    height: 24px;
-    padding: 0 6px;
-    font-size: 10px;
-  }
-}
-
-@media (min-width: 960px) and (max-width: 1219px) {
+/* Laptop & Compact Desktop (960px..1199px): Overlay Drawer + tight single-row top bar */
+@media (min-width: 960px) and (max-width: 1199px) {
   :root {
-    --drawer-w: 296px;
+    --drawer-w: 308px;
   }
 
-  .k4-conn-pill .k4-conn-label {
-    display: none;
+  #workspace {
+    grid-template-columns: minmax(0, 1fr);
   }
 
-  .k4-vfo-slot[data-rx="A"] .k4-vfo-band,
-  .k4-vfo-slot[data-rx="A"] .k4-vfo-bw,
-  .k4-vfo-slot .k4-vfo-lock:not(.is-locked) {
-    display: none;
+  .k4-drawer {
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: var(--drawer-w);
+    box-shadow: -12px 0 32px rgba(0, 0, 0, 0.72);
+    transform: translateX(0);
+    transition: transform 180ms cubic-bezier(0.22, 1, 0.36, 1), opacity 150ms ease;
+  }
+
+  .k4-drawer[data-open="false"] {
+    width: var(--drawer-w);
+    border-left-width: 1px;
+    transform: translateX(104%);
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  #top-bar {
+    gap: 3px;
+    padding: 0 5px;
+  }
+
+  .k4-topbar-left,
+  .k4-topbar-center,
+  .k4-topbar-right {
+    gap: 3px;
   }
 
   #top-bar .k4-icon-btn,
@@ -395,15 +396,27 @@ select option:disabled {
     height: 28px;
   }
 
+  #top-bar .k4-audio-btn,
+  #top-bar .k4-icon-btn {
+    width: 26px;
+    padding: 0;
+  }
+
   #top-bar .k4-vfo-slot {
-    padding: 2px 5px;
-    gap: 4px;
+    padding: 2px 4px;
+    gap: 3px;
+  }
+
+  #top-bar .k4-vfo-unit,
+  #top-bar .k4-vfo-lock:not(.is-locked),
+  #top-bar .k4-vfo-dsp-flags {
+    display: none;
   }
 
   #top-bar .k4-vfo-badge {
-    width: 17px;
-    height: 17px;
-    font-size: 9.5px;
+    width: 16px;
+    height: 16px;
+    font-size: 9px;
   }
 
   #top-bar .k4-vfo-mode,
@@ -412,58 +425,80 @@ select option:disabled {
   #top-bar .k4-vfo-sub-btn,
   #top-bar .k4-vfo-rit-badge,
   #top-bar .k4-tx-target-tag {
-    padding: 0 4px;
-    font-size: 9.5px;
+    height: 15px;
+    padding: 0 3px;
+    font-size: 8.5px;
   }
 
-  #top-bar .k4-vfo-freq {
-    font-size: 13.5px;
-  }
-
+  #top-bar .k4-vfo-freq,
   #top-bar .k4-vfo-slot--sub .k4-vfo-freq {
-    font-size: 12.5px;
+    font-size: 17px;
   }
 
   #top-bar .k4-cluster-btn {
-    height: 22px;
-    padding: 0 5px;
-    font-size: 9.5px;
-  }
-
-  #top-bar #top-ant-btn {
-    height: 24px;
-    padding: 0 5px;
-    font-size: 9.5px;
-  }
-
-  #top-bar .k4-tx-posture-bar {
-    gap: 2px;
-    padding: 2px 3px;
-  }
-
-  #top-bar .k4-posture-btn {
-    height: 22px;
+    height: 18px;
     padding: 0 4px;
-    font-size: 9px;
-    letter-spacing: 0;
+    font-size: 8.5px;
   }
 
-  #top-bar .k4-mic-pill {
-    height: 22px;
+  #top-bar #top-ant-btn,
+  #top-bar #top-atu-btn {
+    height: 17px;
+    min-width: 32px;
+    padding: 0 3px;
+    font-size: 8.5px;
+  }
+
+  #top-bar .k4-posture-btn,
+  #top-bar .k4-mic-pill,
+  #top-bar .k4-ptt-btn {
+    height: 21px;
     padding: 0 4px;
-    font-size: 9px;
-    letter-spacing: 0;
+    font-size: 8.5px;
   }
 
   #top-bar .k4-ptt-btn {
-    height: 22px;
     min-width: 30px;
-    padding: 0 4px;
-    font-size: 9px;
   }
 }
 
-/* Mobile Layout (< 960px): dual-VFO side-by-side Row 1, cluster+meter Row 2, actions Row 3 */
+@media (min-width: 960px) and (max-width: 1099px) {
+  #center-msg-ind,
+  #top-bar .k4-vfo-trap-svg {
+    display: none;
+  }
+
+  #top-bar .k4-vfo-badge {
+    width: 14px;
+    height: 15px;
+    font-size: 8.5px;
+  }
+
+  #top-bar .k4-vfo-mode,
+  #top-bar .k4-vfo-band,
+  #top-bar .k4-vfo-bw,
+  #top-bar .k4-vfo-sub-btn {
+    padding: 0 2.5px;
+    font-size: 8px;
+  }
+
+  #top-bar .k4-rit-xit-box {
+    padding: 0 2.5px;
+    font-size: 7.5px;
+  }
+
+  #top-bar .k4-vfo-freq,
+  #top-bar .k4-vfo-slot--sub .k4-vfo-freq {
+    font-size: 15px;
+  }
+
+  #top-bar .k4-cluster-btn {
+    padding: 0 3px;
+    font-size: 8px;
+  }
+}
+
+/* Mobile Layout (< 960px): dual-VFO side-by-side Row 1, merged status+meter+RF+TX Row 2 */
 @media (max-width: 959px) {
   #app-shell {
     grid-template-rows: auto minmax(0, 1fr) calc(var(--mobilenav-h) + env(safe-area-inset-bottom, 0px));
@@ -474,53 +509,103 @@ select option:disabled {
     min-height: var(--topbar-mobile-h);
     flex-wrap: wrap;
     align-items: center;
-    padding: 4px 6px;
-    gap: 4px;
+    padding: 3px 5px;
+    gap: 3px 4px;
   }
 
-  .k4-topbar-left,
-  .k4-topbar-center {
-    display: contents;
+  #top-bar .k4-topbar-left,
+  #top-bar .k4-topbar-center,
+  #top-bar .k4-topbar-right,
+  #top-bar #k4-center-icons,
+  #top-bar .k4-center-icons-bot {
+    display: contents !important;
+  }
+
+  #top-bar #vfo-cluster,
+  #top-bar #omnibar-btn,
+  #top-bar .k4-center-icons-top,
+  #top-bar #center-rit-xit-box {
+    display: none !important;
   }
 
   #top-bar .k4-vfo-slot {
     order: 1;
-    flex: 1 1 calc(50% - 4px);
+    flex: 1 1 calc(50% - 3px);
+    max-width: calc(50% - 1.5px);
     min-width: 0;
+    height: auto;
     justify-content: space-between;
+  }
+
+  #top-bar .k4-vfo-body {
+    flex-direction: row;
+    align-items: center;
+    gap: 3px;
+  }
+
+  #top-bar .k4-vfo-top-row {
+    flex: 0 0 auto;
   }
 
   #top-bar .k4-conn-pill {
     order: 2;
     flex: 0 0 auto;
-  }
-
-  #top-bar .k4-vfo-cluster {
-    order: 3;
-    flex: 0 0 auto;
+    width: 22px;
+    min-width: 22px;
+    height: 24px;
+    padding: 0 !important;
+    justify-content: center;
   }
 
   #top-bar .k4-smeter-slot {
-    order: 4;
-    flex: 1 1 136px;
+    order: 3;
+    flex: 1 1 56px;
     width: auto;
-    min-width: 120px;
+    min-width: 44px;
     max-width: none;
   }
 
-  .k4-topbar-right {
-    flex: 0 0 100%;
-    width: 100%;
-    order: 5;
-    justify-content: space-between;
-    gap: 4px;
+  #top-bar .k4-top-rf-status {
+    order: 4;
+    flex: 0 0 auto;
+    display: inline-flex;
+    flex-direction: row !important;
+    align-items: center;
+    gap: 1px;
+    padding: 1px;
+    border-radius: var(--radius-pill);
+    border: 1px solid var(--border-hairline);
+    background: rgba(15, 23, 42, 0.72);
   }
 
-  .k4-conn-pill {
-    padding: 0 6px !important;
-    min-width: 26px;
-    height: 28px;
-    justify-content: center;
+  #top-bar #top-ant-btn {
+    height: 22px;
+    min-width: 0;
+    max-width: 84px;
+    padding: 0 4px;
+    font-size: 9px;
+  }
+
+  #top-bar #top-atu-btn {
+    height: 22px;
+    min-width: 0;
+    padding: 0 4px;
+    font-size: 9px;
+  }
+
+  #top-bar .k4-tx-posture-bar {
+    order: 5;
+    flex: 0 0 auto;
+  }
+
+  #top-bar #audio-toggle {
+    order: 6;
+    flex: 0 0 auto;
+  }
+
+  #top-bar #settings-btn {
+    order: 7;
+    flex: 0 0 auto;
   }
 
   .k4-conn-pill .k4-conn-label,
@@ -542,9 +627,9 @@ select option:disabled {
   .k4-action-btn,
   .k4-settings-toggle {
     padding: 0 !important;
-    width: 30px;
-    min-width: 30px;
-    height: 30px;
+    width: 24px;
+    min-width: 24px;
+    height: 24px;
     justify-content: center;
   }
 
@@ -552,7 +637,8 @@ select option:disabled {
   .k4-vfo-slot .k4-vfo-bw,
   .k4-vfo-slot .k4-vfo-lock:not(.is-locked),
   .k4-vfo-slot .k4-vfo-sub-btn,
-  .k4-vfo-slot .k4-vfo-unit {
+  .k4-vfo-slot .k4-vfo-unit,
+  .k4-vfo-slot .k4-vfo-dsp-flags {
     display: none !important;
   }
 
@@ -606,26 +692,66 @@ select option:disabled {
   }
 }
 
+/* Landscape Phone / Short Touch Viewport (e.g., 844x390) */
+@media (max-width: 959px) and (max-height: 480px) {
+  :root {
+    --mobilenav-h: 44px;
+  }
+
+  #top-bar {
+    padding: 2px 6px;
+    gap: 3px;
+    min-height: 36px;
+  }
+
+  #top-bar .k4-vfo-slot {
+    flex: 0 1 auto;
+    padding: 1px 5px;
+  }
+
+  .k4-mobile-nav-btn {
+    padding: 2px 4px;
+    font-size: 9.5px;
+  }
+
+  .k4-mobile-sheet {
+    max-height: 64vh;
+  }
+}
+
 @media (max-width: 520px) {
   #top-bar {
-    padding: 3px 5px;
-    gap: 3px;
+    padding: 2px 4px;
+    gap: 2px 3px;
   }
 
   .k4-topbar-right {
     gap: 3px;
   }
 
-  .k4-conn-pill {
-    min-width: 24px;
-    height: 26px;
-    padding: 0 4px !important;
+  #top-bar .k4-conn-pill {
+    width: 20px;
+    min-width: 20px;
+    height: 22px;
+    padding: 0 !important;
   }
 
-  .k4-action-btn,
-  .k4-settings-toggle {
-    width: 28px;
-    min-width: 28px;
-    height: 28px;
+  #top-bar #top-ant-btn,
+  #top-bar #top-atu-btn {
+    height: 20px;
+    max-width: none;
+    padding: 0 4px;
+    font-size: 8.5px;
+  }
+
+  #top-bar #top-ant-btn .k4-ant-name {
+    display: none;
+  }
+
+  #top-bar .k4-action-btn,
+  #top-bar .k4-settings-toggle {
+    width: 22px;
+    min-width: 22px;
+    height: 22px;
   }
 }

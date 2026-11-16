@@ -103,6 +103,11 @@
         audioLabel: document.querySelector('#audio-toggle .k4-audio-label'),
         topAntBtn: document.getElementById('top-ant-btn'),
         topAtuBtn: document.getElementById('top-atu-btn'),
+        centerSplitInd: document.getElementById('center-split-ind'),
+        centerMsgInd: document.getElementById('center-msg-ind'),
+        centerVoxInd: document.getElementById('center-vox-ind'),
+        centerQskInd: document.getElementById('center-qsk-ind'),
+        centerRitXitBox: document.getElementById('center-rit-xit-box'),
         txPostureBar: document.getElementById('tx-posture-bar'),
         txModeTestBtn: document.getElementById('tx-mode-test'),
         txMicBtn: document.getElementById('tx-mic-btn'),
@@ -196,14 +201,23 @@
       this._hudTargetBtn.appendChild(mouseSvg);
       this._hudTargetLabel = el('span', 'k4-hud-mouse-label', 'Mouse: A');
       this._hudTargetBtn.appendChild(this._hudTargetLabel);
-      this._hudTargetBtn.title = 'K4 Mouse target (Left=A, Right=B). Click to switch VFO A/B; middle-click or Shift-click to toggle RIT wheel.';
+      this._hudTargetBtn.title = 'K4 Mouse target (Left=A blue, Right=B green, R=RIT wheel). Click to cycle; middle-click or Shift-click toggles RIT wheel.';
       this._hudTargetBtn.addEventListener('click', (e) => {
         if (e.shiftKey) {
           this.toggleWheelRitMode();
         } else if (this._wheelRitMode) {
           this.toggleWheelRitMode(false);
+          this.setTargetRx('A');
+        } else if (this._targetRx === 'A') {
+          this.setTargetRx('B');
         } else {
-          this.setTargetRx(this._targetRx === 'A' ? 'B' : 'A');
+          const snap = this._getSnapshot();
+          const hasRit = Boolean((snap.rxA && snap.rxA.ritOn) || (snap.rxB && snap.rxB.ritOn) || snap.xitEnabled);
+          if (hasRit) {
+            this.toggleWheelRitMode(true);
+          } else {
+            this.setTargetRx('A');
+          }
         }
       });
       this._hudTargetBtn.addEventListener('contextmenu', (e) => {
@@ -286,7 +300,8 @@
       });
       group.appendChild(this._hudFreezeBtn);
 
-      group.appendChild(el('span', 'k4-hud-sep'));
+      this._hudSpotSep = el('span', 'k4-hud-sep');
+      group.appendChild(this._hudSpotSep);
 
       this._hudAutoSpotBtn = el('button', 'k4-hud-btn', 'Auto Spot');
       this._hudAutoSpotBtn.id = 'hud-auto-spot-btn';
@@ -306,6 +321,21 @@
       group.appendChild(this._hudCwSpotBtn);
 
       hudTop.appendChild(group);
+
+      this._hudPanNbPill = el('button', 'k4-pan-nb-pill', 'NB');
+      this._hudPanNbPill.type = 'button';
+      this._hudPanNbPill.dataset.testid = 'pan-nb-pill';
+      this._hudPanNbPill.hidden = true;
+      this._hudPanNbPill.title = 'Panadapter DDC Noise Blanker (#NB) active — click to cycle Off / On / Auto';
+      this._hudPanNbPill.addEventListener('click', () => {
+        const snap = this._getSnapshot();
+        const dispRx = this._dispRx(snap);
+        const dispS = (dispRx === 'B' ? snap.rxB : snap.rxA) || {};
+        const nextMode = ((Number(dispS.panNbMode) || 0) + 1) % 3;
+        this.client.setDisplay(dispRx, { panNbMode: nextMode });
+      });
+      hudTop.appendChild(this._hudPanNbPill);
+
       stage.appendChild(hudTop);
 
       // Bottom-left Decoded Text Ticker (TB$)
@@ -362,6 +392,28 @@
       ticker.appendChild(this._tickerBody);
       stage.appendChild(ticker);
       this._tickerEl = ticker;
+
+      // Non-modal disconnected state prompt when dialog is dismissed
+      const dcCard = el('div', 'k4-disconnected-card');
+      dcCard.dataset.testid = 'disconnected-card';
+      dcCard.hidden = true;
+      const dcTitle = el('div', 'k4-disconnected-title', 'Not Connected to K4');
+      const dcSub = el(
+        'div',
+        'k4-disconnected-sub',
+        `Endpoint: ${K4.Client && typeof K4.Client.defaultWsUrl === 'function' ? K4.Client.defaultWsUrl() : 'ws://127.0.0.1:9280'}`
+      );
+      const dcCmd = el('code', 'k4-disconnected-cmd', 'websockify 127.0.0.1:9280 <k4-ip>:9205');
+      const dcBtn = el('button', 'k4-btn k4-btn--primary', 'Connect…');
+      dcBtn.type = 'button';
+      dcBtn.dataset.testid = 'disconnected-connect-btn';
+      dcBtn.addEventListener('click', () => this.openConnectionDialog());
+      dcCard.appendChild(dcTitle);
+      dcCard.appendChild(dcSub);
+      dcCard.appendChild(dcCmd);
+      dcCard.appendChild(dcBtn);
+      stage.appendChild(dcCard);
+      this._disconnectedCard = dcCard;
     }
 
     _initWidgets() {
@@ -403,6 +455,17 @@
 
       this.smeterWidget = new K4.SMeterWidget({
         container: this._dom.smeterMount,
+        onToggleMiniPan: (rx) => {
+          const snap = this._getSnapshot();
+          const target = rx === 'B' ? 'B' : 'A';
+          const rxS = target === 'B' ? snap.rxB : snap.rxA;
+          if (target === 'B' && !snap.subRxEnabled) {
+            this.client.setSubRx(true);
+          }
+          if (typeof this.client.setDisplay === 'function') {
+            this.client.setDisplay(target, { miniPan: !(rxS && rxS.miniPan) });
+          }
+        },
       });
 
       this.omnibar = new K4.Omnibar({
@@ -466,6 +529,16 @@
             onNotify: (msg, level) => this.toast(msg, level),
           })
         : { open() {}, close() {}, isOpen: () => false };
+
+      if (this._dom.connDialog && typeof globalThis.MutationObserver === 'function') {
+        this._connDialogObs = new globalThis.MutationObserver(() => {
+          this._syncDisconnectedCard(this._getSnapshot());
+        });
+        this._connDialogObs.observe(this._dom.connDialog, {
+          attributes: true,
+          attributeFilter: ['data-open', 'hidden'],
+        });
+      }
 
       if (K4.ClientPrefs && typeof K4.ClientPrefs.onChange === 'function') {
         this._unsubClientPrefs = K4.ClientPrefs.onChange((key, val) => {
@@ -701,7 +774,7 @@
             abHoldTimer = null;
             abHoldTriggered = true;
             this._swapVfo(true);
-          }, 450);
+          }, 750);
         });
         this._dom.vfoAbBtn.addEventListener('pointerup', clearAbHold);
         this._dom.vfoAbBtn.addEventListener('pointercancel', clearAbHold);
@@ -752,6 +825,87 @@
           if (typeof this.client.setAtuMode === 'function') this.client.setAtuMode(nextMode);
           else this.client.sendCat(`AT${nextMode};`);
         });
+      }
+
+      // Center K4 Icon Area (SPLIT, MSG, VOX, QSK, shared RIT/XIT offset box)
+      if (this._dom.centerSplitInd) {
+        this._dom.centerSplitInd.addEventListener('click', (e) => this._toggleSplit(Boolean(e.shiftKey)));
+      }
+      if (this._dom.centerMsgInd) {
+        this._dom.centerMsgInd.addEventListener('click', (e) => {
+          if (e.shiftKey && this.inspector && typeof this.inspector.openTab === 'function') {
+            this.inspector.openTab('tx');
+            return;
+          }
+          if (this.inspector) {
+            this.inspector._msgBank = this.inspector._msgBank === 2 ? 1 : 2;
+            this.inspector.update(this._getSnapshot(), ['dvr']);
+          }
+          this._render();
+        });
+      }
+      if (this._dom.centerVoxInd) {
+        this._dom.centerVoxInd.addEventListener('click', () => {
+          const snap = this._getSnapshot();
+          const rx = snap.activeTxVfo === 'B' ? (snap.rxB || {}) : (snap.rxA || {});
+          const mode = Number(rx.mode) || 2;
+          let ch = 'V';
+          let cur = Boolean(snap.voxVoice);
+          if (mode === 3 || mode === 7) {
+            ch = 'C';
+            cur = Boolean(snap.voxCw);
+          } else if (mode === 6 || mode === 9) {
+            ch = 'D';
+            cur = Boolean(snap.voxData);
+          }
+          if (typeof this.client.setVox === 'function') this.client.setVox(ch, !cur);
+          else this.client.sendCat(`VX${ch}${!cur ? '1' : '0'};`);
+        });
+      }
+      if (this._dom.centerQskInd) {
+        this._dom.centerQskInd.addEventListener('click', () => {
+          const next = !Boolean(this._getSnapshot().voxCw);
+          if (typeof this.client.setVox === 'function') this.client.setVox('C', next);
+          else this.client.sendCat(`VXC${next ? '1' : '0'};`);
+        });
+      }
+      if (this._dom.centerRitXitBox) {
+        const box = this._dom.centerRitXitBox;
+        box.addEventListener('click', (e) => {
+          const snap = this._getSnapshot();
+          if (e.shiftKey) {
+            const nextXit = !Boolean(snap.xitEnabled);
+            if (typeof this.client.setXit === 'function') this.client.setXit(nextXit);
+            else this.client.sendCat(`XT${nextXit ? '1' : '0'};`);
+            return;
+          }
+          const rx = this._targetRx === 'B' ? 'B' : 'A';
+          const rxS = (rx === 'B' ? snap.rxB : snap.rxA) || {};
+          const nextRit = !Boolean(rxS.ritOn);
+          if (typeof this.client.setRit === 'function') this.client.setRit(rx, { on: nextRit });
+          else this.client.sendCat(`RT${rx === 'B' ? '$' : ''}${nextRit ? '1' : '0'};`);
+        });
+        box.addEventListener('dblclick', (e) => {
+          e.preventDefault();
+          const snap = this._getSnapshot();
+          const rx = this._targetRx === 'B' ? 'B' : 'A';
+          if (typeof this.client.clearRit === 'function') this.client.clearRit(rx);
+          if (snap.xitEnabled && typeof this.client.setXit === 'function') this.client.setXit(true, 0);
+        });
+        box.addEventListener('wheel', (e) => {
+          e.preventDefault();
+          const snap = this._getSnapshot();
+          const rx = this._targetRx === 'B' ? 'B' : 'A';
+          const rxS = (rx === 'B' ? snap.rxB : snap.rxA) || {};
+          const cur = Number(rxS.ritOffsetHz) || 0;
+          const step = e.shiftKey ? 50 : 10;
+          const next = Math.max(-9990, Math.min(9990, cur + (e.deltaY < 0 ? step : -step)));
+          if (snap.xitEnabled && !rxS.ritOn && typeof this.client.setXit === 'function') {
+            this.client.setXit(true, next);
+          } else if (typeof this.client.setRit === 'function') {
+            this.client.setRit(rx, { on: true, offsetHz: next });
+          }
+        }, { passive: false });
       }
 
       // TX Test & Mic status controls
@@ -1543,6 +1697,16 @@
     toggleDrawer() {
       this._drawerOpen = !this._drawerOpen;
       this._applyDrawerState();
+      if (this._drawerOpen && this._dom.drawer) {
+        requestAnimationFrame(() => {
+          const target = this._dom.drawer.querySelector('.k4-tab-btn.is-active, .k4-tab-btn, button, input, select');
+          if (target && typeof target.focus === 'function') {
+            target.focus({ preventScroll: true });
+          }
+        });
+      } else if (!this._drawerOpen && this._dom.drawer && this._dom.drawer.contains(document.activeElement) && this._dom.drawerToggleBtn) {
+        this._dom.drawerToggleBtn.focus({ preventScroll: true });
+      }
     }
 
     _applyDrawerState() {
@@ -1625,7 +1789,12 @@
     }
 
     _toggleTicker() {
-      this._tickerExpanded = !this._tickerExpanded;
+      if (this._tickerEl && this._tickerEl.dataset.idle === 'true') {
+        this._tickerExpanded = true;
+        this._tickerEl.dataset.idle = 'false';
+      } else {
+        this._tickerExpanded = !this._tickerExpanded;
+      }
       this._tickerEl.dataset.expanded = this._tickerExpanded ? 'true' : 'false';
       this._tickerExpandBtn.textContent = this._tickerExpanded ? 'Collapse' : 'Expand';
     }
@@ -1732,15 +1901,21 @@
 
     toast(message, level = 'info') {
       if (!this._dom.toastStack || !message) return;
-      const item = el('div', 'k4-toast', String(message));
+      const msgText = String(message);
+      const last = this._dom.toastStack.lastElementChild;
+      if (last && last.dataset.level === level && last.textContent === msgText) {
+        return;
+      }
+      const item = el('div', 'k4-toast', msgText);
       item.dataset.level = level;
       this._dom.toastStack.appendChild(item);
-      while (this._dom.toastStack.children.length > 4) {
+      while (this._dom.toastStack.children.length > 3) {
         this._dom.toastStack.removeChild(this._dom.toastStack.firstChild);
       }
+      const ttlMs = (level === 'info' || level === 'success') ? 2200 : 3800;
       setTimeout(() => {
         if (item.parentNode) item.parentNode.removeChild(item);
-      }, 3600);
+      }, ttlMs);
     }
 
     _scheduleMeterRender(keys) {
@@ -1820,6 +1995,14 @@
       }
     }
 
+    _syncDisconnectedCard(snap) {
+      if (!this._disconnectedCard) return;
+      const conn = (snap && snap.connection) || {};
+      const status = conn.status || 'disconnected';
+      const dlgOpen = Boolean(this._dom.connDialog && this._dom.connDialog.dataset.open === 'true');
+      this._disconnectedCard.hidden = !(status === 'disconnected' && !dlgOpen);
+    }
+
     _syncAudioToggleUi(snap, aDiagOverride) {
       if (!this._dom.audioToggleBtn || !this._dom.audioLabel) return;
       const aDiag =
@@ -1882,7 +2065,17 @@
     _syncTopRfStatus(snap) {
       if (this._dom.topAntBtn) {
         const ant = K4.formatTxAntenna(snap);
-        this._dom.topAntBtn.textContent = ant.label;
+        this._dom.topAntBtn.replaceChildren();
+        const portSpan = document.createElement('span');
+        portSpan.className = 'k4-ant-port';
+        portSpan.textContent = `ANT ${ant.port}`;
+        this._dom.topAntBtn.appendChild(portSpan);
+        if (ant.hasCustom) {
+          const nameSpan = document.createElement('span');
+          nameSpan.className = 'k4-ant-name';
+          nameSpan.textContent = ` · ${ant.rawName}`;
+          this._dom.topAntBtn.appendChild(nameSpan);
+        }
         this._dom.topAntBtn.dataset.port = String(ant.port);
         this._dom.topAntBtn.title = `Active TX Antenna ANT ${ant.port}${ant.hasCustom ? ` (${ant.rawName})` : ''} — click to cycle ANT 1 → 2 → 3`;
       }
@@ -1986,6 +2179,7 @@
       this._dom.connLabel.textContent = statusLabel;
       const aDiag = this.audio.getDiagnostics ? this.audio.getDiagnostics() : { started: false, muted: true };
       this._updateConnLatency(snap, aDiag);
+      this._syncDisconnectedCard(snap);
 
       // VFOs, VFO Cluster & S-Meter
       this.vfoAWidget.update(snap, this._targetRx, isMobile);
@@ -2006,6 +2200,51 @@
         const subOn = Boolean(snap.subRxEnabled);
         this._dom.vfoSubBtn.classList.toggle('is-active', subOn);
         this._dom.vfoSubBtn.setAttribute('aria-pressed', subOn ? 'true' : 'false');
+      }
+
+      // K4 Center Icon Area
+      const splitOn = Boolean(snap.splitEnabled);
+      if (this._dom.centerSplitInd) {
+        this._dom.centerSplitInd.classList.toggle('is-active', splitOn);
+        this._dom.centerSplitInd.setAttribute('aria-pressed', splitOn ? 'true' : 'false');
+      }
+      if (this._dom.centerMsgInd) {
+        const msgBank = this.inspector && this.inspector._msgBank === 2 ? 2 : 1;
+        const msgPlaying = Boolean(snap.dvrPlaying);
+        this._dom.centerMsgInd.textContent = msgBank === 2 ? 'MSG II' : 'MSG I';
+        this._dom.centerMsgInd.classList.toggle('is-active', msgPlaying || msgBank === 2);
+        this._dom.centerMsgInd.setAttribute('aria-pressed', msgPlaying ? 'true' : 'false');
+      }
+      const txVfoObj = snap.activeTxVfo === 'B' ? (snap.rxB || {}) : (snap.rxA || {});
+      const txModeNum = Number(txVfoObj.mode) || 2;
+      const activeVoxOn =
+        txModeNum === 3 || txModeNum === 7
+          ? Boolean(snap.voxCw)
+          : txModeNum === 6 || txModeNum === 9
+          ? Boolean(snap.voxData)
+          : Boolean(snap.voxVoice);
+      if (this._dom.centerVoxInd) {
+        this._dom.centerVoxInd.classList.toggle('is-active', activeVoxOn);
+        this._dom.centerVoxInd.setAttribute('aria-pressed', activeVoxOn ? 'true' : 'false');
+      }
+      if (this._dom.centerQskInd) {
+        const qskOn = Boolean(snap.voxCw) && (txModeNum === 3 || txModeNum === 7);
+        this._dom.centerQskInd.classList.toggle('is-active', qskOn);
+        this._dom.centerQskInd.setAttribute('aria-pressed', qskOn ? 'true' : 'false');
+      }
+      if (this._dom.centerRitXitBox) {
+        const tgtS = (this._targetRx === 'B' ? snap.rxB : snap.rxA) || {};
+        const ritOn = Boolean(tgtS.ritOn);
+        const xitOn = Boolean(snap.xitEnabled);
+        const offHz = Math.round(Number(tgtS.ritOffsetHz) || 0);
+        const sign = offHz < 0 ? '-' : '+';
+        const khzVal = (Math.abs(offHz) / 1000).toFixed(2);
+        const prefix = ritOn && xitOn ? 'R/X' : xitOn ? 'XIT' : 'RIT';
+        this._dom.centerRitXitBox.textContent = `${prefix} ${sign}${khzVal}`;
+        this._dom.centerRitXitBox.classList.toggle('is-active', ritOn || xitOn);
+        this._dom.centerRitXitBox.classList.toggle('is-rit-on', ritOn);
+        this._dom.centerRitXitBox.classList.toggle('is-xit-on', xitOn);
+        this._dom.centerRitXitBox.setAttribute('aria-pressed', ritOn || xitOn ? 'true' : 'false');
       }
 
       // Top-bar ANT & ATU pills
@@ -2078,7 +2317,7 @@
       const loupeRx = this._resolveLoupeRx(snap);
       const loupeS = (loupeRx === 'B' ? snap.rxB : snap.rxA) || {};
       this._hudTargetLabel.textContent = this._wheelRitMode
-        ? `Mouse: RIT ${this._targetRx}`
+        ? 'Mouse: R'
         : `Mouse: ${this._targetRx}`;
       this._hudTargetBtn.classList.toggle('is-cyan', !this._wheelRitMode && this._targetRx === 'A');
       this._hudTargetBtn.classList.toggle('is-amber', !this._wheelRitMode && this._targetRx === 'B');
@@ -2087,7 +2326,7 @@
         this._mouseQsyMode === 'pane'
           ? 'Left Only (Pane=VFO, Shift+Left=B)'
           : 'Left=A, Right=B (in either pane)';
-      this._hudTargetBtn.title = `K4 Mouse (${qsyDesc}). Wheel tunes ${this._wheelRitMode ? `VFO ${this._targetRx} RIT` : `VFO ${this._targetRx}`}. Click/Right-click to switch A/B; middle-click or Shift-click to toggle RIT wheel.`;
+      this._hudTargetBtn.title = `K4 Mouse (${qsyDesc}). Wheel tunes ${this._wheelRitMode ? `VFO ${this._targetRx} RIT/XIT (R)` : `VFO ${this._targetRx}`}. Click to cycle; middle-click or Shift-click to toggle R.`;
       this._hudStepBtn.textContent = `Step: ${rxS.stepHz >= 1000 ? `${rxS.stepHz / 1000}k` : `${rxS.stepHz || 100} Hz`}`;
       const visSpanHz =
         (this.panadapter && typeof this.panadapter.getVisibleSpanHz === 'function'
@@ -2113,10 +2352,22 @@
       this._hudLoupeBtn.classList.toggle('is-active', Boolean(loupeS.miniPan));
       this._hudFreezeBtn.textContent = snap.panFrozen ? 'Frozen' : 'Freeze';
       this._hudFreezeBtn.classList.toggle('is-active', Boolean(snap.panFrozen));
+      if (this._hudPanNbPill) {
+        const nbMode = Number(dispS.panNbMode) || 0;
+        this._hudPanNbPill.hidden = nbMode <= 0;
+        if (nbMode > 0) {
+          this._hudPanNbPill.textContent = nbMode === 2 ? 'NB AUTO' : 'NB';
+          this._hudPanNbPill.dataset.panNbMode = String(nbMode);
+        }
+      }
 
       const isCw = Number(rxS.mode) === 3 || Number(rxS.mode) === 7;
       const spotActive = Boolean(snap.spotTone || rxS.spotMode === 1 || rxS.spotMode === 2);
+      if (this._hudSpotSep) {
+        this._hudSpotSep.hidden = !isCw;
+      }
       if (this._hudAutoSpotBtn) {
+        this._hudAutoSpotBtn.hidden = !isCw;
         this._hudAutoSpotBtn.disabled = !isCw;
         this._hudAutoSpotBtn.classList.toggle('is-cw-ready', isCw);
         this._hudAutoSpotBtn.title = isCw
@@ -2124,10 +2375,14 @@
           : 'Auto Spot (select CW or CW-R mode)';
       }
       if (this._hudCwSpotBtn) {
+        this._hudCwSpotBtn.hidden = !isCw;
         this._hudCwSpotBtn.disabled = !isCw;
         this._hudCwSpotBtn.classList.toggle('is-cw-ready', isCw);
         this._hudCwSpotBtn.classList.toggle('is-active', isCw && spotActive);
         this._hudCwSpotBtn.setAttribute('aria-pressed', isCw && spotActive ? 'true' : 'false');
+        this._hudCwSpotBtn.title = isCw
+          ? 'Toggle CW Spot sidetone'
+          : 'Spot sidetone (select CW or CW-R mode)';
       }
       if (this._lastHudCwMode !== isCw) {
         this._lastHudCwMode = isCw;
@@ -2137,8 +2392,14 @@
       }
 
       // Decoded Text Ticker (TB$)
+      let tickerSupported = false;
       if (this._tickerDecodeSelect && typeof K4.syncDecodeSelect === 'function') {
-        K4.syncDecodeSelect(this._tickerDecodeSelect, rxS);
+        const tdDesc = K4.syncDecodeSelect(this._tickerDecodeSelect, rxS);
+        tickerSupported = Boolean(tdDesc && tdDesc.supported);
+      }
+      const hasDecoded = Array.isArray(snap.decodedText) && snap.decodedText.length > 0;
+      if (this._tickerEl) {
+        this._tickerEl.dataset.idle = !tickerSupported && !hasDecoded && !this._tickerExpanded ? 'true' : 'false';
       }
       this._renderDecodedText(snap.decodedText);
 
