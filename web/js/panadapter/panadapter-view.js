@@ -786,10 +786,15 @@
       if (
         pane.lastTierKHz !== null &&
         (pane.lastTierKHz !== tierKHz ||
-          Math.abs(centerHz - pane.lastCenterHz) > tierSpanHz / 2)
+          Math.abs(centerHz - pane.lastCenterHz) > tierSpanHz / 4)
       ) {
         pane.averager.clear();
-        this._renderer.clearWaterfall(rx);
+        if (
+          pane.lastCenterHz !== null &&
+          Math.abs(centerHz - pane.lastCenterHz) > 500000
+        ) {
+          this._renderer.clearWaterfall(rx);
+        }
       }
 
       const nowMs =

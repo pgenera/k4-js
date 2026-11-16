@@ -7,7 +7,7 @@
   const DEFAULT_BINS = 1024;
   const MINIPAN_HEADER_H = 24;
   const ACCENT_RGB_A = [56 / 255, 189 / 255, 248 / 255];
-  const ACCENT_RGB_B = [245 / 255, 158 / 255, 11 / 255];
+  const ACCENT_RGB_B = [34 / 255, 197 / 255, 94 / 255];
   const MONO_FONT =
     '"SF Mono", ui-monospace, "Cascadia Mono", "Roboto Mono", monospace';
   const SANS_FONT =
@@ -68,7 +68,7 @@
   transition: none;
 }
 :where(.k4-minipan-box[data-rx="B"]) {
-  border-color: rgba(245, 158, 11, 0.40);
+  border-color: rgba(34, 197, 94, 0.48);
 }
 :where(.k4-minipan-header) {
   display: flex;
@@ -96,7 +96,7 @@
   white-space: nowrap;
 }
 :where(.k4-minipan-box[data-rx="B"] .k4-minipan-title) {
-  color: #F59E0B;
+  color: #22C55E;
 }
 :where(.k4-minipan-span) {
   margin-left: auto;
@@ -223,6 +223,25 @@ void main() {
     return v < min ? min : v > max ? max : v;
   }
 
+  function seedWaterfallRingNoise(uint8Row, binCount, ringHeight, dstBuf) {
+    const sampleCount = Math.min(32, uint8Row.length);
+    const samples = [];
+    const stride = Math.max(1, Math.floor(uint8Row.length / Math.max(1, sampleCount)));
+    for (let i = 0; i < uint8Row.length && samples.length < sampleCount; i += stride) {
+      samples.push(uint8Row[i]);
+    }
+    samples.sort((a, b) => a - b);
+    const q25 = samples.length > 0 ? samples[Math.floor(samples.length * 0.25)] : 28;
+    const base = clamp(q25, 16, 96);
+    for (let r = 0; r < ringHeight; r++) {
+      const off = r * binCount;
+      for (let b = 0; b < binCount; b++) {
+        const grain = (r * 131 + b * 17 + (r >> 2) * 31) & 7;
+        dstBuf[off + b] = clamp(base - 4 + grain, 8, 255);
+      }
+    }
+  }
+
   function formatAxisKHz(hz) {
     const khz = hz / 1000;
     if (Math.abs(khz - Math.round(khz)) < 0.05) {
@@ -301,30 +320,30 @@ void main() {
     const specOnly = dispMode === 0 || dispMode === 2 || wfhRaw <= 0;
 
     return rects.map((r) => {
-      const axisH = 26;
+      const axisH = 22;
       const availH = Math.max(40, r.h - axisH);
+      const axisY = r.y;
+      const specY = r.y + axisH;
       if (specOnly) {
         const specH = availH;
-        const axisY = r.y + specH;
         return {
           rx: r.rx,
           paneRect: { x: r.x, y: r.y, w: r.w, h: r.h },
-          specRect: { x: r.x, y: r.y, w: r.w, h: specH },
           axisRect: { x: r.x, y: axisY, w: r.w, h: axisH },
-          wfRect: { x: r.x, y: axisY + axisH, w: r.w, h: 0 },
+          specRect: { x: r.x, y: specY, w: r.w, h: specH },
+          wfRect: { x: r.x, y: specY + specH, w: r.w, h: 0 },
         };
       }
       const wfFrac = clamp(wfhRaw / 100, 0.15, 0.85);
       let wfH = Math.max(16, Math.round(availH * wfFrac));
       const specH = Math.max(20, availH - wfH);
       wfH = Math.max(16, availH - specH);
-      const axisY = r.y + specH;
-      const wfY = axisY + axisH;
+      const wfY = specY + specH;
       return {
         rx: r.rx,
         paneRect: { x: r.x, y: r.y, w: r.w, h: r.h },
-        specRect: { x: r.x, y: r.y, w: r.w, h: specH },
         axisRect: { x: r.x, y: axisY, w: r.w, h: axisH },
+        specRect: { x: r.x, y: specY, w: r.w, h: specH },
         wfRect: { x: r.x, y: wfY, w: r.w, h: wfH },
       };
     });
@@ -440,6 +459,14 @@ void main() {
         textColor: '#FFF1F2',
       });
     }
+    if (primaryRxState && primaryRxState.panNbMode > 0) {
+      pills.push({
+        text: 'NB',
+        fill: 'rgba(56, 189, 248, 0.20)',
+        stroke: 'rgba(56, 189, 248, 0.72)',
+        textColor: '#BAE6FD',
+      });
+    }
     if (snapshot.panFrozen) {
       pills.push({
         text: 'FROZEN',
@@ -465,9 +492,9 @@ void main() {
           : '-.-';
       pills.push({
         text: 'ATU TUNE · SWR ' + swr + ':1',
-        fill: 'rgba(244, 63, 94, 0.92)',
-        stroke: 'rgba(254, 205, 211, 0.85)',
-        textColor: '#FFF1F2',
+        fill: 'rgba(234, 88, 12, 0.92)',
+        stroke: 'rgba(253, 186, 116, 0.90)',
+        textColor: '#FFF7ED',
       });
     }
     if (snapshot.txTestMode || snapshot.txPosture === 'tx-test') {
@@ -552,8 +579,7 @@ void main() {
   }) {
     if (!txOverlay) return null;
     const isTest = Boolean(snapshot.txTestMode || txPosture === 'tx-test');
-    const txShown =
-      txPosture !== 'rx-only' || isTest || txOverlay.isSplitOrXit || isLiveTx;
+    const txShown = Boolean(txOverlay.isSplitOrXit || isLiveTx || isTest);
     if (!txShown) return null;
 
     const txState = txOverlay.txVfo === 'B' ? rxB : rxA;
@@ -584,19 +610,19 @@ void main() {
     let badgeStroke;
     let badgeText;
     if (isLiveTx && (!isTest || snapshot.atuTuning)) {
-      curtainFill = 'rgba(244, 63, 94, 0.24)';
-      curtainEdge = '#F43F5E';
-      pinColor = '#F43F5E';
-      badgeFill = '#F43F5E';
-      badgeStroke = '#FDA4AF';
-      badgeText = '#FFF1F2';
+      curtainFill = 'rgba(249, 115, 22, 0.24)';
+      curtainEdge = '#F97316';
+      pinColor = '#F97316';
+      badgeFill = '#EA580C';
+      badgeStroke = '#FDBA74';
+      badgeText = '#FFF7ED';
     } else if (!isTest && txPosture === 'tx-armed') {
-      curtainFill = 'rgba(244, 63, 94, 0.12)';
-      curtainEdge = 'rgba(244, 63, 94, 0.65)';
-      pinColor = 'rgba(251, 113, 133, 0.90)';
+      curtainFill = 'rgba(249, 115, 22, 0.13)';
+      curtainEdge = 'rgba(249, 115, 22, 0.72)';
+      pinColor = 'rgba(251, 146, 60, 0.92)';
       badgeFill = 'rgba(14, 19, 29, 0.90)';
-      badgeStroke = 'rgba(244, 63, 94, 0.85)';
-      badgeText = '#FDA4AF';
+      badgeStroke = 'rgba(249, 115, 22, 0.88)';
+      badgeText = '#FFEDD5';
     } else {
       curtainFill = isLiveTx ? 'rgba(249, 115, 22, 0.22)' : 'rgba(251, 146, 60, 0.11)';
       curtainEdge = isLiveTx ? '#F97316' : 'rgba(251, 146, 60, 0.68)';
@@ -920,10 +946,10 @@ void main() {
         if (paneRx === 'A') {
           vfosToDraw.push({ key: 'A', state: rxA, color: '#38BDF8', fill: 'rgba(56, 189, 248, 0.18)', edge: 'rgba(56, 189, 248, 0.72)', showCurtain: true, primary: true });
           if (subRxEnabled) {
-            vfosToDraw.push({ key: 'B', state: rxB, color: '#F59E0B', fill: 'rgba(245, 158, 11, 0.14)', edge: 'rgba(245, 158, 11, 0.65)', showCurtain: true, primary: false });
+            vfosToDraw.push({ key: 'B', state: rxB, color: '#22C55E', fill: 'rgba(34, 197, 94, 0.14)', edge: 'rgba(34, 197, 94, 0.68)', showCurtain: true, primary: false });
           }
         } else {
-          vfosToDraw.push({ key: 'B', state: rxB, color: '#F59E0B', fill: 'rgba(245, 158, 11, 0.16)', edge: 'rgba(245, 158, 11, 0.72)', showCurtain: true, primary: true });
+          vfosToDraw.push({ key: 'B', state: rxB, color: '#22C55E', fill: 'rgba(34, 197, 94, 0.16)', edge: 'rgba(34, 197, 94, 0.72)', showCurtain: true, primary: true });
         }
       } else {
         vfosToDraw.push({
@@ -941,9 +967,9 @@ void main() {
           vfosToDraw.push({
             key: 'B',
             state: rxB,
-            color: '#F59E0B',
-            fill: 'rgba(245, 158, 11, 0.14)',
-            edge: 'rgba(245, 158, 11, 0.68)',
+            color: '#22C55E',
+            fill: 'rgba(34, 197, 94, 0.14)',
+            edge: 'rgba(34, 197, 94, 0.68)',
             showCurtain: showBCurtain,
             primary: frameState.targetRx === 'B',
           });
@@ -1182,24 +1208,93 @@ void main() {
 
       if (dualPanMode === 2) {
         const tag = paneRx === 'A' ? 'PAN A' : 'PAN B';
-        const col = paneRx === 'A' ? '#38BDF8' : '#F59E0B';
+        const col = paneRx === 'A' ? '#38BDF8' : '#22C55E';
         ctx.font = 'bold 10px ' + sansFont;
         ctx.textAlign = 'left';
         ctx.textBaseline = 'bottom';
         ctx.fillStyle = col;
-        ctx.fillText(tag, specRect.x + 8, specRect.y + specRect.h - 6);
+        ctx.fillText(tag, specRect.x + 8, specRect.y + specRect.h - 20);
       }
+
+      // K4-style lower-right A/B corner tab
+      {
+        const tabCol = paneRx === 'A' ? '#38BDF8' : '#22C55E';
+        const tabX = specRect.x + specRect.w - 22;
+        const tabY = specRect.y + specRect.h - 19;
+        drawRoundedPill(ctx, tabX, tabY, 16, 15, 3);
+        ctx.fillStyle = 'rgba(14, 19, 29, 0.86)';
+        ctx.fill();
+        ctx.strokeStyle = tabCol;
+        ctx.lineWidth = 1;
+        ctx.stroke();
+        ctx.font = 'bold 9.5px ' + monoFont;
+        ctx.fillStyle = tabCol;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(paneRx, tabX + 8, tabY + 8);
+      }
+
+      // Dedicated lower-spectrum lane for saved frequency bookmark pins & labels (never overlaps kHz axis)
+      {
+        const bookmarks = (frameState && frameState.bookmarks) || [];
+        const maxRightX = specRect.x + specRect.w - 28;
+        let lastBmLabelRight = -1e9;
+        for (let bi = 0; bi < bookmarks.length; bi++) {
+          const bm = bookmarks[bi];
+          if (!bm || bm.freqHz < viewLeftHz || bm.freqHz > viewRightHz) continue;
+          const bx = K4.SpectrumGeometry.xFromRfFreq(
+            bm.freqHz,
+            specRect.x,
+            specRect.w,
+            panCenterHz,
+            userSpanHz
+          );
+          if (bx < specRect.x + 6 || bx > maxRightX) continue;
+          ctx.fillStyle = '#FBBF24';
+          ctx.beginPath();
+          ctx.moveTo(bx, specRect.y + specRect.h - 1);
+          ctx.lineTo(bx - 3.5, specRect.y + specRect.h - 7);
+          ctx.lineTo(bx + 3.5, specRect.y + specRect.h - 7);
+          ctx.closePath();
+          ctx.fill();
+
+          const shortLabel = String(bm.label || '').slice(0, 12);
+          if (shortLabel) {
+            ctx.font = 'bold 8.5px ' + sansFont;
+            const lw = ctx.measureText(shortLabel).width;
+            if (bx + 5 > lastBmLabelRight && bx + 9 + lw < maxRightX) {
+              drawRoundedPill(ctx, bx + 4, specRect.y + specRect.h - 17, lw + 6, 12, 3);
+              ctx.fillStyle = 'rgba(9, 11, 16, 0.82)';
+              ctx.fill();
+              ctx.textAlign = 'left';
+              ctx.textBaseline = 'middle';
+              ctx.fillStyle = 'rgba(251, 191, 36, 0.94)';
+              ctx.fillText(shortLabel, bx + 7, specRect.y + specRect.h - 11);
+              lastBmLabelRight = bx + 14 + lw;
+            }
+          }
+        }
+      }
+
+      // Spectrum -> Waterfall abutment hairline
+      ctx.strokeStyle = 'rgba(148, 163, 184, 0.24)';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(specRect.x, specRect.y + specRect.h - 0.5);
+      ctx.lineTo(specRect.x + specRect.w, specRect.y + specRect.h - 0.5);
+      ctx.stroke();
 
       ctx.restore();
 
-      // 2. Middle 26px Band-Plan & Frequency Axis Strip
+      // 2. Top-Edge 22px Frequency Axis & IARU Band-Plan Ribbon (K4 panadapter style)
       ctx.save();
-      ctx.fillStyle = '#0C111B';
+      ctx.fillStyle = '#0B1019';
       ctx.fillRect(axisRect.x, axisRect.y, axisRect.w, axisRect.h);
 
-      // 6px IARU Region 2 Band-Plan ribbon
+      // 3px IARU Region 2 Band-Plan ribbon along bottom of top axis
       if (K4.BandPlan) {
         const segs = K4.BandPlan.getSegmentsInRange(viewLeftHz, viewRightHz);
+        const ribbonY = axisRect.y + axisRect.h - 3;
         for (let si = 0; si < segs.length; si++) {
           const s = segs[si];
           const sx0 = clamp(
@@ -1226,27 +1321,25 @@ void main() {
           );
           const sw = sx1 - sx0;
           if (sw > 0.5) {
-            ctx.globalAlpha = 0.82;
+            ctx.globalAlpha = 0.85;
             ctx.fillStyle = s.color;
-            ctx.fillRect(sx0, axisRect.y, sw, 6);
+            ctx.fillRect(sx0, ribbonY, sw, 3);
             ctx.globalAlpha = 1;
             ctx.fillStyle = '#090B10';
-            ctx.fillRect(sx0, axisRect.y, 1, 6);
+            ctx.fillRect(sx0, ribbonY, 1, 3);
           }
         }
       }
 
-      // Axis hairlines
+      // Axis hairline
       ctx.strokeStyle = 'rgba(148, 163, 184, 0.22)';
       ctx.lineWidth = 1;
       ctx.beginPath();
-      ctx.moveTo(axisRect.x, axisRect.y + 0.5);
-      ctx.lineTo(axisRect.x + axisRect.w, axisRect.y + 0.5);
       ctx.moveTo(axisRect.x, axisRect.y + axisRect.h - 0.5);
       ctx.lineTo(axisRect.x + axisRect.w, axisRect.y + axisRect.h - 0.5);
       ctx.stroke();
 
-      // kHz ticks & labels
+      // kHz ticks & labels along top edge
       ctx.font = '10.5px ' + monoFont;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
@@ -1256,48 +1349,12 @@ void main() {
         const tx = Math.round(t.x) + 0.5;
         ctx.strokeStyle = 'rgba(148, 163, 184, 0.42)';
         ctx.beginPath();
-        ctx.moveTo(tx, axisRect.y + 6);
-        ctx.lineTo(tx, axisRect.y + 10);
+        ctx.moveTo(tx, axisRect.y + axisRect.h - 7);
+        ctx.lineTo(tx, axisRect.y + axisRect.h - 3);
         ctx.stroke();
 
         ctx.fillStyle = '#CBD5E1';
-        ctx.fillText(formatAxisKHz(t.freqHz), t.x, axisRect.y + 17.5);
-      }
-
-      // Saved frequency bookmark markers along the frequency axis
-      const bookmarks = (frameState && frameState.bookmarks) || [];
-      let lastBmLabelRight = -1e9;
-      for (let bi = 0; bi < bookmarks.length; bi++) {
-        const bm = bookmarks[bi];
-        if (!bm || bm.freqHz < viewLeftHz || bm.freqHz > viewRightHz) continue;
-        const bx = K4.SpectrumGeometry.xFromRfFreq(
-          bm.freqHz,
-          axisRect.x,
-          axisRect.w,
-          panCenterHz,
-          userSpanHz
-        );
-        if (bx < axisRect.x + 6 || bx > axisRect.x + axisRect.w - 6) continue;
-        ctx.fillStyle = '#FBBF24';
-        ctx.beginPath();
-        ctx.moveTo(bx, axisRect.y + 11);
-        ctx.lineTo(bx - 3.5, axisRect.y + 6);
-        ctx.lineTo(bx + 3.5, axisRect.y + 6);
-        ctx.closePath();
-        ctx.fill();
-
-        const shortLabel = String(bm.label || '').slice(0, 12);
-        if (shortLabel) {
-          ctx.font = 'bold 8.5px ' + sansFont;
-          const lw = ctx.measureText(shortLabel).width;
-          if (bx + 5 > lastBmLabelRight && bx + 5 + lw < axisRect.x + axisRect.w - 4) {
-            ctx.textAlign = 'left';
-            ctx.textBaseline = 'middle';
-            ctx.fillStyle = 'rgba(251, 191, 36, 0.88)';
-            ctx.fillText(shortLabel, bx + 5, axisRect.y + 9.5);
-            lastBmLabelRight = bx + 10 + lw;
-          }
-        }
+        ctx.fillText(formatAxisKHz(t.freqHz), t.x, axisRect.y + 9.5);
       }
       ctx.restore();
 
@@ -1321,7 +1378,7 @@ void main() {
             ctx.strokeStyle =
               vfo.key === 'A'
                 ? 'rgba(56, 189, 248, 0.34)'
-                : 'rgba(245, 158, 11, 0.32)';
+                : 'rgba(34, 197, 94, 0.34)';
             ctx.lineWidth = 1;
             ctx.beginPath();
             ctx.moveTo(mx, wfRect.y);
@@ -1340,8 +1397,8 @@ void main() {
           ctx.save();
           if (!isLiveTx) ctx.setLineDash([3, 3]);
           ctx.strokeStyle = isLiveTx
-            ? 'rgba(244, 63, 94, 0.72)'
-            : 'rgba(251, 146, 60, 0.42)';
+            ? 'rgba(249, 115, 22, 0.78)'
+            : 'rgba(251, 146, 60, 0.45)';
           ctx.lineWidth = isLiveTx ? 1.5 : 1;
           ctx.beginPath();
           ctx.moveTo(txWfX, wfRect.y);
@@ -1515,6 +1572,7 @@ void main() {
       rxState.panSpanHz || 0,
       rxState.panRefDbm || 0,
       rxState.panScaleDb || 0,
+      rxState.panNbMode || 0,
     ].join(',');
   }
 
@@ -1668,9 +1726,9 @@ void main() {
     ctx.fillStyle = '#090B10';
     ctx.fillRect(0, 0, cssW, cssH);
 
-    const accent = rx === 'B' ? '#F59E0B' : '#38BDF8';
+    const accent = rx === 'B' ? '#22C55E' : '#38BDF8';
     const accentSoft =
-      rx === 'B' ? 'rgba(245, 158, 11, 0.22)' : 'rgba(56, 189, 248, 0.22)';
+      rx === 'B' ? 'rgba(34, 197, 94, 0.22)' : 'rgba(56, 189, 248, 0.22)';
     const spanKHz = (mp && mp.spanKHz) || 10;
     const spanHz = spanKHz * 1000;
     const centerHz =
@@ -1732,7 +1790,7 @@ void main() {
       const grad = ctx.createLinearGradient(0, plotY, 0, plotY + plotH);
       grad.addColorStop(
         0,
-        rx === 'B' ? 'rgba(245, 158, 11, 0.42)' : 'rgba(56, 189, 248, 0.42)'
+        rx === 'B' ? 'rgba(34, 197, 94, 0.42)' : 'rgba(56, 189, 248, 0.42)'
       );
       grad.addColorStop(1, 'rgba(9, 11, 16, 0.02)');
 
@@ -2961,9 +3019,41 @@ void main() {
         this._initPaneTextures(ring);
       }
 
-      const w = ring.writeRow;
+      const nextCenter =
+        meta && Number.isFinite(meta.centerFreqHz) ? meta.centerFreqHz : 0;
+      const nextSpan =
+        meta && Number.isFinite(meta.tierSpanHz) && meta.tierSpanHz > 0
+          ? meta.tierSpanHz
+          : 0;
+
       gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
       gl.bindTexture(gl.TEXTURE_2D, ring.wfTex);
+
+      if (ring.filledRows === 0) {
+        const neededBytes = ring.binCount * RING_HEIGHT;
+        if (!this._zeroWfClearBuf || this._zeroWfClearBuf.length !== neededBytes) {
+          this._zeroWfClearBuf = new Uint8Array(neededBytes);
+        }
+        seedWaterfallRingNoise(uint8Row, ring.binCount, RING_HEIGHT, this._zeroWfClearBuf);
+        gl.texSubImage2D(
+          gl.TEXTURE_2D,
+          0,
+          0,
+          0,
+          ring.binCount,
+          RING_HEIGHT,
+          gl.RED,
+          gl.UNSIGNED_BYTE,
+          this._zeroWfClearBuf
+        );
+        ring.rowCenters.fill(nextCenter);
+        ring.rowTierSpans.fill(nextSpan);
+        ring.filledRows = RING_HEIGHT;
+        ring.metaFullDirty = true;
+        ring.metaUploaded = false;
+      }
+
+      const w = ring.writeRow;
       gl.texSubImage2D(
         gl.TEXTURE_2D,
         0,
@@ -2976,12 +3066,6 @@ void main() {
         uint8Row
       );
 
-      const nextCenter =
-        meta && Number.isFinite(meta.centerFreqHz) ? meta.centerFreqHz : 0;
-      const nextSpan =
-        meta && Number.isFinite(meta.tierSpanHz) && meta.tierSpanHz > 0
-          ? meta.tierSpanHz
-          : 0;
       if (
         !ring.metaUploaded ||
         ring.rowCenters[w] !== nextCenter ||
@@ -3364,7 +3448,7 @@ void main() {
       gl.uniform1i(this.wfLoc.u_binCount, ring.binCount);
       gl.uniform1f(
         this.wfLoc.u_visibleRows,
-        Math.min(RING_HEIGHT, Math.max(1, wfRect.h))
+        Math.min(RING_HEIGHT, Math.max(16, Math.round(wfRect.h / 2)))
       );
       gl.uniform1i(this.wfLoc.u_ringHeight, RING_HEIGHT);
 
@@ -3536,13 +3620,23 @@ void main() {
         ring.filledRows = 0;
       }
 
-      ring.indexRing.set(uint8Row, ring.writeRow * ring.binCount);
-      ring.rowCenters[ring.writeRow] =
+      const nextCenter =
         meta && Number.isFinite(meta.centerFreqHz) ? meta.centerFreqHz : 0;
-      ring.rowTierSpans[ring.writeRow] =
+      const nextSpan =
         meta && Number.isFinite(meta.tierSpanHz) && meta.tierSpanHz > 0
           ? meta.tierSpanHz
           : 0;
+
+      if (ring.filledRows === 0) {
+        seedWaterfallRingNoise(uint8Row, ring.binCount, RING_HEIGHT, ring.indexRing);
+        ring.rowCenters.fill(nextCenter);
+        ring.rowTierSpans.fill(nextSpan);
+        ring.filledRows = RING_HEIGHT;
+      }
+
+      ring.indexRing.set(uint8Row, ring.writeRow * ring.binCount);
+      ring.rowCenters[ring.writeRow] = nextCenter;
+      ring.rowTierSpans[ring.writeRow] = nextSpan;
 
       ring.writeRow = (ring.writeRow + 1) % RING_HEIGHT;
       if (ring.filledRows < RING_HEIGHT) {
@@ -3683,7 +3777,7 @@ void main() {
     _drawWaterfall2D(wfRect, paneKey, paneState) {
       const ring = this._panes[paneKey];
       const w = Math.max(1, Math.floor(wfRect.w));
-      const visRows = Math.min(RING_HEIGHT, Math.max(1, Math.floor(wfRect.h)));
+      const visRows = Math.min(RING_HEIGHT, Math.max(16, Math.round(wfRect.h / 2)));
 
       const viewCenterHz =
         paneState && Number.isFinite(paneState.panCenterHz)
@@ -3790,10 +3884,10 @@ void main() {
         const layout = this.layouts[i];
         const paneState =
           frameState && frameState.panes ? frameState.panes[layout.rx] : null;
-        const accentHex = layout.rx === 'B' ? '#F59E0B' : '#38BDF8';
+        const accentHex = layout.rx === 'B' ? '#22C55E' : '#38BDF8';
         const accentFillTop =
           layout.rx === 'B'
-            ? 'rgba(245, 158, 11, 0.36)'
+            ? 'rgba(34, 197, 94, 0.36)'
             : 'rgba(56, 189, 248, 0.38)';
 
         this._drawSpectrum2D(layout.specRect, paneState, accentHex, accentFillTop);
