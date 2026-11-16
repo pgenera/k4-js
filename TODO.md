@@ -118,5 +118,7 @@ Verified independently: `go -C sim test` passes, `tests/e2e_verify.py` passes (4
 
 ## 6. Memories
 - [x] **Frequency memories card in the BAND tab**: RCL/STORE selector, per-band quick memories M1-M4, and a 200-channel memory stepper (`K4.MemoryStore`, saved in this browser). Recall retunes the target receiver and sets mode, data submode and BW; STORE captures the target receiver's current state.
-- [ ] **Use the radio's own memories when possible.** The Programmer's Reference lists `MC` (Memory Channel) and `MB` (Message Bank) as pending/TBD, so these memories are browser-only. Revisit when Elecraft documents them, and keep the card's layout so the backend can switch.
+- [x] **Probed a real K4 for `MC` (2026-11-16): not implemented.** `MC;`, `MC001;`, `MC1;`, `MC0;`, `MC+;`, `MC-;` and `MC/;` all reply `MC?;` (the K4's "not valid" answer); `MN;` also replies `?`, while `MB;` -> `MB0;` and `MA;` -> `MA02;` are real. VFO state was unchanged. So the radio's 200 memories and Quick Memories are not reachable over CAT with current firmware, and the browser-side memories stay.
+- [ ] **Re-probe after K4 firmware updates** (`MC` is still "TBD" in the Programmer's Reference), then switch the memory card to the radio's memories if it appears.
+- [ ] ~~**Use the radio's own memories when possible.**~~ Blocked on the point above: The Programmer's Reference lists `MC` (Memory Channel) and `MB` (Message Bank) as pending/TBD, so these memories are browser-only. Revisit when Elecraft documents them, and keep the card's layout so the backend can switch.
 - [ ] **Export/import memories** (JSON) so they can move between browsers, and consider a clear/delete action for individual channels.
