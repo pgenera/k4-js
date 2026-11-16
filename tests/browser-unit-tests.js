@@ -3330,6 +3330,42 @@
       assertEqual(s.rxA.panCenterHz, 7074000, 'Cross-band AB2 re-centers rxA.panCenterHz to 7074000');
       assertEqual(panView._panes.A.streamCenterHz, 7074000, 'Cross-band AB2 updates streamCenterHz to 7074000');
       assertEqual(panView._panes.A.customCenterHz, null, 'Cross-band AB2 clears stale customCenterHz');
+
+      // UX Review upgrades: VFO step-digit underline, right-click digit VT, wheel-on-BW, DSP flags, SMeter mini-pan click
+      const vfoHost = document.createElement('div');
+      vfoHost.className = 'k4-vfo-slot';
+      const smHost = document.createElement('div');
+      smHost.className = 'k4-smeter-slot';
+      const calls = { step: [], filter: [], miniPan: [] };
+      const widgetClient = {
+        tune: () => {},
+        setStep: (rx, idx) => calls.step.push({ rx, idx }),
+        setFilter: (rx, patch) => calls.filter.push({ rx, patch }),
+        sendCat: () => {},
+      };
+      const vfoW = new K4.VfoWidget({ container: vfoHost, rx: 'A', client: widgetClient });
+      const snapW = new K4.RadioState().getSnapshot();
+      snapW.rxA.stepHz = 100;
+      snapW.rxA.bwHz = 2400;
+      snapW.rxA.preamp = 1;
+      snapW.rxA.nbOn = true;
+      snapW.rxA.nrOn = false;
+      vfoW.update(snapW, 'A');
+      assert(vfoW._digitEls[5].classList.contains('is-step-digit'), '100 Hz step underlines 100 Hz digit (index 5)');
+      assert(!vfoW._digitEls[4].classList.contains('is-step-digit'), 'non-step digit not underlined');
+      assert(!vfoW._dspFlagEls.PRE.hidden && !vfoW._dspFlagEls.NB.hidden && vfoW._dspFlagEls.NR.hidden, 'VFO DSP micro-flags reflect PRE/NB/NR state');
+
+      vfoW._digitEls[3].dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
+      assertEqual(calls.step[0] && calls.step[0].idx, 6, 'Right-clicking 10 kHz digit sets VT step index 6');
+
+      vfoW.bwBtn.dispatchEvent(new WheelEvent('wheel', { deltaY: -100, bubbles: true, cancelable: true }));
+      assertEqual(calls.filter[0] && calls.filter[0].patch && calls.filter[0].patch.bwHz, 2500, 'Scrolling up on BW pill widens filter from 2400 to 2500 Hz');
+
+      const smW = new K4.SMeterWidget({ container: smHost, onToggleMiniPan: (rx) => calls.miniPan.push(rx) });
+      smW.update(snapW, 'A');
+      smW._blockA.root.click();
+      assertEqual(calls.miniPan[0], 'A', 'Clicking S-meter block A triggers onToggleMiniPan("A")');
+      smW.destroy();
     } finally {
       if (panView && typeof panView.destroy === 'function') panView.destroy();
       if (panel && typeof panel.destroy === 'function') panel.destroy();
@@ -3341,6 +3377,119 @@
       K4.ClientPrefs.set('arrowUpDownMode', saved.arrowUpDownMode);
       K4.ClientPrefs.set('keyboardShortcuts', saved.keyboardShortcuts);
       K4.ClientPrefs.set('fnMacros', saved.fnMacros);
+    }
+  });
+
+  test('CatCodec & RadioState #FXA0..4 cursor modes (FIXED1, FIXED2, SLIDE1, STATIC, SLIDE2)', () => {
+    const K4 = globalThis.K4;
+    const parsed = K4.CatCodec.parseCommand('#FXA4');
+    assertEqual(parsed && parsed.kind, 'fixedTuneMode', '#FXA4 parses kind=fixedTuneMode');
+    assertEqual(parsed && parsed.fixedTuneMode, 4, '#FXA4 parses fixedTuneMode=4 (SLIDE2)');
+    assertEqual(K4.CatCodec.builders.fixedTuneMode(2), '#FXA2;', 'fixedTuneMode(2) builds #FXA2;');
+
+    const applyCat = (st, cat) => {
+      for (const frame of K4.CatCodec.splitFrames(cat)) {
+        const p = K4.CatCodec.parseCommand(frame);
+        if (p) st.applyParsedCat(p);
+      }
+    };
+
+    const st = new K4.RadioState();
+    applyCat(st, 'FA00014074000;FB00014105000;#SPN48000;#FXT1;#FXA0;');
+    st.updateRx('A', { panCenterHz: 14074000 });
+    st.applyParsedCat({ kind: 'vfoCopy', rx: null, mode: 1 });
+    assertEqual(st.getSnapshot().rxA.panCenterHz, 14122000, 'FIXED1 jumps full span (+48k)');
+
+    applyCat(st, 'FA00014074000;FB00014105000;#SPN48000;#FXA1;');
+    st.updateRx('A', { panCenterHz: 14074000 });
+    st.applyParsedCat({ kind: 'vfoCopy', rx: null, mode: 1 });
+    assertEqual(st.getSnapshot().rxA.panCenterHz, 14105000, 'FIXED2 recenters to new VFO frequency');
+
+    applyCat(st, 'FA00014074000;FB00014105000;#SPN48000;#FXA2;');
+    st.updateRx('A', { panCenterHz: 14074000 });
+    st.applyParsedCat({ kind: 'vfoCopy', rx: null, mode: 1 });
+    assertEqual(st.getSnapshot().rxA.panCenterHz, 14081000, 'SLIDE1 slides span edge to follow VFO');
+
+    applyCat(st, 'FA00014074000;FB00014105000;#SPN48000;#FXA3;');
+    st.updateRx('A', { panCenterHz: 14074000 });
+    st.applyParsedCat({ kind: 'vfoCopy', rx: null, mode: 1 });
+    assertEqual(st.getSnapshot().rxA.panCenterHz, 14074000, 'STATIC keeps panCenterHz fixed');
+
+    applyCat(st, 'FA00014074000;FB00014096000;#SPN48000;#FXA4;');
+    st.updateRx('A', { panCenterHz: 14074000 });
+    st.applyParsedCat({ kind: 'vfoCopy', rx: null, mode: 1 });
+    assertEqual(st.getSnapshot().rxA.panCenterHz, 14076800, 'SLIDE2 slides near 80% span margin');
+  });
+
+  test('PanadapterView synthetic waterfall fill proof (top-edge axis + >85% pixels across top/mid/bottom thirds)', async () => {
+    const K4 = globalThis.K4;
+    const host = document.createElement('div');
+    host.style.width = '640px';
+    host.style.height = '380px';
+    document.body.appendChild(host);
+    const state = new K4.RadioState();
+    let view = null;
+    try {
+      state.applyParsedCat({ kind: 'freq', rx: 'A', freqHz: 14074000 });
+      view = new K4.PanadapterView({
+        container: host,
+        state,
+        client: { sendCat: () => {}, tune: () => {}, setDisplay: () => {} },
+        renderer: '2d',
+      });
+      const bins = new Uint8Array(1024);
+      for (let i = 0; i < 1024; i++) bins[i] = 42 + Math.round(Math.sin(i * 0.37) * 3);
+      for (let k = -4; k <= 4; k++) bins[512 + k] = 102 - Math.abs(k) * 6;
+      for (let f = 0; f < 90; f++) {
+        view.pushPanPacket({ rx: 'A', centerFreqHz: 14074000, spanHz: 48000, sampleRateKHz: 48, bins });
+      }
+      view._renderNow(true);
+
+      const glCanvas = host.querySelector('.k4-pan-gl');
+      const layouts = view._renderer && view._renderer.getLayouts ? view._renderer.getLayouts() : [];
+      const layout = layouts[0];
+      assert(glCanvas && layout && layout.axisRect && layout.specRect && layout.wfRect, 'Panadapter layout rects populated');
+      assert(layout.axisRect.y < layout.specRect.y, 'Top-edge axisRect sits above specRect');
+      assert(Math.abs((layout.specRect.y + layout.specRect.h) - layout.wfRect.y) <= 1, 'specRect abuts wfRect directly');
+
+      const cssW = Math.round((view._renderer && view._renderer.cssW) || 640);
+      const cssH = Math.round((view._renderer && view._renderer.cssH) || 380);
+      const probe = document.createElement('canvas');
+      probe.width = cssW;
+      probe.height = cssH;
+      const pctx = probe.getContext('2d');
+      pctx.drawImage(glCanvas, 0, 0, cssW, cssH);
+      const wf = layout.wfRect;
+      const wfX = Math.max(4, Math.floor(wf.x) + 4);
+      const wfW = Math.max(20, Math.floor(wf.w) - 8);
+      const bands = [
+        [Math.floor(wf.y + wf.h * 0.08), Math.floor(wf.h * 0.22)],
+        [Math.floor(wf.y + wf.h * 0.39), Math.floor(wf.h * 0.22)],
+        [Math.floor(wf.y + wf.h * 0.70), Math.floor(wf.h * 0.22)],
+      ];
+      for (let bIdx = 0; bIdx < bands.length; bIdx++) {
+        const [by, bh] = bands[bIdx];
+        const data = pctx.getImageData(wfX, by, wfW, bh).data;
+        let nonBg = 0;
+        const total = wfW * bh;
+        for (let p = 0; p < data.length; p += 4) {
+          if (Math.abs(data[p] - 9) + Math.abs(data[p + 1] - 11) + Math.abs(data[p + 2] - 16) > 4) {
+            nonBg++;
+          }
+        }
+        const pct = nonBg / Math.max(1, total);
+        assert(pct > 0.85, `Waterfall third #${bIdx + 1} non-bg coverage ${(pct * 100).toFixed(1)}% <= 85%`);
+      }
+
+      const midY = Math.floor(wf.y + wf.h * 0.5);
+      const sigPx = pctx.getImageData(Math.floor(wf.x + wf.w * 0.5), midY, 1, 1).data;
+      const noisePx = pctx.getImageData(Math.floor(wf.x + wf.w * 0.15), midY, 1, 1).data;
+      const sigLum = sigPx[0] + sigPx[1] + sigPx[2];
+      const noiseLum = noisePx[0] + noisePx[1] + noisePx[2];
+      assert(sigLum > noiseLum + 40, `Expected carrier bin brighter than noise floor (${sigLum} vs ${noiseLum})`);
+    } finally {
+      if (view && typeof view.destroy === 'function') view.destroy();
+      host.remove();
     }
   });
 

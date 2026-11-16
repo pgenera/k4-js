@@ -1240,18 +1240,38 @@ def run_file_origin_e2e(client: MarionetteClient, ws_url: str, password: str, st
     assert af_res["bins"] > 20, f"Expected AF FFT bins > 20, got {af_res}"
     assert af_res["hasCanvas"] is True, f"AF Scope canvas missing: {af_res}"
 
-    # Item 2 Bookmarks CRUD + recall via UI
-    client.execute_script("globalThis.k4App.inspector.selectDesktopTab('band-mode');")
+    # Item 2 Bookmarks CRUD + recall behind MHz digits / Omnibar modal
+    client.click_element(client.find_element('#vfo-a-mount .k4-vfo-unit'))
+    wait_until(
+        lambda: client.execute_script(
+            "const m = document.querySelector('[data-testid=\"omnibar-modal\"]'); return m && m.dataset.open === 'true';"
+        ),
+        "Clicking VFO A MHz opens Omnibar bookmark modal",
+    )
     client.clear_and_type('[data-testid="bookmark-label-input"]', "40m E2E")
     client.click_element(client.find_element('[data-testid="bookmark-save-btn"]'))
     wait_until(
         lambda: client.execute_script(
             "const l = document.querySelector('[data-testid=\"bookmark-list\"]'); return l && l.textContent.includes('40m E2E');"
         ),
-        "Saved 40m E2E bookmark appears in list",
+        "Saved 40m E2E bookmark appears in MHz modal list",
+    )
+    client.send_keys(client.find_element('[data-testid="bookmark-label-input"]'), "\uE00C")
+    wait_until(
+        lambda: client.execute_script(
+            "const m = document.querySelector('[data-testid=\"omnibar-modal\"]'); return m && m.dataset.open === 'false';"
+        ),
+        "Omnibar modal closes after Escape",
     )
     client.execute_script("globalThis.k4App.client.tune('A', 14074000);")
     wait_until(lambda: http_get_json(stats_url)["faHz"] == 14074000, "Moved VFO A away before bookmark recall")
+    client.click_element(client.find_element('#vfo-a-mount .k4-vfo-unit'))
+    wait_until(
+        lambda: client.execute_script(
+            "const m = document.querySelector('[data-testid=\"omnibar-modal\"]'); return m && m.dataset.open === 'true';"
+        ),
+        "Reopened Omnibar bookmark modal via MHz digits",
+    )
     client.execute_script(
         """
         const btns = Array.from(document.querySelectorAll('.k4-bookmark-recall'));
@@ -1260,7 +1280,13 @@ def run_file_origin_e2e(client: MarionetteClient, ws_url: str, password: str, st
         target.click();
         """
     )
-    wait_until(lambda: http_get_json(stats_url)["faHz"] == 7074000, "Bookmark recall returns VFO A to 7074000 Hz")
+    wait_until(
+        lambda: http_get_json(stats_url)["faHz"] == 7074000
+        and client.execute_script(
+            "const m = document.querySelector('[data-testid=\"omnibar-modal\"]'); return m && m.dataset.open === 'false';"
+        ),
+        "Bookmark recall returns VFO A to 7074000 Hz and closes modal",
+    )
     client.execute_script("K4.BookmarkStore.resetDefaults();")
 
     verify_ui_notes_and_cw(client, stats_url)
@@ -2362,10 +2388,14 @@ def run_http_origin_and_screenshots(
 
     # UX Item 7: K4 Keyboard Shortcuts (ArrowUp/Down +/-10x step, PageUp/PageDown band, digits 14025+Enter, x swap, F1 CW macro, Escape KY @;)
     client.execute_script(
-        "globalThis.k4App.client.sendCat('#FXT0;FA00014074000;FB00014080000;MD3;'); globalThis.k4App.setTargetRx('A'); if (document.activeElement) document.activeElement.blur();"
+        "globalThis.k4App.client.sendCat('#FXT0;FA00014074000;FB00014080000;MD3;'); globalThis.k4App.client.setStep('A', 2); globalThis.k4App.setTargetRx('A'); if (document.activeElement) document.activeElement.blur();"
     )
     wait_until(
-        lambda: http_get_json(stats_url)["faHz"] == 14074000 and http_get_json(stats_url)["fbHz"] == 14080000,
+        lambda: http_get_json(stats_url)["faHz"] == 14074000
+        and http_get_json(stats_url)["fbHz"] == 14080000
+        and client.execute_script(
+            "const s = globalThis.k4App.state.getSnapshot(); return s.rxA.freqHz === 14074000 && s.rxB.freqHz === 14080000 && s.rxA.stepHz === 100 && s.rxA.mode === 3;"
+        ),
         "Prepared VFO A=14074000 / VFO B=14080000 for K4 keyboard shortcuts",
     )
 
@@ -2419,11 +2449,306 @@ def run_http_origin_and_screenshots(
         "'Escape' aborts F1 CW macro via KY @; cleanly",
     )
 
-    # Restore default VFO state before layout checks and screenshot
-    client.execute_script("globalThis.k4App.client.sendCat('FA00014074000;FB00014025000;MD6;MD$3;');")
+    # Restore default VFO state before Section 3 checks & desktop screenshot
+    client.execute_script("globalThis.k4App.client.sendCat('FA00014074000;FB00014025000;MD6;MD$3;BW0270;BW$0050;IS1500;IS$0500;'); globalThis.k4App.setTargetRx('A');")
     wait_until(
-        lambda: http_get_json(stats_url)["faHz"] == 14074000 and http_get_json(stats_url)["fbHz"] == 14025000,
-        "Restored clean state before desktop screenshot",
+        lambda: http_get_json(stats_url)["faHz"] == 14074000
+        and http_get_json(stats_url)["fbHz"] == 14025000
+        and client.execute_script(
+            "const s = globalThis.k4App.state.getSnapshot(); return s.rxA.freqHz === 14074000 && s.rxB.freqHz === 14025000 && s.rxA.bwHz === 2700 && s.rxB.bwHz === 500;"
+        ),
+        "Restored clean state (including BW 2.7k / 500Hz) before Section 3 checks & desktop screenshot",
+    )
+
+    # Section 3 checks (3a..3d):
+    # 1. Self-hosted K4 Tabular font loaded, >= 22px VFO digits, full-pane waterfall coverage & top-edge axis
+    wf_font_res = client.execute_script(
+        """
+        const vfoFreq = document.querySelector('[data-testid="vfo-a-freq"]');
+        const vfoSize = vfoFreq ? parseFloat(getComputedStyle(vfoFreq).fontSize) : 0;
+        const fontOk = Boolean(document.fonts && document.fonts.check('700 22px "K4 Tabular"', '14.074'));
+        const pan = globalThis.k4App && globalThis.k4App.panadapter;
+        const rend = pan && pan._renderer;
+        if (pan && typeof pan._renderNow === 'function') pan._renderNow(true);
+        const glCanvas = document.querySelector('.k4-pan-gl');
+        const layout = rend && typeof rend.getLayouts === 'function' ? rend.getLayouts()[0] : null;
+        let coverages = [];
+        if (glCanvas && layout && layout.wfRect && layout.wfRect.h > 20) {
+          const cssW = Math.round(rend.cssW || glCanvas.clientWidth || 800);
+          const cssH = Math.round(rend.cssH || glCanvas.clientHeight || 400);
+          const probe = document.createElement('canvas');
+          probe.width = cssW;
+          probe.height = cssH;
+          const pctx = probe.getContext('2d');
+          pctx.drawImage(glCanvas, 0, 0, cssW, cssH);
+          const wf = layout.wfRect;
+          const wfX = Math.max(4, Math.floor(wf.x) + 4);
+          const wfW = Math.max(20, Math.floor(wf.w) - 8);
+          const bands = [
+            [Math.floor(wf.y + wf.h * 0.08), Math.floor(wf.h * 0.22)],
+            [Math.floor(wf.y + wf.h * 0.39), Math.floor(wf.h * 0.22)],
+            [Math.floor(wf.y + wf.h * 0.70), Math.floor(wf.h * 0.22)],
+          ];
+          for (const [by, bh] of bands) {
+            const data = pctx.getImageData(wfX, by, wfW, bh).data;
+            let nonBg = 0;
+            const total = wfW * bh;
+            for (let p = 0; p < data.length; p += 4) {
+              if (Math.abs(data[p] - 9) + Math.abs(data[p + 1] - 11) + Math.abs(data[p + 2] - 16) > 4) {
+                nonBg++;
+              }
+            }
+            coverages.push(nonBg / Math.max(1, total));
+          }
+        }
+        return {
+          fontOk,
+          vfoSize,
+          axisAboveSpec: Boolean(layout && layout.axisRect && layout.specRect && layout.axisRect.y < layout.specRect.y),
+          specAbutsWf: Boolean(layout && layout.specRect && layout.wfRect && Math.abs((layout.specRect.y + layout.specRect.h) - layout.wfRect.y) <= 1),
+          coverages,
+        };
+        """
+    )
+    assert wf_font_res["fontOk"] is True, f"K4 Tabular font failed to load: {wf_font_res}"
+    assert wf_font_res["vfoSize"] >= 22.0, f"Expected >= 22px VFO font size at 1440x900: {wf_font_res}"
+    assert wf_font_res["axisAboveSpec"] and wf_font_res["specAbutsWf"], f"Expected top-edge axisRect & abutting wfRect: {wf_font_res}"
+    assert len(wf_font_res["coverages"]) == 3 and all(c > 0.85 for c in wf_font_res["coverages"]), (
+        f"Expected > 85% waterfall fill across top/middle/bottom thirds: {wf_font_res}"
+    )
+
+    # 2. Live Filter Trapezoids (VFO pill & MAIN RX DSP pane)
+    client.execute_script("globalThis.k4App.inspector.selectDesktopTab('dsp');")
+    trap_before = client.execute_script(
+        """
+        const vPoly = document.querySelector('[data-testid="vfo-a-filter-trapezoid"] polygon');
+        const dPoly = document.querySelector('[data-testid="dsp-filter-trapezoid"] polygon');
+        return {
+          vPts: vPoly ? vPoly.getAttribute('points') : '',
+          dPts: dPoly ? dPoly.getAttribute('points') : '',
+        };
+        """
+    )
+    assert trap_before["vPts"] and trap_before["dPts"], f"Missing filter trapezoid SVG polygons: {trap_before}"
+    client.execute_script("globalThis.k4App.client.setFilter('A', { bwHz: 500 });")
+    wait_until(
+        lambda: client.execute_script(
+            """
+            const vPoly = document.querySelector('[data-testid="vfo-a-filter-trapezoid"] polygon');
+            const dPoly = document.querySelector('[data-testid="dsp-filter-trapezoid"] polygon');
+            return vPoly && dPoly &&
+                   vPoly.getAttribute('points') !== arguments[0] &&
+                   dPoly.getAttribute('points') !== arguments[1];
+            """,
+            [trap_before["vPts"], trap_before["dPts"]],
+        ),
+        "Both VFO and DSP filter trapezoids update live on BW change",
+    )
+    client.execute_script("globalThis.k4App.client.setFilter('A', { bwHz: 2700 });")
+    wait_until(
+        lambda: client.execute_script("return globalThis.k4App.state.getSnapshot().rxA.bwHz === 2700;"),
+        "Restored BW 2700 Hz after trapezoid check",
+    )
+
+    # 3. Side-by-side S-meters (SB1, ticks on both, no MTR, click toggles Mini-Pan A) + Split TX bar placement
+    client.execute_script("globalThis.k4App.client.setSubRx(true);")
+    wait_until(
+        lambda: client.execute_script("return globalThis.k4App.state.getSnapshot().subRxEnabled === true;"),
+        "Enabled SB1 for side-by-side S-meter check",
+    )
+    sb1_meters = client.execute_script(
+        """
+        const slot = document.querySelector('.k4-smeter-slot');
+        const ba = document.querySelector('[data-testid="smeter-block-a"]');
+        const bb = document.querySelector('[data-testid="smeter-block-b"]');
+        const ta = ba ? ba.querySelector('.k4-smeter-ticks') : null;
+        const tb = bb ? bb.querySelector('.k4-smeter-ticks') : null;
+        const ra = ba ? ba.getBoundingClientRect() : null;
+        const rb = bb ? bb.getBoundingClientRect() : null;
+        const rta = ta ? ta.getBoundingClientRect() : null;
+        const rtb = tb ? tb.getBoundingClientRect() : null;
+        return {
+          noMtr: !String(slot ? slot.textContent : '').includes('MTR'),
+          sideBySide: Boolean(ra && rb && ra.width > 40 && rb.width > 40 && ra.right <= rb.left + 2 && Math.abs(ra.top - rb.top) < 8),
+          ticksVis: Boolean(rta && rtb && rta.height > 0 && rtb.height > 0),
+        };
+        """
+    )
+    assert sb1_meters["noMtr"] and sb1_meters["sideBySide"] and sb1_meters["ticksVis"], (
+        f"Expected side-by-side Main A & Sub B S-meters with ticks and no MTR: {sb1_meters}"
+    )
+    client.click_element(client.find_element('[data-testid="smeter-block-a"]'))
+    wait_until(
+        lambda: client.execute_script("return globalThis.k4App.state.getSnapshot().rxA.miniPan === true;"),
+        "Clicking Main A S-meter toggles Mini-Pan A ON",
+    )
+    client.click_element(client.find_element('[data-testid="smeter-block-a"]'))
+    wait_until(
+        lambda: client.execute_script("return globalThis.k4App.state.getSnapshot().rxA.miniPan === false;"),
+        "Clicking Main A S-meter toggles Mini-Pan A OFF",
+    )
+
+    client.execute_script("globalThis.k4App.client.setSplit(true);")
+    client.click_element(client.find_element('[data-testid="tx-mode-test"]'))
+    wait_until(
+        lambda: client.execute_script(
+            "const s = globalThis.k4App.state.getSnapshot(); return s.splitEnabled === true && s.txTestMode === true;"
+        ),
+        "Enabled Split + TX Test for Split TX bar placement check",
+    )
+    ptt_el = client.find_element('[data-testid="ptt-btn"]')
+    ptt_rect = client.execute_script(
+        "const r = arguments[0].getBoundingClientRect(); return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };",
+        [ptt_el],
+    )
+    client.perform_actions(
+        [
+            {
+                "type": "pointer",
+                "id": "mouse",
+                "parameters": {"pointerType": "mouse"},
+                "actions": [
+                    {"type": "pointerMove", "duration": 0, "x": ptt_rect["x"], "y": ptt_rect["y"], "origin": "viewport"},
+                    {"type": "pointerDown", "button": 0},
+                ],
+            }
+        ]
+    )
+    try:
+        wait_until(
+            lambda: client.execute_script(
+                """
+                const cl = document.querySelector('[data-testid="tx-meter-cluster"]');
+                const ba = document.querySelector('[data-testid="smeter-block-a"]');
+                const ra = ba ? ba.getBoundingClientRect() : null;
+                const rc = cl ? cl.getBoundingClientRect() : null;
+                return cl && !cl.hidden && ba && !ba.hidden && ra && rc && ra.right <= rc.left + 2;
+                """
+            ),
+            "Split TX keeps Main A RX meter left and TX bars on right (VFO B)",
+        )
+    finally:
+        client.perform_actions(
+            [
+                {
+                    "type": "pointer",
+                    "id": "mouse",
+                    "parameters": {"pointerType": "mouse"},
+                    "actions": [{"type": "pointerUp", "button": 0}],
+                }
+            ]
+        )
+        client.release_actions()
+    client.click_element(client.find_element('[data-testid="tx-mode-test"]'))
+    client.execute_script("globalThis.k4App.client.setSplit(false); globalThis.k4App.client.setSubRx(false);")
+    wait_until(
+        lambda: client.execute_script(
+            "const s = globalThis.k4App.state.getSnapshot(); return s.txActive === false && s.txTestMode === false && s.splitEnabled === false && s.subRxEnabled === false;"
+        ),
+        "Restored RX Simplex after Split TX bar placement check",
+    )
+
+    # 4. Center icon area + shared RIT/XIT box + HUD #NB pill
+    center_ok = client.execute_script(
+        """
+        const ids = ['center-split-ind', 'center-msg-ind', 'center-vox-ind', 'center-qsk-ind', 'center-rit-xit-box'];
+        return ids.every((id) => {
+          const el = document.getElementById(id);
+          const r = el ? el.getBoundingClientRect() : null;
+          return Boolean(el && el.offsetParent !== null && r && r.width > 0 && r.height > 0);
+        });
+        """
+    )
+    assert center_ok, "Expected all K4 #k4-center-icons & RIT/XIT box visible at 1440x900"
+    client.click_element(client.find_element('#center-rit-xit-box'))
+    wait_until(
+        lambda: client.execute_script("return globalThis.k4App.state.getSnapshot().rxA.ritOn === true;"),
+        "Clicking center RIT/XIT box toggles RIT ON",
+    )
+    client.click_element(client.find_element('#center-rit-xit-box'))
+    wait_until(
+        lambda: client.execute_script("return globalThis.k4App.state.getSnapshot().rxA.ritOn === false;"),
+        "Clicking center RIT/XIT box toggles RIT OFF",
+    )
+
+    client.execute_script("globalThis.k4App.client.setDisplay('A', { panNbMode: 1 });")
+    wait_until(
+        lambda: client.execute_script(
+            """
+            const p = document.querySelector('[data-testid="pan-nb-pill"]');
+            return Boolean(p && !p.hidden && p.getBoundingClientRect().width > 0);
+            """
+        ),
+        "#NB1 shows pan-nb-pill on panadapter HUD",
+    )
+    client.execute_script("globalThis.k4App.client.setDisplay('A', { panNbMode: 0 });")
+    wait_until(
+        lambda: client.execute_script("return globalThis.k4App.state.getSnapshot().rxA.panNbMode === 0;"),
+        "Restored #NB0 after HUD pill check",
+    )
+
+    # 5. K4 Tabs (BAND/MAIN RX/SUB RX/DISPLAY/AUDIO/TX), 1-screen sentence-case BAND tab, #FXA SLIDE2 round-trip, UTC->RTT cycler, centered toast
+    tab_res = client.execute_script(
+        """
+        const labels = Array.from(document.querySelectorAll('.k4-panel-tabs .k4-tab-btn')).map((b) => b.textContent.trim());
+        globalThis.k4App.inspector.selectDesktopTab('band-mode');
+        const scroll = document.querySelector('#inspector-drawer .k4-panel-scroll');
+        const title = document.querySelector('#inspector-drawer .k4-card-title');
+        return {
+          labels,
+          bandSh: scroll ? scroll.scrollHeight : 9999,
+          bandCh: scroll ? scroll.clientHeight : 0,
+          cardTransform: title ? getComputedStyle(title).textTransform : '',
+        };
+        """
+    )
+    assert tab_res["labels"] == ["BAND", "MAIN RX", "SUB RX", "DISPLAY", "AUDIO", "TX"], tab_res
+    assert tab_res["bandSh"] <= tab_res["bandCh"] + 4, f"BAND tab scrolled ({tab_res['bandSh']} > {tab_res['bandCh']}): {tab_res}"
+    assert tab_res["cardTransform"] == "none", f"Expected sentence-case card titles: {tab_res}"
+
+    client.execute_script("globalThis.k4App.inspector.selectDesktopTab('display');")
+    client.click_element(client.find_element('[data-testid="cursor-mode-group"] [data-cursor-mode="SLIDE2"]'))
+    wait_until(
+        lambda: http_get_json(stats_url)["fixedTune"] is True and http_get_json(stats_url)["fixedTuneMode"] == 4,
+        "Clicking SLIDE2 cursor mode sets fixedTune=true & #FXA4 in k4sim",
+    )
+    client.click_element(client.find_element('[data-testid="cursor-mode-group"] [data-cursor-mode="TRACK"]'))
+    wait_until(
+        lambda: http_get_json(stats_url)["fixedTune"] is False,
+        "Clicking TRACK cursor mode restores fixedTune=false",
+    )
+
+    client.click_element(client.find_element('[data-testid="status-area-cycler"]'))
+    strip_check = client.execute_script(
+        """
+        const cyc = document.querySelector('[data-testid="status-area-cycler"]');
+        const vals = Array.from(document.querySelectorAll('.k4-sensor-strip .k4-sensor-pill-val'));
+        return {
+          cycText: cyc ? cyc.textContent.trim() : '',
+          noTrunc: vals.every((v) => v.scrollWidth <= v.clientWidth + 1),
+        };
+        """
+    )
+    assert strip_check["cycText"].startswith("RTT") and strip_check["noTrunc"], (
+        f"Expected non-truncated RTT status cycler after tap: {strip_check}"
+    )
+    client.execute_script("for (let i = 0; i < 3; i++) document.querySelector('[data-testid=\"status-area-cycler\"]')?.click();")
+
+    toast_geom = client.execute_script(
+        """
+        globalThis.k4App.toast('Centered Toast Check', 'info');
+        const t = document.querySelector('.k4-toast');
+        const d = document.getElementById('inspector-drawer');
+        const tr = t ? t.getBoundingClientRect() : null;
+        const dr = d ? d.getBoundingClientRect() : null;
+        return tr && dr ? {
+          centerDelta: Math.abs((tr.left + tr.width / 2) - window.innerWidth / 2),
+          clearOfDrawer: tr.right < dr.left,
+        } : null;
+        """
+    )
+    assert toast_geom and toast_geom["centerDelta"] < 40 and toast_geom["clearOfDrawer"], (
+        f"Desktop toast overlapped drawer or was not centered: {toast_geom}"
     )
 
     err_toasts = client.execute_script(
@@ -2431,9 +2756,22 @@ def run_http_origin_and_screenshots(
     )
     assert not err_toasts, f"Unexpected error toasts in UI: {err_toasts}"
 
+    # Capture Desktop screenshot with BAND tab & SB1 Dual RX S-meters visible
+    client.execute_script("globalThis.k4App.inspector.selectDesktopTab('band-mode'); globalThis.k4App.client.setSubRx(true);")
+    wait_until(
+        lambda: client.execute_script("return globalThis.k4App.state.getSnapshot().subRxEnabled === true;"),
+        "SB1 enabled for Dual S-meter desktop screenshot",
+    )
+    client.execute_script("document.querySelectorAll('.k4-toast:not([data-level=\"error\"])').forEach(e => e.remove());")
+    time.sleep(0.45)
     desktop_png = os.path.join(out_dir, "e2e-desktop.png")
     client.take_screenshot(desktop_png)
     assert os.path.getsize(desktop_png) > 5000, f"Desktop screenshot too small: {desktop_png}"
+    client.execute_script("globalThis.k4App.client.setSubRx(false);")
+    wait_until(
+        lambda: client.execute_script("return globalThis.k4App.state.getSnapshot().subRxEnabled === false;"),
+        "SB0 restored after desktop screenshot",
+    )
 
     # UX Item 1 & Item 13: Verify top-bar non-overlap, VFO B selectors visible & unclipped, and Omnibar modal strictly below #vfo-b-mount
     # across 1600x900, 1440x900, 1280x800, 1024x768 (Drawer open & closed, Single & SB1 Dual RX)
@@ -2465,6 +2803,7 @@ def run_http_origin_and_screenshots(
             const antR = ant ? ant.getBoundingClientRect() : null;
             const hitAnt = antR ? document.elementFromPoint(antR.left + antR.width / 2, antR.top + antR.height / 2) : null;
             const ctrR = ctr ? ctr.getBoundingClientRect() : null;
+            const topR = top ? top.getBoundingClientRect() : null;
             const vfoBR = vfoB ? vfoB.getBoundingClientRect() : null;
             const pillsR = pills ? pills.getBoundingClientRect() : null;
             const omniR = omniBtn ? omniBtn.getBoundingClientRect() : null;
@@ -2472,6 +2811,7 @@ def run_http_origin_and_screenshots(
             return {
               sw: document.documentElement.scrollWidth,
               cw: document.documentElement.clientWidth,
+              topHeight: topR ? topR.height : 999,
               topSw: top ? top.scrollWidth : 0,
               topCw: top ? top.clientWidth : 0,
               ctrSw: ctr ? ctr.scrollWidth : 0,
@@ -2489,12 +2829,62 @@ def run_http_origin_and_screenshots(
             """
         )
         mode_tag = f"{'SB1 Dual RX' if dual_rx else 'Single RX'}, drawer={'open' if drawer_open else 'closed'}"
+        assert ov["topHeight"] <= 56.5, (
+            f"#top-bar exceeded 56px single-row spec ({ov['topHeight']}px) at {w}x{h} ({mode_tag}): {ov}"
+        )
         assert ov["sw"] <= ov["cw"] and ov["antOk"] and ov["atuOk"] and ov["subOk"], (
             f"Overflow, obscured control, or hidden ANT/ATU at {w}x{h} ({mode_tag}): {ov}"
         )
         assert ov["topSw"] <= ov["topCw"] + 1 and ov["ctrSw"] <= ov["ctrCw"] + 1, (
             f"#top-bar/.k4-topbar-center overflow at {w}x{h} ({mode_tag}): {ov}"
         )
+        if w == 1100 and drawer_open and not dual_rx:
+            ov_drawer = client.execute_script(
+                """
+                const d = document.getElementById('inspector-drawer');
+                const stage = document.getElementById('pan-stage');
+                const tgl = document.getElementById('drawer-toggle');
+                const cb = document.getElementById('conn-btn');
+                const lbl = cb ? cb.querySelector('.k4-conn-label') : null;
+                const prevStatus = cb ? cb.dataset.status : '';
+                const prevText = lbl ? lbl.textContent : '';
+                if (cb && lbl) {
+                  cb.dataset.status = 'connecting';
+                  lbl.textContent = 'Connecting...';
+                }
+                const connUnclipped = Boolean(lbl && lbl.getBoundingClientRect().width > 50 && lbl.scrollWidth <= lbl.clientWidth + 1);
+                if (cb && lbl) {
+                  cb.dataset.status = prevStatus;
+                  lbl.textContent = prevText;
+                }
+                return {
+                  pos: d ? getComputedStyle(d).position : '',
+                  stageW: stage ? stage.getBoundingClientRect().width : 0,
+                  iw: window.innerWidth,
+                  ariaExpanded: tgl ? tgl.getAttribute('aria-expanded') : '',
+                  connUnclipped,
+                };
+                """
+            )
+            assert ov_drawer["pos"] == "absolute" and ov_drawer["stageW"] >= ov_drawer["iw"] - 4, (
+                f"Expected overlay drawer without shrinking pan-stage at 1100x700: {ov_drawer}"
+            )
+            assert ov_drawer["ariaExpanded"] == "true" and ov_drawer["connUnclipped"], (
+                f"Expected drawer toggle active & unclipped Connecting state at 1100x700: {ov_drawer}"
+            )
+            client.click_element(client.find_element('#drawer-toggle'))
+            wait_until(
+                lambda: client.execute_script("return document.getElementById('inspector-drawer')?.dataset.open === 'false';"),
+                "Overlay drawer closes at 1100x700",
+            )
+            client.click_element(client.find_element('#drawer-toggle'))
+            wait_until(
+                lambda: client.execute_script(
+                    "const d = document.getElementById('inspector-drawer'); return d && d.dataset.open === 'true' && d.contains(document.activeElement);"
+                ),
+                "Opening overlay drawer at 1100x700 moves focus inside #inspector-drawer",
+            )
+
         assert ov["vfoBOk"] and ov["pillsUnclipped"] and all(p["ok"] for p in ov["pillMetrics"].values()), (
             f"VFO B selectors hidden or clipped at {w}x{h} ({mode_tag}): {ov}"
         )
@@ -2503,7 +2893,45 @@ def run_http_origin_and_screenshots(
                 f"VFO B pills overlap Jump button at {w}x{h} ({mode_tag}): {ov}"
             )
 
-    for w, h in [(1600, 900), (1440, 900), (1280, 800), (1024, 768)]:
+    # Verify K4 Color Tokens, Step-Digit Underline, and Decode Ticker idle collapse
+    ux_tokens = client.execute_script(
+        """
+        const cs = getComputedStyle(document.documentElement);
+        const stepDigits = document.querySelectorAll('#vfo-a-mount .k4-vfo-digit.is-step-digit').length;
+        return {
+          vfoB: cs.getPropertyValue('--accent-vfo-b').trim().toLowerCase(),
+          tx: cs.getPropertyValue('--accent-tx').trim().toLowerCase(),
+          stepDigits,
+        };
+        """
+    )
+    assert ux_tokens["vfoB"] == "#22c55e" and ux_tokens["tx"] == "#f97316", f"Expected K4 green/orange tokens: {ux_tokens}"
+    assert ux_tokens["stepDigits"] == 1, f"Expected 1 active step digit underline on VFO A: {ux_tokens}"
+
+    client.execute_script("globalThis.k4App.client.setMode('A', 'DATA', 0);")
+    wait_until(
+        lambda: http_get_json(stats_url).get("modeA") == 6
+        and client.execute_script("return globalThis.k4App.state.getSnapshot().rxA.mode === 6;"),
+        "Switched VFO A to DATA-A for idle ticker check",
+    )
+    client.execute_script("globalThis.k4App._clearDecodedText(); globalThis.k4App._tickerExpanded = false; globalThis.k4App._render();")
+    idle_ticker = client.execute_script(
+        """
+        const t = document.querySelector('[data-testid="text-ticker"]');
+        const pv = t ? t.querySelector('.k4-ticker-preview') : null;
+        return { idle: t?.dataset.idle, pvDisplay: pv ? getComputedStyle(pv).display : '' };
+        """
+    )
+    assert idle_ticker["idle"] == "true" and idle_ticker["pvDisplay"] == "none", (
+        f"Expected idle decode ticker collapsed to pill in DATA-A: {idle_ticker}"
+    )
+    client.execute_script("globalThis.k4App.client.setMode('A', 'CW');")
+    wait_until(
+        lambda: client.execute_script("return globalThis.k4App.state.getSnapshot().rxA.mode === 3;"),
+        "Restored VFO A to CW after idle ticker check",
+    )
+
+    for w, h in [(1600, 900), (1440, 900), (1280, 800), (1100, 700), (1024, 768)]:
         client.set_window_rect(w, h)
         wait_until(lambda tw=w: client.execute_script("return Math.abs(window.innerWidth - arguments[0]) <= 20;", [tw]), f"Resize {w}x{h}")
         for drawer_open in [True, False]:
@@ -2615,6 +3043,49 @@ def run_http_origin_and_screenshots(
         "Tapping VFO A at 412x924 selects A while VFO B remains visible",
     )
 
+    # Verify 393x852 mobile HUD unclipped in DATA-A and 844x390 landscape phone layout
+    client.set_viewport_size(393, 852)
+    client.execute_script("globalThis.k4App.client.setMode('A', 'DATA', 0); globalThis.k4App._render();")
+    wait_until(
+        lambda: client.execute_script("return window.innerWidth === 393 && globalThis.k4App.state.getSnapshot().rxA.mode === 6;"),
+        "393x852 DATA-A ready",
+    )
+    mob_393 = client.execute_script(
+        """
+        const hud = document.querySelector('.k4-hud-group');
+        return {
+          sw: document.documentElement.scrollWidth,
+          cw: document.documentElement.clientWidth,
+          hudSw: hud ? hud.scrollWidth : 0,
+          hudCw: hud ? hud.clientWidth : 0,
+        };
+        """
+    )
+    assert mob_393["sw"] <= 393 and mob_393["hudSw"] <= mob_393["hudCw"] + 2, (
+        f"Expected unclipped HUD & zero overflow at 393x852 DATA-A: {mob_393}"
+    )
+
+    client.set_viewport_size(844, 390)
+    wait_until(lambda: client.execute_script("return window.innerWidth === 844 && window.innerHeight === 390;"), "844x390 landscape ready")
+    land_844 = client.execute_script(
+        """
+        const stage = document.getElementById('pan-stage');
+        return {
+          sw: document.documentElement.scrollWidth,
+          cw: document.documentElement.clientWidth,
+          stageH: stage ? stage.getBoundingClientRect().height : 0,
+        };
+        """
+    )
+    assert land_844["sw"] <= 844 and land_844["stageH"] >= 180, (
+        f"Expected >=180px panadapter height & zero overflow at 844x390 landscape: {land_844}"
+    )
+    client.execute_script("globalThis.k4App.client.setMode('A', 'CW');")
+    wait_until(
+        lambda: client.execute_script("return globalThis.k4App.state.getSnapshot().rxA.mode === 3;"),
+        "Restored VFO A to CW before 390x844 mobile screenshot",
+    )
+
     # Switch to Mobile 390x844 and verify mobile nav + bottom sheet + persistent ANT/ATU + 0px horizontal overflow
     client.set_viewport_size(390, 844)
     wait_until(
@@ -2630,19 +3101,22 @@ def run_http_origin_and_screenshots(
         const ptt = document.getElementById('ptt-btn');
         const top = document.getElementById('top-bar');
         const pttR = ptt ? ptt.getBoundingClientRect() : null;
+        const topR = top ? top.getBoundingClientRect() : null;
         return {
           sw: document.documentElement.scrollWidth,
           cw: document.documentElement.clientWidth,
           topSw: top ? top.scrollWidth : 0,
           topCw: top ? top.clientWidth : 0,
+          topHeight: topR ? topR.height : 999,
           antOk: Boolean(ant && ant.offsetParent !== null),
+          antUnclipped: Boolean(ant && ant.scrollWidth <= ant.clientWidth + 1),
           atuOk: Boolean(atu && atu.offsetParent !== null),
           pttInView: Boolean(pttR && pttR.width > 0 && pttR.right <= document.documentElement.clientWidth + 1),
         };
         """
     )
-    assert mob_overflow["sw"] <= mob_overflow["cw"] and mob_overflow["topSw"] <= mob_overflow["topCw"] + 1 and mob_overflow["antOk"] and mob_overflow["atuOk"] and mob_overflow["pttInView"], (
-        f"Horizontal overflow, clipped PTT, or missing ANT/ATU at 390x844 (Single RX): {mob_overflow}"
+    assert mob_overflow["sw"] <= mob_overflow["cw"] and mob_overflow["topSw"] <= mob_overflow["topCw"] + 1 and mob_overflow["topHeight"] <= 76.5 and mob_overflow["antOk"] and mob_overflow["antUnclipped"] and mob_overflow["atuOk"] and mob_overflow["pttInView"], (
+        f"Horizontal overflow, >2 rows (>76px), clipped PTT, or missing ANT/ATU at 390x844 (Single RX): {mob_overflow}"
     )
     # Verify Dual RX at 390x844 also has zero horizontal overflow
     client.execute_script("globalThis.k4App.client.setSubRx(true);")
@@ -2663,11 +3137,16 @@ def run_http_origin_and_screenshots(
     client.click_element(client.find_element('[data-testid="mobile-nav"] button'))
     wait_until(
         lambda: client.execute_script(
-            "const sh = document.querySelector('[data-testid=\"mobile-sheet\"]'); return sh && sh.dataset.open === 'true';"
+            """
+            const sh = document.querySelector('[data-testid="mobile-sheet"]');
+            const ops = document.querySelector('[data-testid="mobile-vfo-ops"]');
+            return sh && sh.dataset.open === 'true' && ops && ops.textContent.includes('SPLIT');
+            """
         ),
-        "mobile bottom sheet opens",
+        "mobile bottom Tune sheet opens with VFO A/B/SPLIT/SUB controls",
     )
     time.sleep(0.25)
+    client.execute_script("document.querySelectorAll('.k4-toast:not([data-level=\"error\"])').forEach(e => e.remove());")
     mobile_png = os.path.join(out_dir, "e2e-mobile.png")
     client.take_screenshot(mobile_png)
     assert os.path.getsize(mobile_png) > 3000, f"Mobile screenshot too small: {mobile_png}"
@@ -2758,6 +3237,8 @@ def main() -> int:
             f.write('user_pref("devtools.console.stdout.content", true);\n')
             f.write('user_pref("media.navigator.streams.fake", true);\n')
             f.write('user_pref("media.navigator.permission.disabled", true);\n')
+            f.write('user_pref("media.cubeb.force_mock_context", true);\n')
+            f.write('user_pref("media.cubeb.sandbox", false);\n')
 
         ff_env = dict(os.environ)
         ff_env["MOZ_HEADLESS"] = "1"
