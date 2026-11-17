@@ -171,7 +171,7 @@
       const hudTop = el('div', 'k4-pan-hud-top');
       const group = el('div', 'k4-hud-group');
 
-      this._hudTargetBtn = el('button', 'k4-hud-btn k4-hud-mouse-btn is-cyan');
+      this._hudTargetBtn = el('button', 'k4-hud-btn k4-hud-mouse-btn k4-hud-desktop-only is-cyan');
       this._hudTargetBtn.type = 'button';
       this._hudTargetBtn.dataset.testid = 'hud-target-btn';
       const mouseSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -199,7 +199,7 @@
       mouseSvg.appendChild(mouseBody);
       mouseSvg.appendChild(mouseWheel);
       this._hudTargetBtn.appendChild(mouseSvg);
-      this._hudTargetLabel = el('span', 'k4-hud-mouse-label', 'Mouse: A');
+      this._hudTargetLabel = el('span', 'k4-hud-mouse-label', 'A');
       this._hudTargetBtn.appendChild(this._hudTargetLabel);
       this._hudTargetBtn.title = 'K4 Mouse target (Left=A blue, Right=B green, R=RIT wheel). Click to cycle; middle-click or Shift-click toggles RIT wheel.';
       this._hudTargetBtn.addEventListener('click', (e) => {
@@ -234,15 +234,16 @@
       });
       group.appendChild(this._hudTargetBtn);
 
-      group.appendChild(el('span', 'k4-hud-sep'));
+      group.appendChild(el('span', 'k4-hud-sep k4-hud-desktop-only'));
 
-      this._hudStepBtn = el('button', 'k4-hud-btn', 'Step: 100 Hz');
+      this._hudStepBtn = el('button', 'k4-hud-btn k4-hud-desktop-only', 'Step: 100 Hz');
       this._hudStepBtn.type = 'button';
+      this._hudStepBtn.dataset.testid = 'hud-step-btn';
       this._hudStepBtn.title = 'Cycle tuning step size';
       this._hudStepBtn.addEventListener('click', () => this._cycleStep());
       group.appendChild(this._hudStepBtn);
 
-      group.appendChild(el('span', 'k4-hud-sep'));
+      group.appendChild(el('span', 'k4-hud-sep k4-hud-desktop-only'));
 
       const zoomInBtn = el('button', 'k4-hud-btn', '−');
       zoomInBtn.type = 'button';
@@ -500,6 +501,11 @@
         onToggleAudio: () => this.toggleAudio(),
         onToggleTxTest: () => this.toggleTxTest(),
         onPanicAbort: () => this.panicAbortTx('ui-panic'),
+        onBeginHoldPtt: () => this._beginHoldPtt(),
+        onEndHoldPtt: () => this._endHoldPtt(),
+        isPttHeld: () => Boolean(this._pttHeldUi),
+        onSwapVfo: (all) => this._swapVfo(Boolean(all)),
+        onTriggerA2B: (all) => this._triggerA2B(Boolean(all)),
         getTxAudioConfig: () => this._txAudioConfig,
         onSetTxAudioConfig: (patch) => this.setTxAudioConfig(patch),
         onLoadTxWav: (file) => this.loadTxWavFile(file),
@@ -581,7 +587,23 @@
 
       this.client.on('blocked', (info) => {
         const cmd = (info && (info.command || info.cmd)) || 'command';
-        this.toast(`Blocked ${cmd} in RX-only mode`, 'blocked');
+        const snap = this._getSnapshot();
+        const policy =
+          this.gate && typeof this.gate.getPolicy === 'function'
+            ? this.gate.getPolicy()
+            : 'rx-only';
+        const reason = (info && info.reason) || '';
+        const isRxOnlyBlock =
+          policy === 'rx-only' &&
+          snap.txPosture === 'rx-only' &&
+          !snap.txActive &&
+          !reason.includes('permanently blocked');
+        this.toast(
+          isRxOnlyBlock
+            ? `Blocked ${cmd} in RX-only mode`
+            : `Blocked ${cmd}: ${reason || 'command not permitted'}`,
+          'blocked'
+        );
         this._render();
       });
 
@@ -1177,6 +1199,9 @@
 
       window.addEventListener('resize', () => {
         this._syncTopbarHeight();
+        if (this.panadapter && typeof this.panadapter.invalidateHudLayout === 'function') {
+          this.panadapter.invalidateHudLayout();
+        }
         this.inspector.syncHost();
         if (this.inspector && typeof this.inspector.onDrawerVisibilityChange === 'function') {
           this.inspector.onDrawerVisibilityChange();
@@ -2328,8 +2353,8 @@
       const loupeRx = this._resolveLoupeRx(snap);
       const loupeS = (loupeRx === 'B' ? snap.rxB : snap.rxA) || {};
       this._hudTargetLabel.textContent = this._wheelRitMode
-        ? 'Mouse: R'
-        : `Mouse: ${this._targetRx}`;
+        ? 'R'
+        : this._targetRx;
       this._hudTargetBtn.classList.toggle('is-cyan', !this._wheelRitMode && this._targetRx === 'A');
       this._hudTargetBtn.classList.toggle('is-amber', !this._wheelRitMode && this._targetRx === 'B');
       this._hudTargetBtn.classList.toggle('is-rit', Boolean(this._wheelRitMode));

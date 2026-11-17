@@ -869,9 +869,14 @@
   border-color: var(--accent-vfo-b-border);
 }
 
-.k4-smeter-vfo-badge--tx {
+.k4-smeter-vfo-badge.k4-smeter-vfo-badge--tx {
   width: auto;
-  padding: 0 4px;
+  min-width: max-content;
+  height: auto;
+  min-height: 15px;
+  padding: 1px 5px;
+  line-height: 1.15;
+  white-space: nowrap;
   color: #FFF7ED;
   background: #EA580C;
   border-color: #FB923C;
@@ -1449,15 +1454,28 @@
   color: var(--accent-vfo-a);
 }
 
-.k4-hud-mouse-btn {
+.k4-hud-mouse-btn,
+.k4-hud-target-btn {
+  padding: 0 5px;
+  gap: 3px;
+  min-width: 0;
   border: 1px solid rgba(148, 163, 184, 0.42);
 }
 
-.k4-hud-mouse-btn.is-cyan {
+.k4-hud-mouse-btn svg,
+.k4-hud-mouse-icon {
+  width: 10px;
+  height: 12px;
+  flex-shrink: 0;
+}
+
+.k4-hud-mouse-btn.is-cyan,
+.k4-hud-target-btn.is-cyan {
   border-color: var(--accent-vfo-a-border);
 }
 
-.k4-hud-mouse-btn.is-amber {
+.k4-hud-mouse-btn.is-amber,
+.k4-hud-target-btn.is-amber {
   border-color: var(--accent-vfo-b-border);
 }
 
@@ -1551,6 +1569,12 @@
 
   .k4-hud-sep {
     margin: 0 1px;
+  }
+}
+
+@media (max-width: 959px), (pointer: coarse) and (hover: none) {
+  .k4-hud-desktop-only {
+    display: none !important;
   }
 }
 
@@ -3099,6 +3123,66 @@
   box-shadow: 0 0 12px rgba(245, 158, 11, 0.55);
 }
 
+.k4-tx-card-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.k4-ptt-btn.k4-tx-card-ptt {
+  width: 100%;
+  height: auto;
+  min-height: 48px;
+  padding: 10px 14px;
+  font-size: 14px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  border-radius: var(--radius-md);
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  border: 1.5px solid rgba(249, 115, 22, 0.78);
+  background: rgba(234, 88, 12, 0.24);
+  color: #FFEDD5;
+  box-shadow: 0 0 10px rgba(249, 115, 22, 0.18), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+
+.k4-ptt-btn.k4-tx-card-ptt:disabled {
+  border-color: rgba(148, 163, 184, 0.28);
+  background: rgba(30, 41, 59, 0.75);
+  color: var(--text-muted);
+  box-shadow: none;
+}
+
+.k4-ptt-btn.k4-tx-card-ptt:not(:disabled):hover {
+  border-color: rgba(251, 146, 60, 0.95);
+  background: rgba(234, 88, 12, 0.34);
+  color: #FFFFFF;
+}
+
+.k4-ptt-btn.k4-tx-card-ptt[data-tx-test="true"]:not(:disabled) {
+  border-color: rgba(250, 204, 21, 0.78);
+  background: rgba(202, 138, 4, 0.22);
+  color: #FEF08A;
+  box-shadow: 0 0 10px rgba(245, 158, 11, 0.18);
+}
+
+.k4-ptt-btn.k4-tx-card-ptt.is-held,
+.k4-ptt-btn.k4-tx-card-ptt.is-tx {
+  background: #EA580C !important;
+  border-color: #FDBA74 !important;
+  color: #FFFFFF !important;
+  box-shadow: 0 0 18px rgba(249, 115, 22, 0.75) !important;
+}
+
+.k4-ptt-btn.k4-tx-card-ptt[data-tx-test="true"].is-held,
+.k4-ptt-btn.k4-tx-card-ptt[data-tx-test="true"].is-tx {
+  background: #D97706 !important;
+  border-color: #FDE68A !important;
+  color: #FFFFFF !important;
+  box-shadow: 0 0 16px rgba(245, 158, 11, 0.65) !important;
+}
+
 .k4-btn--full {
   width: 100%;
   justify-content: center;
@@ -3476,6 +3560,10 @@
   background: rgba(15, 23, 42, 0.72);
   font-size: 11.5px;
   font-weight: 600;
+}
+
+.k4-tx-banner[hidden] {
+  display: none;
 }
 
 .k4-tx-banner[data-state="tuning"] {

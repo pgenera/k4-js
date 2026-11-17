@@ -8,6 +8,7 @@
     368000,
   ];
   const DRAG_THRESHOLD_PX = 5;
+  const TOUCH_DRAG_THRESHOLD_PX = 12;
   const EDGE_HIT_PX = 6;
   const THROTTLE_MS = 50; // max 20 Hz
 
@@ -272,7 +273,12 @@
     }
 
     _resolveTouchQsyRx(hit) {
-      if (hit && hit.snapshot && hit.snapshot.dualPanMode === 2) {
+      const mobileView = Boolean(
+        this.view &&
+          typeof this.view.isMobileViewport === 'function' &&
+          this.view.isMobileViewport()
+      );
+      if (!mobileView && hit && hit.snapshot && hit.snapshot.dualPanMode === 2) {
         return hit.paneRx === 'B' ? 'B' : 'A';
       }
       return this.view && typeof this.view.getTargetRx === 'function'
@@ -306,7 +312,7 @@
       }
     }
 
-    _tuneClick(xPx, hit, rx, fine, syncTarget = true) {
+    _tuneClick(xPx, hit, rx, fine, syncTarget = true, isTouchOrMobile = false) {
       if (!hit || !this.client || !rx) return;
       if (syncTarget) {
         this._syncMouseTarget(rx);
@@ -317,6 +323,11 @@
       }
       const rxKey = rx === 'B' ? 'rxB' : 'rxA';
       const rxState = (hit.snapshot && hit.snapshot[rxKey]) || {};
+      const voiceClickSnapKhz = isTouchOrMobile
+        ? false
+        : this.view && typeof this.view.getVoiceClickSnapKhz === 'function'
+        ? this.view.getVoiceClickSnapKhz()
+        : true;
       const snappedHz = K4.SpectrumGeometry.dialFreqFromClick({
         xPx,
         plotLeftPx: hit.layout.specRect.x,
@@ -327,10 +338,7 @@
         cwPitchHz: hit.cwPitchHz,
         stepHz: rxState.stepHz || 100,
         fine: Boolean(fine),
-        voiceClickSnapKhz:
-          this.view && typeof this.view.getVoiceClickSnapKhz === 'function'
-            ? this.view.getVoiceClickSnapKhz()
-            : true,
+        voiceClickSnapKhz,
       });
       this.view.setLastClickFreqHz(snappedHz);
       if (typeof this.client.tune === 'function') {
@@ -772,7 +780,11 @@
           !this._wasPinched &&
           this._dragMode === 'pan'
         ) {
-          if (!this._dragExceeded && Math.abs(xPx - this._startX) > DRAG_THRESHOLD_PX) {
+          if (
+            !this._dragExceeded &&
+            Math.hypot(xPx - this._startX, yPx - this._startY) >
+              TOUCH_DRAG_THRESHOLD_PX
+          ) {
             this._dragExceeded = true;
           }
           if (this._dragExceeded) {
@@ -839,17 +851,22 @@
 
       if (e.pointerType === 'touch') {
         this._touches.delete(e.pointerId);
+        try {
+          this.surface.releasePointerCapture(e.pointerId);
+        } catch (_err) {
+          // ignore
+        }
         if (this._dragMode === 'pinch' && this._touches.size < 2) {
           this._flushPendingSpan();
         }
-        if (e.type === 'pointerup' && this._touches.size === 0) {
-          if (!this._wasPinched) {
+        if (this._touches.size === 0) {
+          if (e.type === 'pointerup' && !this._wasPinched) {
             if (this._dragExceeded) {
               this._applyViewportPanDrag(xPx, true);
             } else {
               const hit = this._hitTest(xPx, yPx);
               const rx = this._resolveTouchQsyRx(hit);
-              this._tuneClick(xPx, hit, rx, false, false);
+              this._tuneClick(xPx, hit, rx, false, false, true);
             }
           }
           this._wasPinched = false;
@@ -883,9 +900,21 @@
           }
         } else if (e.button === 0 && e.type === 'pointerup') {
           const hit = this._hitTest(xPx, yPx);
-          const rx = this._resolveMouseQsyRx(0, hit, Boolean(e.shiftKey));
-          if (rx) {
-            this._tuneClick(xPx, hit, rx, Boolean(e.altKey), true);
+          const mobileView = Boolean(
+            this.view &&
+              typeof this.view.isMobileViewport === 'function' &&
+              this.view.isMobileViewport()
+          );
+          if (mobileView && !e.shiftKey) {
+            const rx = this._resolveTouchQsyRx(hit);
+            if (rx) {
+              this._tuneClick(xPx, hit, rx, Boolean(e.altKey), false, true);
+            }
+          } else {
+            const rx = this._resolveMouseQsyRx(0, hit, Boolean(e.shiftKey));
+            if (rx) {
+              this._tuneClick(xPx, hit, rx, Boolean(e.altKey), true);
+            }
           }
         }
       }

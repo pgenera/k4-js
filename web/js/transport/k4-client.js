@@ -1790,6 +1790,22 @@
     }
 
     /**
+     * Swap VFO A and VFO B frequencies (`AB2;`) or full VFO state (`AB5;`).
+     * @param {boolean} [all=false]
+     */
+    vfoSwap(all = false) {
+      return this.vfoCopy(all ? 5 : 2);
+    }
+
+    /**
+     * Copy VFO A to VFO B frequency (`AB0;`) or full VFO state (`AB3;`).
+     * @param {boolean} [all=false]
+     */
+    vfoCopyAtoB(all = false) {
+      return this.vfoCopy(all ? 3 : 0);
+    }
+
+    /**
      * Configure Quick Split: copy VFO A -> B (AB3), tune VFO B to FA + offsetHz, and enable FT1.
      * @param {number} [offsetHz=1000]
      */

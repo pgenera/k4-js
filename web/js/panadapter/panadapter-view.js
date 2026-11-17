@@ -901,6 +901,18 @@
       return this._targetRx;
     }
 
+    isMobileViewport() {
+      return (
+        typeof window !== 'undefined' &&
+        window.innerWidth <= 959 &&
+        Boolean(
+          this._container &&
+            this._container.clientWidth > 0 &&
+            this._container.clientWidth <= 959
+        )
+      );
+    }
+
     setMouseQsyMode(mode) {
       this._mouseQsyMode = mode === 'pane' ? 'pane' : 'lr';
       this._container.dataset.mouseQsyMode = this._mouseQsyMode;

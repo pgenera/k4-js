@@ -262,7 +262,15 @@
     return desc;
   }
 
+  function isLsbPrimaryFreq(freqHz) {
+    const f = Number(freqHz);
+    if (!Number.isFinite(f) || f <= 0) return false;
+    if (f >= 5300000 && f <= 5450000) return false; // 60m is USB
+    return f < 10000000; // < 10 MHz (160m/80m/40m) -> LSB first; >= 10 MHz -> USB first
+  }
+
   K4.syncDecodeSelect = syncDecodeSelect;
+  K4.isLsbPrimaryFreq = isLsbPrimaryFreq;
 
   class InspectorPanels {
     constructor(opts) {
@@ -300,6 +308,15 @@
           this.client.panicAbortTx('ui-panic');
         }
       });
+      this.onBeginHoldPtt = opts.onBeginHoldPtt || (() => {
+        if (this.client && typeof this.client.startPtt === 'function') this.client.startPtt();
+      });
+      this.onEndHoldPtt = opts.onEndHoldPtt || (() => {
+        if (this.client && typeof this.client.stopPtt === 'function') this.client.stopPtt();
+      });
+      this.isPttHeld = opts.isPttHeld || (() => false);
+      this.onSwapVfo = opts.onSwapVfo || null;
+      this.onTriggerA2B = opts.onTriggerA2B || null;
       this.getTxAudioConfig = opts.getTxAudioConfig || (() => this._localTxAudio);
       this.onSetTxAudioConfig = opts.onSetTxAudioConfig || ((patch) => {
         Object.assign(this._localTxAudio, patch);
@@ -592,6 +609,9 @@
       // Mode Grid (5 columns x 2 rows)
       const modeCard = makeCard('Operating mode');
       const modeGrid = el('div', 'k4-pill-grid k4-pill-grid--5');
+      modeGrid.dataset.testid = 'operating-mode-grid';
+      this._refs.modeGrid = modeGrid;
+      this._lastModeOrderLsbFirst = null;
       this._refs.modeBtns = [];
       for (let i = 0; i < MODE_CHOICES.length; i++) {
         const mc = MODE_CHOICES[i];
@@ -1870,15 +1890,50 @@
       vfoOpRow.dataset.testid = 'mobile-vfo-ops';
       const abBtn = el('button', 'k4-choice-pill', 'A/B');
       abBtn.type = 'button';
-      abBtn.addEventListener('click', () => {
-        if (typeof this.client.vfoSwap === 'function') this.client.vfoSwap(false);
-        else this._sendCat('SW;');
+      abBtn.dataset.testid = 'mobile-vfo-ab-btn';
+      const triggerSwap = (swapAll) => {
+        const all = Boolean(swapAll);
+        if (this.onSwapVfo) this.onSwapVfo(all);
+        else if (typeof this.client.vfoSwap === 'function') this.client.vfoSwap(all);
+        else if (typeof this.client.vfoCopy === 'function') this.client.vfoCopy(all ? 5 : 2);
+        else this._sendCat(all ? 'AB5;' : 'AB2;');
+      };
+      let abHoldTimer = null;
+      let abHoldTriggered = false;
+      const clearAbHold = () => {
+        if (abHoldTimer) {
+          clearTimeout(abHoldTimer);
+          abHoldTimer = null;
+        }
+      };
+      abBtn.addEventListener('pointerdown', (e) => {
+        if (e.pointerType === 'mouse' && e.button !== 0) return;
+        abHoldTriggered = false;
+        clearAbHold();
+        abHoldTimer = setTimeout(() => {
+          abHoldTimer = null;
+          abHoldTriggered = true;
+          triggerSwap(true);
+        }, 750);
+      });
+      abBtn.addEventListener('pointerup', clearAbHold);
+      abBtn.addEventListener('pointercancel', clearAbHold);
+      abBtn.addEventListener('pointerleave', clearAbHold);
+      abBtn.addEventListener('click', (e) => {
+        if (abHoldTriggered) {
+          abHoldTriggered = false;
+          return;
+        }
+        triggerSwap(Boolean(e.shiftKey));
       });
       const a2bBtn = el('button', 'k4-choice-pill', 'A►B');
       a2bBtn.type = 'button';
-      a2bBtn.addEventListener('click', () => {
-        if (typeof this.client.vfoCopyAtoB === 'function') this.client.vfoCopyAtoB(false);
-        else this._sendCat('SWT11;');
+      a2bBtn.dataset.testid = 'mobile-vfo-a2b-btn';
+      a2bBtn.addEventListener('click', (e) => {
+        if (this.onTriggerA2B) this.onTriggerA2B(Boolean(e.shiftKey));
+        else if (typeof this.client.vfoCopyAtoB === 'function') this.client.vfoCopyAtoB(Boolean(e.shiftKey));
+        else if (typeof this.client.vfoCopy === 'function') this.client.vfoCopy(e.shiftKey ? 3 : 0);
+        else this._sendCat(e.shiftKey ? 'AB3;' : 'AB0;');
       });
       const splitBtn = el('button', 'k4-choice-pill', 'SPLIT');
       splitBtn.type = 'button';
@@ -2208,18 +2263,61 @@
       const pane = el('div', 'k4-panel-pane');
 
       // (a) TX & Split card
-      const statusBadge = el('span', 'k4-card-badge', 'READY');
+      const statusBadge = el('span', 'k4-card-badge', 'RDY');
       const statusCard = makeCard('TX & Split', statusBadge);
+
+      const txCtrlStack = el('div', 'k4-tx-card-controls');
+      const txCardPttBtn = el('button', 'k4-ptt-btn k4-tx-card-ptt', 'PTT');
+      txCardPttBtn.type = 'button';
+      txCardPttBtn.dataset.testid = 'tx-card-ptt-btn';
+      txCardPttBtn.setAttribute('aria-pressed', 'false');
+      txCardPttBtn.title = 'Hold to transmit (release to return to receive)';
+      let pttPtrId = null;
+      txCardPttBtn.addEventListener('pointerdown', (e) => {
+        if ((e.pointerType === 'mouse' && e.button !== 0) || txCardPttBtn.disabled) return;
+        e.preventDefault();
+        pttPtrId = e.pointerId != null ? e.pointerId : 0;
+        if (e.pointerId != null) {
+          try {
+            txCardPttBtn.setPointerCapture(e.pointerId);
+          } catch (_) {}
+        }
+        this.onBeginHoldPtt();
+      });
+      const stopCardPtt = (e) => {
+        if (pttPtrId === null) return;
+        if (e && e.pointerId != null && e.pointerId !== pttPtrId && e.type !== 'lostpointercapture') {
+          return;
+        }
+        const activeId = pttPtrId;
+        pttPtrId = null;
+        try {
+          if (txCardPttBtn.hasPointerCapture && txCardPttBtn.hasPointerCapture(activeId)) {
+            txCardPttBtn.releasePointerCapture(activeId);
+          }
+        } catch (_) {}
+        this.onEndHoldPtt();
+      };
+      txCardPttBtn.addEventListener('pointerup', stopCardPtt);
+      txCardPttBtn.addEventListener('pointercancel', stopCardPtt);
+      txCardPttBtn.addEventListener('lostpointercapture', stopCardPtt);
+      txCardPttBtn.addEventListener('contextmenu', (e) => e.preventDefault());
+      txCardPttBtn.addEventListener('click', (e) => e.preventDefault());
 
       const testToggleBtn = el('button', 'k4-seg-btn k4-test-switch', 'TEST');
       testToggleBtn.type = 'button';
+      testToggleBtn.dataset.testid = 'tx-card-test-btn';
       testToggleBtn.style.width = '100%';
       testToggleBtn.title = 'K4 TEST switch: toggle off-air TX Test without altering RF power setting';
       testToggleBtn.addEventListener('click', () => this.onToggleTxTest());
-      statusCard.appendChild(testToggleBtn);
+      txCtrlStack.appendChild(txCardPttBtn);
+      txCtrlStack.appendChild(testToggleBtn);
+      statusCard.appendChild(txCtrlStack);
+      this._refs.txCardPttBtn = txCardPttBtn;
       this._refs.txTestToggleBtn = testToggleBtn;
 
-      const txBanner = el('div', 'k4-tx-banner', 'Ready — Hold PTT or Spacebar to transmit');
+      const txBanner = el('div', 'k4-tx-banner', '');
+      txBanner.hidden = true;
       txBanner.dataset.state = 'matched';
       statusCard.appendChild(txBanner);
       this._refs.txStatusBanner = txBanner;
@@ -3354,6 +3452,22 @@
 
       // Modes
       if (this._refs.modeBtns) {
+        const lsbFirst = isLsbPrimaryFreq(rxS.freqHz);
+        if (this._refs.modeGrid && this._lastModeOrderLsbFirst !== lsbFirst) {
+          let lsbBtn = null;
+          let usbBtn = null;
+          for (let i = 0; i < this._refs.modeBtns.length; i++) {
+            const item = this._refs.modeBtns[i];
+            if (item.mc.id === 'LSB') lsbBtn = item.btn;
+            else if (item.mc.id === 'USB') usbBtn = item.btn;
+          }
+          if (lsbBtn && usbBtn) {
+            const ordered = lsbFirst ? [lsbBtn, usbBtn] : [usbBtn, lsbBtn];
+            this._refs.modeGrid.insertBefore(ordered[0], this._refs.modeGrid.firstChild);
+            this._refs.modeGrid.insertBefore(ordered[1], ordered[0].nextSibling);
+          }
+          this._lastModeOrderLsbFirst = lsbFirst;
+        }
         for (let i = 0; i < this._refs.modeBtns.length; i++) {
           const { mc, btn } = this._refs.modeBtns[i];
           const active = rxS.mode === mc.code && (mc.sub === null || rxS.dataSubMode === mc.sub);
@@ -3757,45 +3871,50 @@
       const atuTuning = Boolean(snapshot.atuTuning);
 
       // (a) TX & Split
+      if (this._refs.txCardPttBtn) {
+        const pttBtn = this._refs.txCardPttBtn;
+        const posture = snapshot.txPosture || 'rx-only';
+        const pttEnabled = posture !== 'rx-only' && !snapshot.txInhibit;
+        pttBtn.disabled = !pttEnabled;
+        const held = Boolean(this.isPttHeld() || snapshot.pttHeld);
+        pttBtn.classList.toggle('is-held', held);
+        pttBtn.classList.toggle('is-tx', txActive);
+        pttBtn.dataset.txTest = isTest ? 'true' : 'false';
+        pttBtn.setAttribute('aria-pressed', (held || txActive) ? 'true' : 'false');
+        pttBtn.textContent = txActive ? (isTest ? 'TX TEST' : 'ON AIR') : 'PTT';
+      }
       if (this._refs.txTestToggleBtn) {
         this._refs.txTestToggleBtn.classList.toggle('is-active', isTest);
         this._refs.txTestToggleBtn.setAttribute('aria-pressed', isTest ? 'true' : 'false');
-        this._refs.txTestToggleBtn.textContent = isTest ? 'TX Test: ON' : 'TEST';
+        this._refs.txTestToggleBtn.textContent = 'TEST';
       }
       if (this._refs.txStatusBanner) {
         const b = this._refs.txStatusBanner;
         if (snapshot.txInhibit) {
-          b.textContent = 'TX INHIBIT ACTIVE (Hardware Lock)';
+          b.hidden = false;
+          b.textContent = 'TX INHIBIT';
           b.dataset.state = 'warn';
-          this._refs.txStatusBadge.textContent = 'INHIBIT';
+          if (this._refs.txStatusBadge) this._refs.txStatusBadge.textContent = 'INHIBIT';
         } else if (atuTuning) {
-          b.textContent = 'KAT4 ATU Tuning in progress...';
+          b.hidden = false;
+          b.textContent = 'ATU Tuning...';
           b.dataset.state = 'tuning';
-          this._refs.txStatusBadge.textContent = 'ATU';
-        } else if (txActive && isTest) {
-          b.textContent = 'K4 TX Test ACTIVE — RF inhibited, ALC/keyer live (RF power unchanged)';
-          b.dataset.state = 'tuning';
-          this._refs.txStatusBadge.textContent = 'TX Test';
-        } else if (txActive) {
-          b.textContent = 'TX ON — Press Esc to return to RX';
-          b.dataset.state = 'warn';
-          this._refs.txStatusBadge.textContent = 'TX ON';
-        } else if (isTest) {
-          b.textContent = 'K4 TX Test — Off-air audio, ALC & keyer check (RF power unchanged)';
-          b.dataset.state = 'tuning';
-          this._refs.txStatusBadge.textContent = 'TX Test';
+          if (this._refs.txStatusBadge) this._refs.txStatusBadge.textContent = 'ATU';
         } else {
-          b.textContent = 'Ready — Hold PTT or Spacebar to transmit';
-          b.dataset.state = 'matched';
-          this._refs.txStatusBadge.textContent = 'READY';
+          b.hidden = true;
+          b.textContent = '';
+          if (this._refs.txStatusBadge) {
+            this._refs.txStatusBadge.textContent = txActive
+              ? (isTest ? 'TEST' : 'TX')
+              : (isTest ? 'TEST' : 'RDY');
+          }
         }
       }
       if (this._refs.txVfoVal) {
         const txVfo = snapshot.activeTxVfo || (snapshot.splitEnabled ? 'B' : 'A');
-        const indTag = isTest ? 'TX Test' : 'TX';
         this._refs.txVfoVal.textContent = snapshot.splitEnabled
-          ? `${indTag} ▶ VFO ${txVfo} (SPLIT)`
-          : `◀ ${indTag} · VFO ${txVfo}`;
+          ? `VFO ${txVfo} (SPLIT)`
+          : `VFO ${txVfo}`;
       }
       if (this._refs.txTotVal) {
         const maxSec = Number(snapshot.txTimeoutSec) || 180;
