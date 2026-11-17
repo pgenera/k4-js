@@ -766,7 +766,7 @@ def run_browser_unit_tests(client: MarionetteClient, test_url: str | None = None
             """
         )
         raise AssertionError(f"{exc} | diag={diag} | console={client.collect_console_errors()}") from None
-    assert results["total"] >= 34, f"Expected >= 34 unit tests, got {results}"
+    assert results["total"] >= 39, f"Expected >= 39 unit tests, got {results}"
     assert results["failed"] == 0, f"Browser unit tests failed: {results}"
     errs = client.collect_console_errors()
     assert not errs, f"Console errors during test.html ({label}): {errs}"
@@ -3300,6 +3300,214 @@ def run_http_origin_and_screenshots(
     )
     assert not err_toasts, f"Unexpected error toasts in UI: {err_toasts}"
 
+    # ── Notes 1 & 2: HUD desktop buttons visible & compact, hidden on mobile ────
+    client.set_window_rect(1440, 900)
+    wait_until(
+        lambda: client.execute_script("return Math.abs(window.innerWidth - 1440) <= 20;"),
+        "1440x900 for HUD desktop check",
+    )
+    hud_desktop = client.execute_script(
+        """
+        const targetBtn = document.querySelector('[data-testid="hud-target-btn"]');
+        const stepBtn   = document.querySelector('[data-testid="hud-step-btn"]');
+        const tR = targetBtn ? targetBtn.getBoundingClientRect() : null;
+        const txt = targetBtn ? targetBtn.textContent.trim() : '';
+        return {
+            targetVisible:   Boolean(targetBtn && targetBtn.offsetParent !== null && tR && tR.width > 0),
+            targetWidth:     tR ? tR.width : 0,
+            targetText:      txt,
+            targetNoMouse:   !txt.includes('Mouse'),
+            stepVisible:     Boolean(stepBtn && stepBtn.offsetParent !== null &&
+                                     stepBtn.getBoundingClientRect().width > 0),
+        };
+        """
+    )
+    assert hud_desktop["targetVisible"], f"hud-target-btn not visible at 1440x900: {hud_desktop}"
+    assert hud_desktop["targetWidth"] <= 52, f"hud-target-btn width > 52px at 1440x900: {hud_desktop}"
+    assert hud_desktop["targetNoMouse"], f"hud-target-btn text contains 'Mouse': {hud_desktop}"
+    assert hud_desktop["targetText"] in ("A", "B", "R"), f"hud-target-btn text not A/B/R: {hud_desktop}"
+    assert hud_desktop["stepVisible"], f"hud-step-btn not visible at 1440x900: {hud_desktop}"
+
+    client.set_viewport_size(390, 844)
+    wait_until(
+        lambda: client.execute_script("return window.innerWidth === 390;"),
+        "390x844 for HUD hidden check",
+    )
+    hud_mobile = client.execute_script(
+        """
+        const targetBtn = document.querySelector('[data-testid="hud-target-btn"]');
+        const stepBtn   = document.querySelector('[data-testid="hud-step-btn"]');
+        const seps      = Array.from(document.querySelectorAll('.k4-hud-desktop-only'));
+        return {
+            targetHidden: !targetBtn || targetBtn.offsetParent === null,
+            stepHidden:   !stepBtn   || stepBtn.offsetParent === null,
+            sepsHidden:   seps.every(s => s.offsetParent === null),
+            sepCount:     seps.length,
+        };
+        """
+    )
+    assert hud_mobile["targetHidden"], f"hud-target-btn visible at 390x844 (should be hidden): {hud_mobile}"
+    assert hud_mobile["stepHidden"],   f"hud-step-btn visible at 390x844 (should be hidden): {hud_mobile}"
+    assert hud_mobile["sepsHidden"],   f"k4-hud-desktop-only separators visible at 390x844: {hud_mobile}"
+    client.reset_viewport_size()
+    client.set_window_rect(1440, 900)
+    wait_until(
+        lambda: client.execute_script("return Math.abs(window.innerWidth - 1440) <= 20;"),
+        "Restore 1440x900 after HUD check",
+    )
+
+    # ── Note 3: operating-mode-grid LSB/USB ordering + 1024x768 BAND scroll ────
+    # 7.074 MHz → LSB first
+    client.execute_script(
+        "globalThis.k4App.inspector.selectDesktopTab('band-mode');"
+        "globalThis.k4App.client.sendCat('FA00007074000;');"
+        "globalThis.k4App.setTargetRx('A');"
+    )
+    wait_until(
+        lambda: client.execute_script("return globalThis.k4App.state.getSnapshot().rxA.freqHz === 7074000;"),
+        "VFO A at 7.074 MHz for mode order check",
+    )
+    mode_7mhz = client.execute_script(
+        """
+        globalThis.k4App._render();
+        const grid = document.querySelector('[data-testid="operating-mode-grid"]');
+        if (!grid) return { gridExists: false, first2: [] };
+        const btns = Array.from(grid.children).map(b => b.textContent.trim()).filter(t => t);
+        return { gridExists: true, first2: btns.slice(0, 2) };
+        """
+    )
+    assert mode_7mhz["gridExists"], "operating-mode-grid not found in BAND tab"
+    assert mode_7mhz["first2"][:2] == ["LSB", "USB"], f"7.074 MHz should put LSB first: {mode_7mhz}"
+
+    # 14.074 MHz → USB first
+    client.execute_script("globalThis.k4App.client.sendCat('FA00014074000;');")
+    wait_until(
+        lambda: client.execute_script("return globalThis.k4App.state.getSnapshot().rxA.freqHz === 14074000;"),
+        "VFO A at 14.074 MHz for mode order check",
+    )
+    mode_14mhz = client.execute_script(
+        """
+        globalThis.k4App._render();
+        const grid = document.querySelector('[data-testid="operating-mode-grid"]');
+        const btns = grid ? Array.from(grid.children).map(b => b.textContent.trim()).filter(t => t) : [];
+        return { first2: btns.slice(0, 2) };
+        """
+    )
+    assert mode_14mhz["first2"][:2] == ["USB", "LSB"], f"14.074 MHz should put USB first: {mode_14mhz}"
+
+    # 5.357 MHz (60m) → USB first
+    client.execute_script("globalThis.k4App.client.sendCat('FA00005357000;');")
+    wait_until(
+        lambda: client.execute_script("return globalThis.k4App.state.getSnapshot().rxA.freqHz === 5357000;"),
+        "VFO A at 5.357 MHz (60m) for mode order check",
+    )
+    mode_60m = client.execute_script(
+        """
+        globalThis.k4App._render();
+        const grid = document.querySelector('[data-testid="operating-mode-grid"]');
+        const btns = grid ? Array.from(grid.children).map(b => b.textContent.trim()).filter(t => t) : [];
+        return { first2: btns.slice(0, 2) };
+        """
+    )
+    assert mode_60m["first2"][:2] == ["USB", "LSB"], f"5.357 MHz (60m) should put USB first: {mode_60m}"
+
+    # VFO B at 7.150 MHz while VFO A at 14.074 MHz, targetRx=B → LSB first
+    client.execute_script(
+        "globalThis.k4App.client.sendCat('FA00014074000;FB00007150000;');"
+        "globalThis.k4App.setTargetRx('B');"
+    )
+    wait_until(
+        lambda: client.execute_script(
+            "return globalThis.k4App._targetRx === 'B'"
+            "    && globalThis.k4App.state.getSnapshot().rxB.freqHz === 7150000;"
+        ),
+        "VFO B at 7.150 MHz, targetRx=B",
+    )
+    mode_b_7mhz = client.execute_script(
+        """
+        globalThis.k4App._render();
+        const grid = document.querySelector('[data-testid="operating-mode-grid"]');
+        const btns = grid ? Array.from(grid.children).map(b => b.textContent.trim()).filter(t => t) : [];
+        return { first2: btns.slice(0, 2) };
+        """
+    )
+    assert mode_b_7mhz["first2"][:2] == ["LSB", "USB"], (
+        f"VFO B at 7.150 MHz should put LSB first: {mode_b_7mhz}"
+    )
+
+    # Restore targetRx=A, VFO A=14.074 MHz
+    client.execute_script(
+        "globalThis.k4App.setTargetRx('A');"
+        "globalThis.k4App.client.sendCat('FA00014074000;FB00014025000;');"
+    )
+    wait_until(
+        lambda: client.execute_script(
+            "return globalThis.k4App._targetRx === 'A'"
+            "    && globalThis.k4App.state.getSnapshot().rxA.freqHz === 14074000;"
+        ),
+        "Restored targetRx=A, FA=14.074 MHz after Note 3 mode order check",
+    )
+
+    # ── Note 5: TX card PTT button, banner hidden, TEST label, TX badge size ────
+    tx_card_check = client.execute_script(
+        """
+        globalThis.k4App.inspector.selectDesktopTab('tx');
+        const pttBtn  = document.querySelector('[data-testid="tx-card-ptt-btn"]');
+        const banner  = document.querySelector('.k4-tx-banner');
+        const testBtn = document.querySelector('[data-testid="tx-card-test-btn"]');
+        const pttR    = pttBtn ? pttBtn.getBoundingClientRect() : null;
+        return {
+            exists:        Boolean(pttBtn),
+            height:        pttR ? pttR.height : 0,
+            text:          pttBtn ? pttBtn.textContent.trim() : '',
+            bannerHidden:  !banner || banner.hidden,
+            testBtnText:   testBtn ? testBtn.textContent.trim() : '',
+            bannerText:    banner ? banner.textContent : '',
+        };
+        """
+    )
+    assert tx_card_check["exists"], "tx-card-ptt-btn not found in TX tab"
+    assert tx_card_check["height"] >= 44, f"tx-card-ptt-btn height < 44px: {tx_card_check}"
+    assert tx_card_check["bannerHidden"], f"txStatusBanner not hidden in standby: {tx_card_check}"
+    assert tx_card_check["testBtnText"] == "TEST", f"testToggleBtn text is not 'TEST': {tx_card_check}"
+    assert "Off-air audio" not in tx_card_check["bannerText"], (
+        f"Banned banner text 'Off-air audio' found: {tx_card_check}"
+    )
+    assert "Ready — Hold PTT" not in tx_card_check["bannerText"], (
+        f"Banned banner text 'Ready — Hold PTT' found: {tx_card_check}"
+    )
+
+    # TX badge size check at 1440x900: badge only carries a meaningful rect when TX is active.
+    # When in standby the element exists but is hidden (rect=0).  Verify CSS allows auto-width by
+    # checking scrollWidth <= clientWidth (no clip) only when the element is actually painted.
+    tx_badge_1440 = client.execute_script(
+        """
+        const badge = document.querySelector('.k4-smeter-vfo-badge--tx');
+        if (!badge) return { found: false };
+        const r = badge.getBoundingClientRect();
+        const visible = r.width > 0 && r.height > 0;
+        return {
+            found:   true,
+            visible: visible,
+            noClip:  badge.clientWidth >= badge.scrollWidth - 1,
+            rectW:   r.width,
+            rectH:   r.height,
+        };
+        """
+    )
+    if tx_badge_1440.get("found") and tx_badge_1440.get("visible"):
+        # Badge is painted during TX – verify it is not clipped and large enough
+        assert tx_badge_1440["noClip"], f"TX badge clips text at 1440x900: {tx_badge_1440}"
+        assert tx_badge_1440["rectW"] >= 26, f"TX badge width < 26px at 1440x900: {tx_badge_1440}"
+        assert tx_badge_1440["rectH"] >= 14, f"TX badge height < 14px at 1440x900: {tx_badge_1440}"
+    elif tx_badge_1440.get("found"):
+        # Badge exists but not visible in standby – verify CSS at least allows auto-width (no intrinsic clip)
+        assert tx_badge_1440["noClip"], f"TX badge (standby) would clip text at 1440x900: {tx_badge_1440}"
+
+    # ── Note 6: mobile VFO A►B and A/B buttons send correct CAT ─────────────────
+    # (Full mobile VFO ops check is in the mobile section below; here confirm testids exist)
+    client.execute_script("globalThis.k4App.inspector.selectDesktopTab('band-mode');")
+
     # Capture Desktop screenshot with BAND tab, SB1 Dual RX S-meters & live waterfall rows visible
     client.execute_script("globalThis.k4App.inspector.selectDesktopTab('band-mode'); globalThis.k4App.client.setSubRx(true);")
     wait_until(
@@ -3679,6 +3887,66 @@ def run_http_origin_and_screenshots(
         lambda: client.execute_script("return globalThis.k4App.state.getSnapshot().subRxEnabled === false;"),
         "Dual RX disabled before mobile screenshot",
     )
+    # ── Note 4: Mobile 390x844 waterfall touch tap tunes VFO B with 7px jitter ──
+    client.execute_script(
+        "globalThis.k4App.client.sendCat('FA00014074000;FB00014025000;');"
+        "globalThis.k4App.client.setSubRx(true);"
+        "globalThis.k4App.setTargetRx('B');"
+    )
+    wait_until(
+        lambda: client.execute_script(
+            "return globalThis.k4App._targetRx === 'B'"
+            "    && globalThis.k4App.state.getSnapshot().subRxEnabled === true;"
+        ),
+        "Mobile Note 4: VFO B selected, Dual RX enabled",
+    )
+    fa_before = client.execute_script("return globalThis.k4App.state.getSnapshot().rxA.freqHz;")
+    fb_before = client.execute_script("return globalThis.k4App.state.getSnapshot().rxB.freqHz;")
+    # Tap the panadapter with 7px micro-jitter (< 12px TOUCH_DRAG_THRESHOLD_PX)
+    pan_tap = client.execute_script(
+        """
+        const surf = document.querySelector('.k4-pan-gl') || document.querySelector('.k4-pan-surface');
+        if (!surf) return null;
+        const r = surf.getBoundingClientRect();
+        return { x: Math.round(r.left + r.width * 0.5), y: Math.round(r.top + r.height * 0.3) };
+        """
+    )
+    if pan_tap:
+        client.perform_actions([{
+            "type": "pointer", "id": "touch1",
+            "parameters": {"pointerType": "touch"},
+            "actions": [
+                {"type": "pointerMove",  "duration": 0, "x": pan_tap["x"],     "y": pan_tap["y"],     "origin": "viewport"},
+                {"type": "pointerDown",  "button": 0},
+                {"type": "pointerMove",  "duration": 0, "x": pan_tap["x"] + 4, "y": pan_tap["y"] + 5, "origin": "viewport"},
+                {"type": "pointerUp",    "button": 0},
+            ],
+        }])
+        client.release_actions()
+        wait_until(
+            lambda: client.execute_script(
+                "return globalThis.k4App.state.getSnapshot().rxB.freqHz !== " + str(fb_before) + ";"
+            ),
+            "Mobile touch tap with 7px jitter tunes VFO B",
+            timeout=5.0,
+        )
+        fa_after = client.execute_script("return globalThis.k4App.state.getSnapshot().rxA.freqHz;")
+        assert fa_after == fa_before, f"Mobile touch tap must NOT change VFO A (was {fa_before}, now {fa_after})"
+        assert client.execute_script("return globalThis.k4App._targetRx === 'B';"), (
+            "Mobile touch tap must NOT deselect VFO B"
+        )
+    client.execute_script(
+        "globalThis.k4App.client.setSubRx(false);"
+        "globalThis.k4App.setTargetRx('A');"
+    )
+    wait_until(
+        lambda: client.execute_script(
+            "return globalThis.k4App.state.getSnapshot().subRxEnabled === false"
+            "    && globalThis.k4App._targetRx === 'A';"
+        ),
+        "Restored Single RX / targetRx=A after Note 4 check",
+    )
+
     # Open mobile Tune bottom sheet at compact 34vh snap so spectrum remains uncovered, verify resize grabber
     client.click_element(client.find_element('[data-testid="mobile-nav"] button'))
     wait_until(
@@ -3712,6 +3980,77 @@ def run_http_origin_and_screenshots(
     assert tune_geom["sheetH"] <= tune_geom["maxAllowedH"] and tune_geom["specBottom"] <= tune_geom["sheetTop"] + 1, (
         f"Expected compact Tune sheet <=36vh with spectrum uncovered: {tune_geom}"
     )
+
+    # ── Note 6: mobile-vfo-a2b-btn (A►B) and mobile-vfo-ab-btn (A/B) send correct CAT ──
+    # Prep VFOs: FA=14.074, FB=14.025
+    client.execute_script("globalThis.k4App.client.sendCat('FA00014074000;FB00014025000;');")
+    wait_until(
+        lambda: client.execute_script("return globalThis.k4App.state.getSnapshot().rxA.freqHz === 14074000;"),
+        "Prep VFOs for mobile VFO ops check",
+    )
+    mobile_a2b = client.execute_script(
+        """
+        const a2bBtn = document.querySelector('[data-testid="mobile-vfo-a2b-btn"]');
+        const abBtn  = document.querySelector('[data-testid="mobile-vfo-ab-btn"]');
+        if (!a2bBtn) return { a2bExists: false, abExists: Boolean(abBtn), cats: [] };
+        const app = globalThis.k4App;
+        const cats = [];
+        const orig = app.client.sendCat.bind(app.client);
+        app.client.sendCat = (cmd) => { cats.push(cmd); return orig(cmd); };
+        try { a2bBtn.click(); } finally { app.client.sendCat = orig; }
+        return { a2bExists: true, abExists: Boolean(abBtn), cats };
+        """
+    )
+    assert mobile_a2b["a2bExists"], "mobile-vfo-a2b-btn not found in Tune sheet"
+    assert mobile_a2b["abExists"],  "mobile-vfo-ab-btn not found in Tune sheet"
+    a2b_cats = " ".join(mobile_a2b.get("cats", []))
+    assert "AB0" in a2b_cats or "AB3" in a2b_cats, (
+        f"mobile-vfo-a2b-btn should send AB0;/AB3;, got: {mobile_a2b['cats']}"
+    )
+    # Verify no blocked toasts after A►B
+    blocked_after_a2b = client.execute_script(
+        "return Array.from(document.querySelectorAll('.k4-toast[data-level=\"blocked\"]')).map(e => e.textContent);"
+    )
+    assert not blocked_after_a2b, f"Blocked toasts after mobile A►B click: {blocked_after_a2b}"
+
+    mobile_swap = client.execute_script(
+        """
+        const abBtn = document.querySelector('[data-testid="mobile-vfo-ab-btn"]');
+        if (!abBtn) return { found: false, cats: [] };
+        const app = globalThis.k4App;
+        const cats = [];
+        const orig = app.client.sendCat.bind(app.client);
+        app.client.sendCat = (cmd) => { cats.push(cmd); return orig(cmd); };
+        try { abBtn.click(); } finally { app.client.sendCat = orig; }
+        return { found: true, cats };
+        """
+    )
+    if mobile_swap["found"]:
+        swap_cats = " ".join(mobile_swap.get("cats", []))
+        assert "AB2" in swap_cats or "AB5" in swap_cats, (
+            f"mobile-vfo-ab-btn should send AB2;/AB5;, got: {mobile_swap['cats']}"
+        )
+    # Blocked toasts must not appear after A/B swap
+    blocked_after_swap = client.execute_script(
+        "return Array.from(document.querySelectorAll('.k4-toast[data-level=\"blocked\"]')).map(e => e.textContent);"
+    )
+    assert not blocked_after_swap, f"Blocked toasts after mobile A/B swap: {blocked_after_swap}"
+
+    # Note 6b: Permanently blocked command in tx-enabled policy gets real reason, not 'in RX-only mode'
+    # (MN001 is a menu command that is permanently blocked)
+    client.execute_script(
+        "document.querySelectorAll('.k4-toast').forEach(e => e.remove());"
+    )
+    client.execute_script("try { globalThis.k4App.client.sendCat('MN001;'); } catch (_) {}")
+    time.sleep(0.3)
+    perm_blocked_toasts = client.execute_script(
+        "return Array.from(document.querySelectorAll('.k4-toast[data-level=\"blocked\"]')).map(e => e.textContent);"
+    )
+    for toast_text in perm_blocked_toasts:
+        assert "in RX-only mode" not in toast_text, (
+            f"Permanently blocked command toast wrongly says 'in RX-only mode': {toast_text!r}"
+        )
+
     client.click_element(client.find_element('[data-testid="mobile-sheet-grabber"]'))
     wait_until(
         lambda: client.execute_script("return document.querySelector('[data-testid=\"mobile-sheet\"]')?.dataset.snap === 'mid';"),
@@ -3725,6 +4064,28 @@ def run_http_origin_and_screenshots(
     )
     time.sleep(0.25)
     client.execute_script("document.querySelectorAll('.k4-toast:not([data-level=\"error\"])').forEach(e => e.remove());")
+    # ── Note 5b: TX badge at 390x844 must not clip text (CSS width:auto check) ──
+    tx_badge_390 = client.execute_script(
+        """
+        const badge = document.querySelector('.k4-smeter-vfo-badge--tx');
+        if (!badge) return { found: false };
+        const r = badge.getBoundingClientRect();
+        const visible = r.width > 0 && r.height > 0;
+        return {
+            found:   true,
+            visible: visible,
+            noClip:  badge.clientWidth >= badge.scrollWidth - 1,
+            rectW:   r.width,
+            rectH:   r.height,
+        };
+        """
+    )
+    if tx_badge_390.get("found") and tx_badge_390.get("visible"):
+        assert tx_badge_390["noClip"], f"TX badge clips text at 390x844: {tx_badge_390}"
+        assert tx_badge_390["rectW"] >= 26, f"TX badge width < 26px at 390x844: {tx_badge_390}"
+        assert tx_badge_390["rectH"] >= 14, f"TX badge height < 14px at 390x844: {tx_badge_390}"
+    elif tx_badge_390.get("found"):
+        assert tx_badge_390["noClip"], f"TX badge (standby) would clip text at 390x844: {tx_badge_390}"
     mobile_png = os.path.join(out_dir, "e2e-mobile.png")
     client.take_screenshot(mobile_png)
     assert os.path.getsize(mobile_png) > 3000, f"Mobile screenshot too small: {mobile_png}"
