@@ -1106,6 +1106,8 @@ func (r *Radio) fullSnapshotLocked(tSec float64) string {
 	sb.WriteString(fmt.Sprintf("BW$%04d;", r.RxB.BwHz/10))
 	sb.WriteString(fmt.Sprintf("IS%04d;", r.RxA.IfShiftHz/10))
 	sb.WriteString(fmt.Sprintf("IS$%04d;", r.RxB.IfShiftHz/10))
+	sb.WriteString(fmt.Sprintf("FP%d;", r.RxA.FilterPreset))
+	sb.WriteString(fmt.Sprintf("FP$%d;", r.RxB.FilterPreset))
 	sb.WriteString(fmt.Sprintf("CW%02d;", r.CwPitchHz/10))
 	sb.WriteString(fmt.Sprintf("VT%d%d;", r.RxA.StepIdx, r.RxA.StepMode))
 	sb.WriteString(fmt.Sprintf("VT$%d%d;", r.RxB.StepIdx, r.RxB.StepMode))
@@ -1674,20 +1676,23 @@ func (r *Radio) execSingleLocked(orig, upper string, tSec float64) string {
 		rx, prefix, arg := splitSubRx(upper, "FP")
 		target := r.rxPtr(rx)
 		arg = strings.TrimSpace(arg)
+		sub := strings.TrimPrefix(prefix, "FP")
 		if arg == "~" {
 			isSet = true
 			target.BwHz = r.nominalBwHz(target.Mode)
-			target.IfShiftHz = 1500
+			target.IfShiftHz = r.nominalIfShiftHz(target.Mode)
 			target.FilterPreset = 1
-			resp = fmt.Sprintf("%s%d;BW%s%04d;IS%s%04d;", prefix, target.FilterPreset, strings.TrimPrefix(prefix, "FP"), target.BwHz/10, strings.TrimPrefix(prefix, "FP"), target.IfShiftHz/10)
+			resp = fmt.Sprintf("%s%d;BW%s%04d;IS%s%04d;", prefix, target.FilterPreset, sub, target.BwHz/10, sub, target.IfShiftHz/10)
 		} else {
+			resp = fmt.Sprintf("%s%d;", prefix, target.FilterPreset)
 			if arg != "" {
 				isSet = true
 				if v, err := strconv.Atoi(arg); err == nil && v >= 1 && v <= 3 {
 					target.FilterPreset = v
+					target.BwHz = r.presetBwHz(target.Mode, v)
+					resp = fmt.Sprintf("%s%d;BW%s%04d;IS%s%04d;", prefix, target.FilterPreset, sub, target.BwHz/10, sub, target.IfShiftHz/10)
 				}
 			}
-			resp = fmt.Sprintf("%s%d;", prefix, target.FilterPreset)
 		}
 	case strings.HasPrefix(upper, "IS"):
 		rx, prefix, arg := splitSubRx(upper, "IS")
@@ -1795,6 +1800,7 @@ func (r *Radio) execSingleLocked(orig, upper string, tSec float64) string {
 			r.RxB.DataSubMode = r.RxA.DataSubMode
 			r.RxB.BwHz = r.RxA.BwHz
 			r.RxB.IfShiftHz = r.RxA.IfShiftHz
+			r.RxB.FilterPreset = r.RxA.FilterPreset
 		}
 		switch arg {
 		case "0":
@@ -2841,6 +2847,7 @@ func copySliceParams(dst, src *RxState, fixedTune bool, fixedMode int) {
 	dst.DataSubMode = src.DataSubMode
 	dst.BwHz = src.BwHz
 	dst.IfShiftHz = src.IfShiftHz
+	dst.FilterPreset = src.FilterPreset
 	dst.Preamp = src.Preamp
 	dst.PreampOn = src.PreampOn
 	dst.AttenDb = src.AttenDb
@@ -2873,6 +2880,7 @@ func formatSliceCAT(rx byte, s RxState) string {
 	sb.WriteString(fmt.Sprintf("DT%s%d;", dollar, s.DataSubMode))
 	sb.WriteString(fmt.Sprintf("BW%s%04d;", dollar, s.BwHz/10))
 	sb.WriteString(fmt.Sprintf("IS%s%04d;", dollar, s.IfShiftHz/10))
+	sb.WriteString(fmt.Sprintf("FP%s%d;", dollar, s.FilterPreset))
 	sb.WriteString(formatPA("PA"+dollar, s))
 	sb.WriteString(formatRA("RA"+dollar, s))
 	sb.WriteString(fmt.Sprintf("NB%s%03d%d;", dollar, s.NbLevel, bool01(s.NbOn)))
@@ -3069,5 +3077,69 @@ func (r *Radio) nominalBwHz(mode int) int {
 		return 5000
 	default:
 		return 2700
+	}
+}
+
+// nominalIfShiftHz returns the per-mode nominal IF shift in Hz.
+func (r *Radio) nominalIfShiftHz(mode int) int {
+	if mode == ModeCW || mode == ModeCWR {
+		if r.CwPitchHz > 0 {
+			return r.CwPitchHz
+		}
+		return 500
+	}
+	return 1500
+}
+
+// presetBwHz returns the simulated filter passband width in Hz for a mode and preset (1..3).
+func (r *Radio) presetBwHz(mode int, preset int) int {
+	switch mode {
+	case ModeCW, ModeCWR:
+		switch preset {
+		case 2:
+			return 250
+		case 3:
+			return 1000
+		default:
+			return 500
+		}
+	case ModeLSB, ModeUSB:
+		switch preset {
+		case 2:
+			return 2400
+		case 3:
+			return 1800
+		default:
+			return 2700
+		}
+	case ModeDATA, ModeDATAR:
+		switch preset {
+		case 2:
+			return 1000
+		case 3:
+			return 500
+		default:
+			return 2700
+		}
+	case ModeAM:
+		switch preset {
+		case 2:
+			return 4000
+		case 3:
+			return 2700
+		default:
+			return 6000
+		}
+	case ModeFM:
+		switch preset {
+		case 2:
+			return 3500
+		case 3:
+			return 2700
+		default:
+			return 5000
+		}
+	default:
+		return r.nominalBwHz(mode)
 	}
 }

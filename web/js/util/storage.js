@@ -6,6 +6,7 @@
   const KEY_PREFIX = 'k4:';
   const memLocal = new Map();
   const memSession = new Map();
+  let memoriesCache = null;
 
   function safeStorage(kind) {
     try {
@@ -45,6 +46,7 @@
 
   function writeTo(kind, memMap, key, val) {
     const namespaced = KEY_PREFIX + String(key);
+    if (key === 'memories') memoriesCache = null;
     if (val === undefined) {
       removeFrom(kind, memMap, key);
       return;
@@ -68,6 +70,7 @@
 
   function removeFrom(kind, memMap, key) {
     const namespaced = KEY_PREFIX + String(key);
+    if (key === 'memories') memoriesCache = null;
     memMap.delete(namespaced);
     const store = safeStorage(kind);
     if (store) {
@@ -168,6 +171,7 @@
   }
 
   function loadMemories() {
+    if (memoriesCache !== null) return memoriesCache;
     const stored = K4.storage.get('memories', null);
     const out = {};
     if (stored && typeof stored === 'object') {
@@ -176,7 +180,8 @@
         if (clean) out[key] = clean;
       }
     }
-    return out;
+    memoriesCache = out;
+    return memoriesCache;
   }
 
   function memoryKey(kind, a, b) {
@@ -198,6 +203,9 @@
     setQuick(bandLabel, slot, entry) {
       return this._set(memoryKey('quick', bandLabel, slot), entry);
     },
+    clearQuick(bandLabel, slot) {
+      return this._clear(memoryKey('quick', bandLabel, slot));
+    },
     getChannel(ch) {
       const k = memoryKey('general', ch);
       return k ? loadMemories()[k] || null : null;
@@ -206,20 +214,26 @@
       return this._set(memoryKey('general', ch), entry);
     },
     clearChannel(ch) {
-      const k = memoryKey('general', ch);
-      if (!k) return false;
-      const all = loadMemories();
-      delete all[k];
+      return this._clear(memoryKey('general', ch));
+    },
+    _clear(key) {
+      if (!key) return false;
+      const all = Object.assign({}, loadMemories());
+      delete all[key];
+      memoriesCache = null;
       K4.storage.set('memories', all);
+      memoriesCache = all;
       this._emit(all);
       return true;
     },
     _set(key, entry) {
       const clean = sanitizeMemory(entry);
       if (!key || !clean) return false;
-      const all = loadMemories();
+      const all = Object.assign({}, loadMemories());
       all[key] = clean;
+      memoriesCache = null;
       K4.storage.set('memories', all);
+      memoriesCache = all;
       this._emit(all);
       return true;
     },

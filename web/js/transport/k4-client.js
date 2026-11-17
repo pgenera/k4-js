@@ -371,7 +371,7 @@
 
       const bootstrapCat =
         `RDY;K41;ER1;AI5;EM${emMode};SL${slTier};` +
-        'FA;FB;MD;MD$;DT;DT$;BW;BW$;IS;IS$;CW;VT;VT$;LK;LK$;SB;FT;SMH;SMH$;' +
+        'FA;FB;MD;MD$;DT;DT$;BW;BW$;IS;IS$;FP;FP$;CW;VT;VT$;LK;LK$;SB;FT;SMH;SMH$;' +
         '#SPN;#SPN$;#REF;#REF$;#SCL;#AVG;#WBS;#AR;#DPM;#MP;#MP$;#FXT;TD;TD$;MX;' +
         'SQ;SQ$;AP;AP$;RT;RT$;RO;RO$;DV;OV;OV$;#FRZ;#FPS;#NB;#NB$;#NBL;#NBL$;#DSM;#WFH;' +
         'NR;NR$;NRS;NRS$;NB;NB$;NM;NM$;PA;PA$;RA;RA$;AG;AG$;RG;RG$;GT;GT$;' +
@@ -1184,7 +1184,7 @@
     setFilterPreset(rx, n) {
       const target = rx === 'B' ? 'B' : 'A';
       const preset = Math.min(3, Math.max(1, Math.round(Number(n)) || 1));
-      this.state.updateRx(target, { filterPreset: preset }, target === 'B' ? 'rxB.filter' : 'rxA.filter');
+      this.state.updateRx(target, { filterPreset: preset }, target === 'B' ? 'rxB.filterPreset' : 'rxA.filterPreset');
       return this.sendCat(K4.CatCodec.builders.filterPreset(target, preset));
     }
 
@@ -1781,7 +1781,7 @@
      */
     vfoCopy(code = 3) {
       const c = Number.isFinite(Number(code)) ? clamp(Math.round(Number(code)), 0, 5) : 3;
-      const query = c <= 2 ? 'FA;FB;' : 'FA;FB;MD;MD$;DT;DT$;BW;BW$;IS;IS$;FT;';
+      const query = c <= 2 ? 'FA;FB;' : 'FA;FB;MD;MD$;DT;DT$;BW;BW$;IS;IS$;FP;FP$;FT;';
       const res = this.sendCat(K4.CatCodec.builders.vfoCopy(c) + query);
       if (res.blocked.length === 0) {
         this.state.applyParsedCat({ kind: 'vfoCopy', rx: null, mode: c });

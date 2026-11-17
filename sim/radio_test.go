@@ -157,8 +157,8 @@ func TestBandSwitchRecentersInFixedTune(t *testing.T) {
 func TestFilterPresetAndNormalize(t *testing.T) {
 	r := NewRadio()
 	r.HandleCAT("MD3;BW0100;IS0120;FP2;", 0.1)
-	if r.RxA.FilterPreset != 2 {
-		t.Fatalf("FP2 should select preset 2, got %d", r.RxA.FilterPreset)
+	if r.RxA.FilterPreset != 2 || r.RxA.BwHz != 250 {
+		t.Fatalf("FP2 in MD3 should select preset 2 and 250 Hz BW, got fl=%d bw=%d", r.RxA.FilterPreset, r.RxA.BwHz)
 	}
 	r.HandleCAT("FP$3;", 0.2)
 	if r.RxB.FilterPreset != 3 || r.RxA.FilterPreset != 2 {
@@ -169,7 +169,11 @@ func TestFilterPresetAndNormalize(t *testing.T) {
 		t.Fatalf("out-of-range preset must be ignored, got %d", r.RxA.FilterPreset)
 	}
 	r.HandleCAT("FP~;", 0.4)
-	if r.RxA.BwHz != 500 || r.RxA.IfShiftHz != 1500 || r.RxA.FilterPreset != 1 {
+	if r.RxA.BwHz != 500 || r.RxA.IfShiftHz != 500 || r.RxA.IfShiftHz != r.CwPitchHz || r.RxA.FilterPreset != 1 {
 		t.Fatalf("FP~ should restore CW nominal passband: bw=%d is=%d fl=%d", r.RxA.BwHz, r.RxA.IfShiftHz, r.RxA.FilterPreset)
+	}
+	r.HandleCAT("MD2;IS0900;FP~;", 0.5)
+	if r.RxA.BwHz != 2700 || r.RxA.IfShiftHz != 1500 || r.RxA.FilterPreset != 1 {
+		t.Fatalf("FP~ in MD2 should restore USB nominal passband: bw=%d is=%d fl=%d", r.RxA.BwHz, r.RxA.IfShiftHz, r.RxA.FilterPreset)
 	}
 }
