@@ -3,7 +3,7 @@
 Items below are implemented against the **Elecraft K4 Programmer's Reference**, **K4 Operating Manual**, or the local `k4sim` simulator (`sim/radio.go`) and need one session with a real Elecraft K4 to confirm on-air behavior and close Section 4b of `TODO.md`.
 
 ## Prerequisites
-- Start the proxy pointing at a live K4 on TCP port `9205` (try `9204` if that refuses; the manual's remote-access section mentions 9204) (e.g., `websockify --web=web <listen_port> <k4_ip>:9200` or the K4 Web UI server).
+- Start the proxy pointing at a live K4 on TCP port `9205` (try `9204` if that refuses; the manual's remote-access section mentions 9204) (e.g., `websockify --web=web <listen_port> <k4_ip>:9205` or the K4 Web UI server).
 - Open DevTools Console / Network WebSocket inspector or tail the CAT log while running through each check below.
 
 ---
