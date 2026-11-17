@@ -330,7 +330,6 @@ select option:disabled {
   }
 
   #top-bar .k4-posture-btn,
-  #top-bar .k4-mic-pill,
   #top-bar .k4-ptt-btn {
     height: 22px;
     padding: 0 5px;
@@ -450,7 +449,6 @@ select option:disabled {
   }
 
   #top-bar .k4-posture-btn,
-  #top-bar .k4-mic-pill,
   #top-bar .k4-ptt-btn {
     height: 21px;
     padding: 0 4px;

@@ -269,8 +269,57 @@
     return f < 10000000; // < 10 MHz (160m/80m/40m) -> LSB first; >= 10 MHz -> USB first
   }
 
+  function isVoiceOrAfDataMode(snap) {
+    const s = snap || {};
+    const txVfo = s.activeTxVfo || (s.splitEnabled ? 'B' : 'A');
+    const rxS = txVfo === 'B' ? (s.rxB || {}) : (s.rxA || {});
+    const mode = Number(rxS.mode) || 0;
+    const sub = Number(rxS.dataSubMode) || 0;
+    return mode === 1 || mode === 2 || mode === 4 || mode === 5 || ((mode === 6 || mode === 9) && (sub === 0 || sub === 1));
+  }
+
+  function describePttMicState(snapshot, txAudioConfig, audioEngine, isTestMode) {
+    const s = snapshot || {};
+    const cfg = txAudioConfig || {};
+    const voiceMode = isVoiceOrAfDataMode(s);
+    const micSt = audioEngine && typeof audioEngine.getMicStatus === 'function'
+      ? audioEngine.getMicStatus()
+      : { state: 'idle' };
+    const src = cfg.source || 'mic';
+    const micState = src !== 'mic' ? 'synth' : (micSt.state || 'idle');
+    const micWarn = Boolean(
+      voiceMode &&
+      src === 'mic' &&
+      (micState === 'denied' || micState === 'insecure' || micState === 'unavailable' || micState === 'error')
+    );
+    let idleLabel = 'PTT';
+    let titleDetail = '';
+    if (src !== 'mic') {
+      const srcTag = src === 'tone-1k' ? '1kHz' : src === 'wav' ? 'WAV' : 'TONE';
+      idleLabel = `PTT (${srcTag})`;
+      titleDetail = ` · Source: ${srcTag}`;
+    } else if (micWarn) {
+      idleLabel = 'PTT !';
+      titleDetail = ` · Mic ${micState}${micSt.error ? `: ${micSt.error}` : ''} (press PTT to retry or open TX Audio)`;
+    } else if (voiceMode && (micState === 'ready' || micState === 'capturing')) {
+      titleDetail = micSt.deviceLabel ? ` · Mic: ${micSt.deviceLabel}` : ' · Mic ready';
+    }
+    return {
+      voiceMode,
+      micSt,
+      micState,
+      micWarn,
+      idleLabel,
+      txLabel: isTestMode ? 'TX TEST' : 'ON AIR',
+      topTxLabel: isTestMode ? 'TX Test' : 'ON AIR',
+      titleDetail,
+    };
+  }
+
   K4.syncDecodeSelect = syncDecodeSelect;
   K4.isLsbPrimaryFreq = isLsbPrimaryFreq;
+  K4.isVoiceOrAfDataMode = isVoiceOrAfDataMode;
+  K4.describePttMicState = describePttMicState;
 
   class InspectorPanels {
     constructor(opts) {
@@ -3877,11 +3926,16 @@
         const pttEnabled = posture !== 'rx-only' && !snapshot.txInhibit;
         pttBtn.disabled = !pttEnabled;
         const held = Boolean(this.isPttHeld() || snapshot.pttHeld);
+        const cfg = typeof this.getTxAudioConfig === 'function' ? this.getTxAudioConfig() : {};
+        const pttInfo = describePttMicState(snapshot, cfg, this.audio, isTest);
         pttBtn.classList.toggle('is-held', held);
         pttBtn.classList.toggle('is-tx', txActive);
         pttBtn.dataset.txTest = isTest ? 'true' : 'false';
+        pttBtn.dataset.micState = pttInfo.micState;
+        pttBtn.dataset.micWarn = pttInfo.micWarn ? 'true' : 'false';
         pttBtn.setAttribute('aria-pressed', (held || txActive) ? 'true' : 'false');
-        pttBtn.textContent = txActive ? (isTest ? 'TX TEST' : 'ON AIR') : 'PTT';
+        pttBtn.textContent = txActive ? pttInfo.txLabel : pttInfo.idleLabel;
+        pttBtn.title = `Hold to transmit (release to return to receive)${pttInfo.titleDetail}`;
       }
       if (this._refs.txTestToggleBtn) {
         this._refs.txTestToggleBtn.classList.toggle('is-active', isTest);

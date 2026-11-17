@@ -274,6 +274,359 @@
     btn.setAttribute('aria-pressed', active ? 'true' : 'false');
   }
 
+  const SELECT_TARGET_SELECTOR = 'select.k4-select, select.k4-ticker-select';
+
+  const SelectPopover = (() => {
+    let installed = false;
+    let popoverEl = null;
+    let activeSelect = null;
+    let focusedIdx = -1;
+    let optionBtns = [];
+    let activeTouch = null;
+    let lastTouchToggleMs = -1e9;
+    let lastPointerToggleMs = -1e9;
+
+    function getTargetSelect(node) {
+      if (!node || typeof node.closest !== 'function') return null;
+      const sel = node.closest(SELECT_TARGET_SELECTOR);
+      return sel && !sel.disabled ? sel : null;
+    }
+
+    function updateFocusedOption(nextIdx) {
+      if (optionBtns.length === 0) {
+        focusedIdx = -1;
+        return;
+      }
+      const len = optionBtns.length;
+      let idx = ((nextIdx % len) + len) % len;
+      for (let step = 0; step < len; step++) {
+        const probe = (idx + step) % len;
+        if (!optionBtns[probe].disabled) {
+          idx = probe;
+          break;
+        }
+      }
+      focusedIdx = idx;
+      for (let i = 0; i < optionBtns.length; i++) {
+        optionBtns[i].classList.toggle('is-focused', i === focusedIdx);
+      }
+      if (optionBtns[focusedIdx] && typeof optionBtns[focusedIdx].scrollIntoView === 'function') {
+        optionBtns[focusedIdx].scrollIntoView({ block: 'nearest' });
+      }
+    }
+
+    function close(restoreFocus = false) {
+      const prevSelect = activeSelect;
+      activeSelect = null;
+      focusedIdx = -1;
+      optionBtns = [];
+      if (prevSelect && prevSelect.dataset) {
+        delete prevSelect.dataset.popoverOpen;
+        prevSelect.setAttribute('aria-expanded', 'false');
+      }
+      if (popoverEl && popoverEl.parentNode) {
+        popoverEl.parentNode.removeChild(popoverEl);
+      }
+      if (restoreFocus && prevSelect && typeof prevSelect.focus === 'function') {
+        try {
+          prevSelect.focus({ preventScroll: true });
+        } catch (_) {
+          prevSelect.focus();
+        }
+      }
+    }
+
+    function positionPopover(sel) {
+      if (!popoverEl || !sel || typeof window === 'undefined') return;
+      const vw = window.innerWidth || (document.documentElement && document.documentElement.clientWidth) || 390;
+      const vh = window.innerHeight || (document.documentElement && document.documentElement.clientHeight) || 844;
+      const r = sel.getBoundingClientRect();
+      const maxWidth = Math.max(140, Math.min(340, vw - 16));
+      const minWidth = Math.max(0, Math.min(maxWidth, Math.round(r.width)));
+      popoverEl.style.minWidth = `${minWidth}px`;
+      popoverEl.style.maxWidth = `${maxWidth}px`;
+      popoverEl.style.maxHeight = `${Math.min(260, Math.max(120, vh - 24))}px`;
+
+      const spaceBelow = Math.max(0, vh - r.bottom - 12);
+      const spaceAbove = Math.max(0, r.top - 12);
+      const popRect = popoverEl.getBoundingClientRect();
+      const placeBelow = popRect.height <= spaceBelow || spaceBelow >= spaceAbove;
+      const availSpace = Math.max(120, Math.min(260, placeBelow ? spaceBelow : spaceAbove));
+      popoverEl.style.maxHeight = `${availSpace}px`;
+
+      const finalRect = popoverEl.getBoundingClientRect();
+      const top = placeBelow
+        ? Math.min(Math.max(8, Math.round(r.bottom + 4)), Math.max(8, vh - finalRect.height - 8))
+        : Math.max(8, Math.round(r.top - finalRect.height - 4));
+      const maxLeft = Math.max(8, vw - finalRect.width - 8);
+      const left = Math.min(Math.max(8, Math.round(r.left)), maxLeft);
+
+      popoverEl.style.top = `${top}px`;
+      popoverEl.style.left = `${left}px`;
+    }
+
+    function commitOption(value) {
+      const sel = activeSelect;
+      if (!sel) {
+        close();
+        return;
+      }
+      const changed = sel.value !== value;
+      sel.value = value;
+      close(true);
+      if (changed) {
+        sel.dispatchEvent(new Event('input', { bubbles: true }));
+        sel.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+    }
+
+    function open(sel) {
+      if (!sel || sel.disabled || typeof document === 'undefined' || !document.body) return;
+      if (activeSelect && activeSelect !== sel) {
+        close();
+      }
+      if (!popoverEl) {
+        popoverEl = document.createElement('div');
+        popoverEl.className = 'k4-select-popover';
+        popoverEl.setAttribute('role', 'listbox');
+        popoverEl.dataset.testid = 'k4-select-popover';
+      }
+      popoverEl.style.position = 'fixed';
+      popoverEl.style.zIndex = '10000';
+      popoverEl.textContent = '';
+      optionBtns = [];
+      activeSelect = sel;
+      sel.dataset.popoverOpen = 'true';
+      sel.setAttribute('aria-expanded', 'true');
+
+      const curVal = sel.value;
+      let selectedIdx = -1;
+      for (let i = 0; i < sel.options.length; i++) {
+        const opt = sel.options[i];
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'k4-select-option';
+        btn.setAttribute('role', 'option');
+        btn.dataset.value = opt.value;
+        btn.textContent = opt.textContent;
+        btn.disabled = Boolean(opt.disabled);
+        const isSelected = opt.value === curVal;
+        btn.classList.toggle('is-selected', isSelected);
+        btn.setAttribute('aria-selected', isSelected ? 'true' : 'false');
+        if (isSelected) selectedIdx = optionBtns.length;
+        btn.addEventListener('click', (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          if (!btn.disabled) commitOption(opt.value);
+        });
+        popoverEl.appendChild(btn);
+        optionBtns.push(btn);
+      }
+
+      popoverEl.style.top = '0px';
+      popoverEl.style.left = '0px';
+      document.body.appendChild(popoverEl);
+      positionPopover(sel);
+      updateFocusedOption(selectedIdx >= 0 ? selectedIdx : 0);
+    }
+
+    function toggle(sel) {
+      if (activeSelect === sel) {
+        close(true);
+      } else {
+        open(sel);
+      }
+    }
+
+    function install() {
+      if (installed || typeof document === 'undefined') return;
+      installed = true;
+
+      document.addEventListener(
+        'touchstart',
+        (e) => {
+          const sel = getTargetSelect(e.target);
+          if (!sel || !e.touches || e.touches.length !== 1) {
+            activeTouch = null;
+            return;
+          }
+          const t = e.touches[0];
+          activeTouch = {
+            id: t.identifier,
+            sel,
+            startX: t.clientX,
+            startY: t.clientY,
+            moved: false,
+          };
+        },
+        { capture: true, passive: true }
+      );
+
+      document.addEventListener(
+        'touchmove',
+        (e) => {
+          if (!activeTouch || !e.touches) return;
+          for (let i = 0; i < e.touches.length; i++) {
+            const t = e.touches[i];
+            if (t.identifier === activeTouch.id) {
+              if (Math.hypot(t.clientX - activeTouch.startX, t.clientY - activeTouch.startY) > 10) {
+                activeTouch.moved = true;
+              }
+              break;
+            }
+          }
+        },
+        { capture: true, passive: true }
+      );
+
+      document.addEventListener(
+        'touchend',
+        (e) => {
+          const pending = activeTouch;
+          activeTouch = null;
+          if (!pending || pending.moved) return;
+          const sel = getTargetSelect(e.target);
+          if (!sel || sel !== pending.sel) return;
+          if (e.cancelable) e.preventDefault();
+          e.stopPropagation();
+          lastTouchToggleMs = performance.now();
+          toggle(sel);
+        },
+        { capture: true, passive: false }
+      );
+
+      document.addEventListener(
+        'mousedown',
+        (e) => {
+          if (e.button !== 0) return;
+          const rawSel = e.target && typeof e.target.closest === 'function'
+            ? e.target.closest(SELECT_TARGET_SELECTOR)
+            : null;
+          if (!rawSel) return;
+          e.preventDefault();
+          e.stopPropagation();
+          if (performance.now() - lastTouchToggleMs < 450 || rawSel.disabled) return;
+          if (typeof rawSel.focus === 'function') {
+            try {
+              rawSel.focus({ preventScroll: true });
+            } catch (_) {
+              rawSel.focus();
+            }
+          }
+          lastPointerToggleMs = performance.now();
+          toggle(rawSel);
+        },
+        true
+      );
+
+      document.addEventListener(
+        'click',
+        (e) => {
+          const rawSel = e.target && typeof e.target.closest === 'function'
+            ? e.target.closest(SELECT_TARGET_SELECTOR)
+            : null;
+          if (!rawSel) return;
+          e.preventDefault();
+          e.stopPropagation();
+          const sinceToggle = performance.now() - Math.max(lastTouchToggleMs, lastPointerToggleMs);
+          if (sinceToggle >= 450 && !rawSel.disabled) {
+            lastPointerToggleMs = performance.now();
+            toggle(rawSel);
+          }
+        },
+        true
+      );
+
+      document.addEventListener(
+        'pointerdown',
+        (e) => {
+          if (!activeSelect) return;
+          const t = e.target;
+          if (popoverEl && t && popoverEl.contains(t)) return;
+          const hitSel = t && typeof t.closest === 'function' ? t.closest(SELECT_TARGET_SELECTOR) : null;
+          if (hitSel === activeSelect) return;
+          close();
+        },
+        true
+      );
+
+      document.addEventListener(
+        'keydown',
+        (e) => {
+          if (activeSelect) {
+            if (e.key === 'Escape') {
+              e.preventDefault();
+              e.stopImmediatePropagation();
+              e.stopPropagation();
+              close(true);
+              return;
+            }
+            if (e.key === 'ArrowDown') {
+              e.preventDefault();
+              e.stopImmediatePropagation();
+              e.stopPropagation();
+              updateFocusedOption(focusedIdx + 1);
+              return;
+            }
+            if (e.key === 'ArrowUp') {
+              e.preventDefault();
+              e.stopImmediatePropagation();
+              e.stopPropagation();
+              updateFocusedOption(focusedIdx - 1);
+              return;
+            }
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              e.stopImmediatePropagation();
+              e.stopPropagation();
+              const btn = optionBtns[focusedIdx];
+              if (btn && !btn.disabled) commitOption(btn.dataset.value);
+              return;
+            }
+            if (e.key === 'Tab') {
+              close();
+              return;
+            }
+          } else if (e.key === 'Enter' || e.key === ' ') {
+            const focusedSel = getTargetSelect(document.activeElement);
+            if (focusedSel) {
+              e.preventDefault();
+              e.stopPropagation();
+              open(focusedSel);
+            }
+          }
+        },
+        true
+      );
+
+      if (typeof window !== 'undefined') {
+        window.addEventListener('resize', () => {
+          if (activeSelect) close();
+        });
+        window.addEventListener(
+          'scroll',
+          (e) => {
+            if (!activeSelect) return;
+            if (popoverEl && e.target && (e.target === popoverEl || popoverEl.contains(e.target))) {
+              return;
+            }
+            close();
+          },
+          true
+        );
+      }
+    }
+
+    return {
+      install,
+      open,
+      close,
+      isOpen: () => Boolean(activeSelect),
+    };
+  })();
+
+  SelectPopover.install();
+
   class SettingsPanel {
     constructor(opts = {}) {
       this.modal = opts.modal;
@@ -295,7 +648,7 @@
     _buildSwitchRow({ title, desc, testId, onToggle }) {
       const row = el('div', 'k4-settings-row');
       const info = el('div');
-      info.appendChild(el('div', null, title));
+      info.appendChild(el('div', 'k4-settings-row-title', title));
       if (desc) info.appendChild(el('div', 'k4-settings-desc', desc));
 
       const btn = el('button', 'k4-switch-btn', 'OFF');
@@ -311,9 +664,9 @@
     }
 
     _buildSelectRow({ title, desc, testId, options, onChange }) {
-      const row = el('div', 'k4-settings-row');
+      const row = el('div', 'k4-settings-row k4-settings-row--select');
       const info = el('div');
-      info.appendChild(el('div', null, title));
+      info.appendChild(el('div', 'k4-settings-row-title', title));
       if (desc) info.appendChild(el('div', 'k4-settings-desc', desc));
 
       const select = el('select', 'k4-select');
@@ -551,6 +904,7 @@
     }
 
     close() {
+      SelectPopover.close();
       if (!this._isOpen || !this.modal) return;
       this._isOpen = false;
       if (this.triggerBtn) this.triggerBtn.setAttribute('aria-expanded', 'false');
@@ -578,4 +932,5 @@
 
   K4.ClientPrefs = ClientPrefs;
   K4.SettingsPanel = SettingsPanel;
+  K4.SelectPopover = SelectPopover;
 })();
