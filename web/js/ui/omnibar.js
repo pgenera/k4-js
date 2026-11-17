@@ -382,7 +382,8 @@
       const rx = typeof this.getTargetRx === 'function' ? this.getTargetRx() : 'A';
       this.client.tune(rx, bm.freqHz, { optimistically: true });
       if (bm.mode != null) {
-        this.client.setMode(rx, bm.mode, bm.dataSubMode || 0);
+        const dataSubMode = (Number(bm.mode) === 6 || Number(bm.mode) === 9) ? (bm.dataSubMode || 0) : undefined;
+        this.client.setMode(rx, bm.mode, dataSubMode);
       }
       if (bm.bwHz != null && typeof this.client.setFilter === 'function') {
         this.client.setFilter(rx, { bwHz: bm.bwHz });

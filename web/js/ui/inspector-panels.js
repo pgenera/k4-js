@@ -519,7 +519,7 @@
     }
 
     _buildBandModePane() {
-      const pane = el('div', 'k4-panel-pane');
+      const pane = el('div', 'k4-panel-pane k4-pane--band');
 
       // Receiver Target & Sub RX
       const rxCard = makeCard('Target receiver');
@@ -636,7 +636,7 @@
     }
 
     _buildMemoryCard() {
-      const card = makeCard('Frequency memories');
+      const card = el('div', 'k4-card');
       card.dataset.testid = 'memory-card';
       const fmt = (m) => (m ? (m.freqHz / 1e6).toFixed(4).replace(/0+$/, '').replace(/\.$/, '') : 'empty');
       const mem = (this._refs.mem = { storeArmed: false, channel: 1 });
@@ -659,6 +659,14 @@
       mem.stoBtn.addEventListener('click', () => setArmed(true));
       modeRow.appendChild(mem.rclBtn);
       modeRow.appendChild(mem.stoBtn);
+
+      const head = el('div', 'k4-mem-head');
+      const title = el('div', 'k4-card-title');
+      title.appendChild(el('span', '', 'Frequency memories'));
+      head.appendChild(title);
+      head.appendChild(modeRow);
+      card.appendChild(head);
+
       const rxNow = () => this.getTargetRx();
       const current = () => {
         const s = this._rxSnap(rxNow());
@@ -674,7 +682,10 @@
         if (!m) return;
         const rx = rxNow();
         this.client.tune(rx, m.freqHz, { optimistically: true });
-        if (m.mode != null) this.client.setMode(rx, m.mode, m.dataSubMode || 0);
+        if (m.mode != null) {
+          const dataSubMode = (Number(m.mode) === 6 || Number(m.mode) === 9) ? (m.dataSubMode || 0) : undefined;
+          this.client.setMode(rx, m.mode, dataSubMode);
+        }
         if (m.bwHz != null && typeof this.client.setFilter === 'function') this.client.setFilter(rx, { bwHz: m.bwHz });
         if (typeof this.onNotify === 'function') this.onNotify(`Recalled ${label} (${(m.freqHz / 1e6).toFixed(4)} MHz)`, 'info');
       };
@@ -687,19 +698,28 @@
       };
 
       // Quick memories for the current band (K4: M1-M4 per band)
-      const quickGrid = el('div', 'k4-pill-grid');
+      const quickGrid = el('div', 'k4-mem-quick-grid');
       mem.quickBtns = [];
       for (let n = 1; n <= 4; n++) {
         const btn = el('button', 'k4-choice-pill k4-mem-pill', `M${n}`);
         btn.type = 'button';
         btn.dataset.testid = `mem-quick-${n}`;
-        btn.addEventListener('click', () => {
+        btn.addEventListener('click', (e) => {
           const band = bandLabel();
           if (!band) return;
+          const existing = K4.MemoryStore.getQuick(band, n);
+          if (e.shiftKey && existing) {
+            if (typeof K4.MemoryStore.clearQuick === 'function') {
+              K4.MemoryStore.clearQuick(band, n);
+              if (typeof this.onNotify === 'function') this.onNotify(`Cleared ${band} M${n}`, 'info');
+            }
+            setArmed(false);
+            return;
+          }
           if (mem.storeArmed) {
             store((cur) => K4.MemoryStore.setQuick(band, n, cur), `${band} M${n}`);
           } else {
-            recall(K4.MemoryStore.getQuick(band, n), `${band} M${n}`);
+            recall(existing, `${band} M${n}`);
           }
         });
         quickGrid.appendChild(btn);
@@ -719,7 +739,7 @@
       mem.chBtn = el('button', 'k4-choice-pill k4-mem-ch', '');
       mem.chBtn.type = 'button';
       mem.chBtn.dataset.testid = 'mem-channel';
-      mem.chBtn.title = 'Recall (or store, when STORE is selected) this memory channel';
+      mem.chBtn.title = 'Recall (or store when STORE is selected; Shift+Click to clear) this memory channel';
       const maxCh = K4.MemoryStore.CHANNELS;
       const step = (d) => {
         mem.channel = ((mem.channel - 1 + d + maxCh) % maxCh) + 1;
@@ -727,15 +747,23 @@
       };
       prev.addEventListener('click', () => step(-1));
       next.addEventListener('click', () => step(1));
-      mem.chBtn.addEventListener('click', () => {
+      mem.chBtn.addEventListener('click', (e) => {
         const ch = mem.channel;
+        const existing = K4.MemoryStore.getChannel(ch);
+        if (e.shiftKey && existing) {
+          if (typeof K4.MemoryStore.clearChannel === 'function') {
+            K4.MemoryStore.clearChannel(ch);
+            if (typeof this.onNotify === 'function') this.onNotify(`Cleared memory ${String(ch).padStart(3, '0')}`, 'info');
+          }
+          setArmed(false);
+          return;
+        }
         if (mem.storeArmed) {
           store((cur) => K4.MemoryStore.setChannel(ch, cur), `memory ${String(ch).padStart(3, '0')}`);
         } else {
-          recall(K4.MemoryStore.getChannel(ch), `memory ${String(ch).padStart(3, '0')}`);
+          recall(existing, `memory ${String(ch).padStart(3, '0')}`);
         }
       });
-      chRow.appendChild(modeRow);
       chRow.appendChild(prev);
       chRow.appendChild(mem.chBtn);
       chRow.appendChild(next);
@@ -752,7 +780,9 @@
           btn.textContent = m ? `M${i + 1} ${fmt(m)}` : `M${i + 1}`;
           btn.classList.toggle('is-empty', !m);
           btn.disabled = !band;
-          btn.title = band ? `${band} quick memory ${i + 1}` : 'No band at this frequency';
+          btn.title = band
+            ? (m ? `${band} quick memory ${i + 1} (Shift+Click to clear)` : `${band} quick memory ${i + 1}`)
+            : 'No band at this frequency';
         });
         const cm = K4.MemoryStore.getChannel(mem.channel);
         mem.chBtn.textContent = `${String(mem.channel).padStart(3, '0')} ${fmt(cm)}`;
@@ -3151,6 +3181,7 @@
           if (k === 'subRxEnabled') out.add('display');
         } else if (
           k.endsWith('.filter') ||
+          k.endsWith('.filterPreset') ||
           k.endsWith('.bwHz') ||
           k.endsWith('.ifShiftHz') ||
           k.endsWith('.preamp') ||

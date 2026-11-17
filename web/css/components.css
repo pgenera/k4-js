@@ -4152,6 +4152,20 @@
 }
 
 /* Frequency memories (BAND tab) */
+.k4-mem-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+.k4-mem-head .k4-card-title {
+  margin: 0;
+}
+.k4-mem-quick-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px;
+}
 .k4-mem-pill {
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
@@ -4164,11 +4178,63 @@
 }
 .k4-mem-channel {
   display: grid;
-  grid-template-columns: auto 30px minmax(0, 1fr) 30px;
+  grid-template-columns: 30px minmax(0, 1fr) 30px;
   gap: 5px;
   margin-top: 5px;
 }
 .k4-mem-ch {
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
+}
+
+@media (min-width: 960px) {
+  .k4-pane--band {
+    gap: 4px;
+  }
+  .k4-pane--band .k4-card {
+    padding: 4px 8px;
+    gap: 3px;
+  }
+  .k4-pane--band .k4-card-title {
+    font-size: 11px;
+    line-height: 1.2;
+  }
+  .k4-pane--band .k4-pill-grid {
+    gap: 4px;
+  }
+  .k4-pane--band .k4-seg-group {
+    padding: 2px;
+  }
+  .k4-pane--band .k4-choice-pill {
+    min-height: 23px;
+    height: 23px;
+    padding: 0 5px;
+    font-size: 11px;
+  }
+  .k4-pane--band .k4-pill-grid--5 .k4-choice-pill {
+    padding: 0 2px;
+    font-size: 10px;
+  }
+  .k4-pane--band .k4-seg-btn {
+    min-height: 23px;
+    height: 23px;
+    padding: 0 7px;
+    font-size: 11px;
+  }
+  .k4-pane--band .k4-toggle-row {
+    min-height: 20px;
+    padding: 0;
+  }
+  .k4-pane--band .k4-switch-btn {
+    min-height: 20px;
+    height: 20px;
+    padding: 0 7px;
+    font-size: 10px;
+  }
+  .k4-pane--band .k4-mem-quick-grid {
+    gap: 3px;
+  }
+  .k4-pane--band .k4-mem-channel {
+    margin-top: 1px;
+  }
 }
