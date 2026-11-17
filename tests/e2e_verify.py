@@ -2046,7 +2046,7 @@ def run_http_origin_and_screenshots(
         """
     )
     assert rx_boot["posture"] == "tx-armed" and rx_boot["policy"] == "tx-enabled", f"Expected tx-armed/tx-enabled on connect: {rx_boot}"
-    assert rx_boot["txActive"] is False and rx_boot["barPosture"] == "tx-armed" and rx_boot["pttDisabled"] is False, (
+    assert rx_boot["txActive"] is False and rx_boot["barPosture"] == "tx-armed" and rx_boot["pttDisabled"] is False and rx_boot["micBtnExists"] is False, (
         f"Unexpected direct TX boot UI state: {rx_boot}"
     )
 
@@ -2121,13 +2121,12 @@ def run_http_origin_and_screenshots(
             const bar = document.querySelector('[data-testid="tx-posture-bar"]');
             const ind = document.querySelector('[data-testid="k4-tx-vfo-indicator"]');
             const badge = document.querySelector('[data-testid="vfo-a-tx-badge"]');
-            const micBtn = document.querySelector('[data-testid="tx-mic-btn"]');
             const indAnim = ind ? getComputedStyle(ind).animationName : '';
             const badgeAnim = badge ? getComputedStyle(badge).animationName : '';
             return snap.txPosture === 'tx-armed' && snap.txTestMode === true &&
                    bar && bar.dataset.txTest === 'true' &&
                    ptt && ptt.disabled === false &&
-                   micBtn && !micBtn.hidden && micBtn.dataset.micState === 'ready' &&
+                   ptt.dataset.micState === 'ready' && ptt.textContent.trim() === 'PTT' &&
                    ind && ind.textContent === '◀ TX Test' && ind.dataset.state === 'test' &&
                    badge && !badge.classList.contains('is-flashing') &&
                    indAnim === 'none' && badgeAnim === 'none' &&
@@ -2136,7 +2135,7 @@ def run_http_origin_and_screenshots(
             """
         )
         and http_get_json(stats_url)["txTestMode"] is True,
-        "TX TEST (TS1) opens live standby mic stream (MIC RDY) with steady TX Test graphics",
+        "TX TEST (TS1) opens live standby mic stream with PTT micState='ready' and steady TX Test graphics",
     )
 
     audio_before = http_get_json(stats_url)["txAudioPacketsIn"]
@@ -2174,14 +2173,14 @@ def run_http_origin_and_screenshots(
                     const snap = globalThis.k4App.state.getSnapshot();
                     const cl = document.querySelector('[data-testid="tx-meter-cluster"]');
                     const pwr = document.querySelector('[data-testid="tx-meter-pwr"]');
-                    const micBtn = document.querySelector('[data-testid="tx-mic-btn"]');
+                    const ptt = document.querySelector('[data-testid="ptt-btn"]');
                     return snap.txActive === true && snap.txMeters.alcBars > 0 && snap.txMeters.fwdWatts === 0 &&
-                           micBtn && micBtn.dataset.micState === 'capturing' &&
+                           ptt && ptt.dataset.micState === 'capturing' &&
                            cl && !cl.hidden && pwr && pwr.textContent.includes('0.0W');
                     """
                 )
             ),
-            "TX TEST hold-PTT captures live microphone audio with MIC LIVE, ALC > 0 & FWD == 0.0W",
+            "TX TEST hold-PTT captures live microphone audio with PTT capturing, ALC > 0 & FWD == 0.0W",
             timeout=6.0,
         )
     finally:
@@ -2202,14 +2201,14 @@ def run_http_origin_and_screenshots(
         and client.execute_script(
             """
             const s = globalThis.k4App.state.getSnapshot();
-            const micBtn = document.querySelector('[data-testid="tx-mic-btn"]');
+            const ptt = document.querySelector('[data-testid="ptt-btn"]');
             return s.txActive === false && s.txMeters.fwdWatts === 0 &&
-                   micBtn && micBtn.dataset.micState === 'ready' &&
+                   ptt && ptt.dataset.micState === 'ready' &&
                    globalThis.k4App.audio._standbyMicStream &&
                    globalThis.k4App.audio._standbyMicStream.getAudioTracks()[0]?.readyState === 'live';
             """
         ),
-        "PTT release drops TX TEST to RX while keeping standby mic stream live (MIC RDY)",
+        "PTT release drops TX TEST to RX while keeping standby mic stream live (PTT ready)",
     )
 
     # K4 Message Memories (M1-M4 + BANK 1/2 + STOP PB0)
@@ -2321,6 +2320,65 @@ def run_http_origin_and_screenshots(
         )
         and http_get_json(stats_url)["txTestMode"] is False,
         "TEST switch restores TS0; while staying tx-armed",
+    )
+
+    # Verify synth TX source & voice-aware standby reflected directly on PTT buttons
+    client.execute_script(
+        """
+        const sel = document.querySelector('[data-testid="tx-audio-source"]');
+        sel.value = 'two-tone';
+        sel.dispatchEvent(new Event('change', { bubbles: true }));
+        """
+    )
+    wait_until(
+        lambda: client.execute_script(
+            """
+            const ptt = document.querySelector('[data-testid="ptt-btn"]');
+            const cardPtt = document.querySelector('[data-testid="tx-card-ptt-btn"]');
+            return ptt && ptt.textContent.trim() === 'PTT (TONE)' && ptt.dataset.micState === 'synth' &&
+                   cardPtt && cardPtt.textContent.trim() === 'PTT (TONE)' && cardPtt.dataset.micState === 'synth';
+            """
+        ),
+        "Switching TX audio source to two-tone labels PTT and TX-card PTT as PTT (TONE)",
+    )
+    client.execute_script(
+        """
+        const sel = document.querySelector('[data-testid="tx-audio-source"]');
+        sel.value = 'mic';
+        sel.dispatchEvent(new Event('change', { bubbles: true }));
+        """
+    )
+    wait_until(
+        lambda: client.execute_script(
+            """
+            const ptt = document.querySelector('[data-testid="ptt-btn"]');
+            const cardPtt = document.querySelector('[data-testid="tx-card-ptt-btn"]');
+            return ptt && ptt.textContent.trim() === 'PTT' && ptt.dataset.micState === 'ready' &&
+                   cardPtt && cardPtt.textContent.trim() === 'PTT';
+            """
+        ),
+        "Switching TX audio source back to mic restores PTT label & warm standby",
+    )
+
+    client.execute_script("globalThis.k4App.client.setMode('A', 'CW');")
+    wait_until(
+        lambda: client.execute_script(
+            "return globalThis.k4App.state.getSnapshot().rxA.mode === 3 && !globalThis.k4App.audio._standbyMicStream;"
+        ),
+        "Switching to CW (with TX TEST off) releases standby mic stream",
+    )
+    client.execute_script("globalThis.k4App.client.setMode('A', 'USB');")
+    wait_until(
+        lambda: client.execute_script(
+            """
+            const s = globalThis.k4App.state.getSnapshot();
+            const ptt = document.querySelector('[data-testid="ptt-btn"]');
+            return s.rxA.mode === 2 && ptt && ptt.dataset.micState === 'ready' &&
+                   globalThis.k4App.audio._standbyMicStream &&
+                   globalThis.k4App.audio._standbyMicStream.getAudioTracks()[0]?.readyState === 'live';
+            """
+        ),
+        "Switching back to USB automatically reopens warm standby mic stream",
     )
 
     # (c) Item 4: Single ATU TUNE (1st tap TU3 -> converges <= 1.3; 2nd tap within 5s -> TU4 Full Search -> Escape keeps tx-armed)
@@ -3945,6 +4003,70 @@ def run_http_origin_and_screenshots(
             "    && globalThis.k4App._targetRx === 'A';"
         ),
         "Restored Single RX / targetRx=A after Note 4 check",
+    )
+
+    # Mobile 390x844 Settings modal dropdowns open anchored directly at their controls (in-DOM SelectPopover)
+    client.click_element(client.find_element('[data-testid="settings-btn"]'))
+    wait_until(
+        lambda: client.execute_script(
+            "return document.querySelector('[data-testid=\"settings-modal\"]')?.dataset.open === 'true';"
+        ),
+        "Settings modal opens at 390x844 mobile viewport",
+    )
+    for sel_tid, pick_val in [("pref-mouse-qsy", "pane"), ("pref-arrow-updown", "band")]:
+        client.execute_script(
+            "document.querySelector('[data-testid=\"' + arguments[0] + '\"]').scrollIntoView({ block: 'center' });",
+            [sel_tid],
+        )
+        client.click_element(client.find_element(f'[data-testid="{sel_tid}"]'))
+        wait_until(
+            lambda: client.execute_script(
+                "return Boolean(document.querySelector('[data-testid=\"k4-select-popover\"]'));"
+            ),
+            f"SelectPopover opens for {sel_tid} at 390x844",
+        )
+        geom = client.execute_script(
+            """
+            const sel = document.querySelector('[data-testid="' + arguments[0] + '"]');
+            const pop = document.querySelector('[data-testid="k4-select-popover"]');
+            const sr = sel.getBoundingClientRect();
+            const pr = pop.getBoundingClientRect();
+            return {
+              vw: window.innerWidth,
+              vh: window.innerHeight,
+              sr: { left: sr.left, right: sr.right, top: sr.top, bottom: sr.bottom, width: sr.width },
+              pr: { left: pr.left, right: pr.right, top: pr.top, bottom: pr.bottom, width: pr.width },
+            };
+            """,
+            [sel_tid],
+        )
+        sr, pr = geom["sr"], geom["pr"]
+        vert_gap = min(abs(pr["top"] - sr["bottom"]), abs(sr["top"] - pr["bottom"]))
+        assert (
+            pr["left"] >= 0
+            and pr["right"] <= geom["vw"] + 1
+            and pr["top"] >= 0
+            and pr["bottom"] <= geom["vh"] + 1
+            and abs(pr["left"] - sr["left"]) <= 4
+            and abs(pr["width"] - sr["width"]) <= 4
+            and vert_gap <= 8
+        ), f"Settings dropdown {sel_tid} wandered off on 390x844: {geom}"
+        client.click_element(client.find_element(f'[data-testid="k4-select-popover"] [data-value="{pick_val}"]'))
+        wait_until(
+            lambda tid=sel_tid, exp=pick_val: client.execute_script(
+                "return !document.querySelector('[data-testid=\"k4-select-popover\"]')"
+                "    && document.querySelector('[data-testid=\"' + arguments[0] + '\"]').value === arguments[1];",
+                [tid, exp],
+            ),
+            f"Selecting {pick_val} on {sel_tid} updates select & closes popover",
+        )
+    client.execute_script("K4.ClientPrefs.reset();")
+    client.click_element(client.find_element('[data-testid="settings-close-btn"]'))
+    wait_until(
+        lambda: client.execute_script(
+            "return document.querySelector('[data-testid=\"settings-modal\"]')?.hidden === true;"
+        ),
+        "Settings modal closes cleanly after 390x844 dropdown check",
     )
 
     # Open mobile Tune bottom sheet at compact 34vh snap so spectrum remains uncovered, verify resize grabber

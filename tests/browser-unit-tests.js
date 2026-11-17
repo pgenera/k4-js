@@ -3369,6 +3369,35 @@
       snapBtn.click();
       assertEqual(K4.ClientPrefs.get('voiceClickSnapKhz'), true, 'clicking pref-voice-snap-khz toggles back true');
 
+      // Anchored in-DOM SelectPopover on Settings dropdowns (no floating OS select popup)
+      modal.style.position = 'fixed';
+      modal.style.top = '80px';
+      modal.style.left = '24px';
+      const mouseSel = modal.querySelector('[data-testid="pref-mouse-qsy"]');
+      assert(mouseSel && typeof K4.SelectPopover === 'object', 'pref-mouse-qsy select & K4.SelectPopover exist');
+      mouseSel.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0 }));
+      let pop = document.querySelector('[data-testid="k4-select-popover"]');
+      assert(pop && pop.parentNode === document.body, 'k4-select-popover mounts on document.body');
+      const selRect = mouseSel.getBoundingClientRect();
+      const popRect = pop.getBoundingClientRect();
+      assert(
+        Math.abs(popRect.left - selRect.left) <= 8 && Math.abs(popRect.top - selRect.bottom) <= 8,
+        `Popover anchors near select bottom/left (sel=${JSON.stringify(selRect)}, pop=${JSON.stringify(popRect)})`
+      );
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+      assertEqual(Boolean(document.querySelector('[data-testid="k4-select-popover"]')), false, 'Escape closes select popover');
+      assertEqual(panel.isOpen(), true, 'Escape on open select popover keeps SettingsPanel open');
+
+      mouseSel.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0 }));
+      pop = document.querySelector('[data-testid="k4-select-popover"]');
+      const paneOpt = pop ? pop.querySelector('.k4-select-option[data-value="pane"]') : null;
+      assert(paneOpt, 'Popover renders "pane" option button');
+      paneOpt.click();
+      assertEqual(K4.ClientPrefs.get('mouseQsyMode'), 'pane', 'Clicking popover option updates ClientPrefs mouseQsyMode');
+      assertEqual(mouseSel.value, 'pane', 'Clicking popover option updates underlying select value');
+      assertEqual(Boolean(document.querySelector('[data-testid="k4-select-popover"]')), false, 'Selecting option closes popover');
+      K4.ClientPrefs.reset();
+
       K4.SettingsPanel.executeMacro('CAT:AB2;', stubClient);
       K4.SettingsPanel.executeMacro('CQ TEST ', stubClient);
       assertEqual(sentCats[0], 'AB2;', 'CAT: macro sends raw CAT command');
@@ -3755,6 +3784,27 @@
       }));
       assertEqual(pttBegun, 2, 'second pointerdown fires onBeginHoldPtt');
       assertEqual(pttEnded, 2, 'pointercancel fires onEndHoldPtt');
+
+      // Synth source & mic warning states fold into tx-card-ptt-btn cleanly
+      let cfgSource = 'two-tone';
+      let mockMicState = 'idle';
+      inspector.getTxAudioConfig = () => ({ source: cfgSource });
+      inspector.audio = { getMicStatus: () => ({ state: mockMicState }) };
+      inspector.update(state.getSnapshot());
+      assertEqual(pttBtn.textContent.trim(), 'PTT (TONE)', 'two-tone synth source labels tx-card-ptt-btn as PTT (TONE)');
+      assertEqual(pttBtn.dataset.micState, 'synth', 'two-tone synth source sets data-mic-state=synth');
+
+      cfgSource = 'mic';
+      mockMicState = 'denied';
+      state.updateRx('A', { mode: 2 }, 'rxA.mode'); // USB voice mode
+      inspector.update(state.getSnapshot());
+      assertEqual(pttBtn.textContent.trim(), 'PTT !', 'voice mode + denied mic shows PTT ! warning');
+      assertEqual(pttBtn.dataset.micWarn, 'true', 'voice mode + denied mic sets data-mic-warn=true');
+
+      state.updateRx('A', { mode: 3 }, 'rxA.mode'); // CW mode
+      inspector.update(state.getSnapshot());
+      assertEqual(pttBtn.textContent.trim(), 'PTT', 'CW mode + denied mic stays clean PTT');
+      assertEqual(pttBtn.dataset.micWarn, 'false', 'CW mode + denied mic clears data-mic-warn');
     } finally {
       inspector.destroy();
       drawer.remove();
