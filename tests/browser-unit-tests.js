@@ -132,6 +132,13 @@
       assertEqual(MS.getChannel(200).mode, 2, 'channel mode');
       MS.clearChannel(200);
       assertEqual(MS.getChannel(200), null, 'cleared channel');
+
+      // clearQuick removes the slot and returns null
+      assertEqual(MS.setQuick('20m', 2, { freqHz: 14074000, mode: 6, dataSubMode: 0, bwHz: 2700 }), true, 'store quick slot 2 for clearQuick test');
+      assertEqual(MS.getQuick('20m', 2) !== null, true, 'quick slot 2 populated before clearQuick');
+      const clearResult = MS.clearQuick('20m', 2);
+      assert(clearResult === true || clearResult === undefined, 'clearQuick returns truthy or void');
+      assertEqual(MS.getQuick('20m', 2), null, 'clearQuick empties slot 2');
     } finally {
       K4.storage.set('memories', saved === null ? {} : saved);
     }
@@ -2860,6 +2867,53 @@
       // Simulated disconnect keeps txPosture in tx-armed
       client.disconnect();
       assertEqual(client.getTxPosture(), 'tx-armed', 'Disconnect keeps txPosture in tx-armed');
+    } finally {
+      client._ws = null;
+      client._stopKeepalive();
+    }
+  });
+
+  // 35b. setFilterPreset emits rxA.filterPreset event key; client.connect bootstrap includes FP;FP$;
+  test('setFilterPreset emits rxA.filterPreset and connect bootstrap includes FP;FP$;', () => {
+    const K4 = globalThis.K4;
+    const state = new K4.RadioState();
+    const client = new K4.Client({ state, gate: new K4.RxOnlyGate('tx-enabled') });
+
+    // Collect change events emitted from RadioState
+    const emittedKeys = [];
+    state.on('change', (_snap, key) => emittedKeys.push(key));
+
+    // Stub sendCat so we can capture it without a live WebSocket
+    const sentCats = [];
+    const origSendCat = client.sendCat.bind(client);
+    client.sendCat = (cmd) => {
+      sentCats.push(cmd);
+      return { sent: false, allowed: [], blocked: [], sanitized: cmd };
+    };
+
+    try {
+      // setFilterPreset('A', 3) must emit 'rxA.filterPreset' (not 'rxA.filter')
+      client.setFilterPreset('A', 3);
+      assert(emittedKeys.includes('rxA.filterPreset'), `Expected 'rxA.filterPreset' in emitted keys, got: ${JSON.stringify(emittedKeys)}`);
+      assertEqual(state.getSnapshot().rxA.filterPreset, 3, 'rxA.filterPreset state updated to 3');
+
+      // setFilterPreset('B', 2) must emit 'rxB.filterPreset'
+      const keysBefore = emittedKeys.length;
+      client.setFilterPreset('B', 2);
+      const newKeys = emittedKeys.slice(keysBefore);
+      assert(newKeys.includes('rxB.filterPreset'), `Expected 'rxB.filterPreset' in emitted keys, got: ${JSON.stringify(newKeys)}`);
+
+      // The bootstrap string sent on connect must include FP;FP$; (fp-sim adds these after IS;IS$;)
+      // We trigger _sendBootstrapAndStartKeepalive directly via a fake authenticated connection
+      const sentBootstrap = [];
+      client.sendCat = (cmd) => { sentBootstrap.push(cmd); return { sent: false, allowed: [], blocked: [], sanitized: cmd }; };
+      client._ws = { readyState: 1, send: () => {} };
+      client._bootstrapSent = false;
+      client._connGen = 1;
+      state.updateConnection({ status: 'connected', authStatus: 'authenticated' });
+      client._sendBootstrapAndStartKeepalive(1, 1, 2);
+      const bootstrapStr = sentBootstrap.join('');
+      assert(bootstrapStr.includes('FP;FP$;'), `Expected bootstrap to contain 'FP;FP$;', got: ${bootstrapStr.slice(0, 400)}`);
     } finally {
       client._ws = null;
       client._stopKeepalive();

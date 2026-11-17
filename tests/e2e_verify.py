@@ -2875,7 +2875,37 @@ def run_http_origin_and_screenshots(
         "NORM click restores nominal BW and FL1 via FP~;",
     )
 
-    # 2c. Frequency memories in the BAND tab: store a quick memory, retune, recall it
+    # 2b (cont). Unsolicited front-panel echo: applyRawCat('FP3;') without any web button click
+    # must mark filter-preset-3 as active (DSP tab is still open here)
+    client.execute_script(
+        """
+        const raw = 'FP3;';
+        const parsed = K4.CatCodec.parseCommand(raw);
+        if (typeof globalThis.k4App.state.applyRawCat === 'function') {
+          globalThis.k4App.state.applyRawCat(raw);
+        } else if (parsed) {
+          globalThis.k4App.state.applyParsedCat(parsed);
+        }
+        """
+    )
+    wait_until(
+        lambda: client.execute_script(
+            """
+            const btn = document.querySelector('[data-testid="filter-preset-3"]');
+            return btn && btn.classList.contains('is-active') && btn.getAttribute('aria-pressed') === 'true';
+            """
+        ),
+        "Unsolicited FP3; echo marks filter-preset-3 .is-active with aria-pressed=true",
+    )
+    # Reset filterPreset back to 1 via NORM to avoid affecting subsequent checks
+    client.execute_script("globalThis.k4App.client.normalizeFilter('A');")
+    wait_until(
+        lambda: client.execute_script("return globalThis.k4App.state.getSnapshot().rxA.filterPreset === 1;"),
+        "NORM restores FL1 after FP3 echo test",
+    )
+
+    # 2c. Frequency memories in the BAND tab (reworked): store 14.074 MHz DATA into M1, assert text
+    # and no-clip; store CW 14.025 into M2, spy on sendCat to verify recall sends MD3; not DT0;; cleanup
     client.execute_script("globalThis.k4App.inspector.selectDesktopTab('band-mode');")
     mem_vis = client.execute_script(
         """
@@ -2884,18 +2914,122 @@ def run_http_origin_and_screenshots(
         """
     )
     assert all(mem_vis.values()), f"Memory card, M1 and channel buttons must be visible in BAND tab: {mem_vis}"
-    f0 = client.execute_script("return globalThis.k4App.state.getSnapshot().rxA.freqHz;")
-    client.execute_script("document.querySelector('[data-testid=\"mem-store\"]').click(); document.querySelector('[data-testid=\"mem-quick-1\"]').click();")
-    client.execute_script("globalThis.k4App.client.tune('A', arguments[0] + 5000, { optimistically: true });", [f0])
-    wait_until(
-        lambda: client.execute_script("return globalThis.k4App.state.getSnapshot().rxA.freqHz === arguments[0] + 5000;", [f0]),
-        "Retuned away from stored quick memory",
+
+    # Store 14.074 MHz DATA (MD6) into M1
+    client.execute_script(
+        """
+        globalThis.k4App.client.tune('A', 14074000, { optimistically: true });
+        globalThis.k4App.client.setMode('A', 6, 0);
+        """
     )
-    client.execute_script("document.querySelector('[data-testid=\"mem-rcl\"]').click(); document.querySelector('[data-testid=\"mem-quick-1\"]').click();")
     wait_until(
-        lambda: client.execute_script("return globalThis.k4App.state.getSnapshot().rxA.freqHz === arguments[0];", [f0]),
-        "Quick memory M1 recalls the stored frequency",
+        lambda: client.execute_script(
+            "const s = globalThis.k4App.state.getSnapshot().rxA; return s.freqHz === 14074000 && s.mode === 6;"
+        ),
+        "VFO A set to 14.074 MHz DATA for M1 store",
     )
+    client.execute_script(
+        "document.querySelector('[data-testid=\"mem-store\"]').click(); document.querySelector('[data-testid=\"mem-quick-1\"]').click();"
+    )
+    wait_until(
+        lambda: client.execute_script(
+            """
+            const btn = document.querySelector('[data-testid="mem-quick-1"]');
+            return btn && btn.textContent && btn.textContent.includes('14.074');
+            """
+        ),
+        "M1 quick slot shows 14.074 after store",
+    )
+    # Assert M1 text is unclipped (scrollWidth <= clientWidth + 1)
+    m1_clip = client.execute_script(
+        """
+        const el = document.querySelector('[data-testid="mem-quick-1"]');
+        return el ? { text: el.textContent, sw: el.scrollWidth, cw: el.clientWidth } : null;
+        """
+    )
+    assert m1_clip and "14.074" in m1_clip["text"], f"M1 text must include '14.074': {m1_clip}"
+    assert m1_clip["sw"] <= m1_clip["cw"] + 1, (
+        f"M1 quick slot text is clipped (scrollWidth={m1_clip['sw']} > clientWidth={m1_clip['cw']}+1): {m1_clip}"
+    )
+
+    # Store CW (MD3) at 14.025 MHz into M2
+    client.execute_script(
+        """
+        globalThis.k4App.client.tune('A', 14025000, { optimistically: true });
+        globalThis.k4App.client.setMode('A', 3);
+        """
+    )
+    wait_until(
+        lambda: client.execute_script(
+            "const s = globalThis.k4App.state.getSnapshot().rxA; return s.freqHz === 14025000 && s.mode === 3;"
+        ),
+        "VFO A set to 14.025 MHz CW for M2 store",
+    )
+    client.execute_script(
+        "document.querySelector('[data-testid=\"mem-store\"]').click(); document.querySelector('[data-testid=\"mem-quick-2\"]').click();"
+    )
+    wait_until(
+        lambda: client.execute_script(
+            """
+            const btn = document.querySelector('[data-testid="mem-quick-2"]');
+            return btn && btn.textContent && btn.textContent.includes('14.025');
+            """
+        ),
+        "M2 quick slot shows 14.025 after store",
+    )
+
+    # Retune away and switch to USB before recalling M2
+    client.execute_script(
+        """
+        globalThis.k4App.client.tune('A', 14200000, { optimistically: true });
+        globalThis.k4App.client.setMode('A', 2);
+        """
+    )
+    wait_until(
+        lambda: client.execute_script(
+            "const s = globalThis.k4App.state.getSnapshot().rxA; return s.freqHz === 14200000 && s.mode === 2;"
+        ),
+        "Retuned to 14.200 MHz USB before M2 recall",
+    )
+
+    # Spy on sendCat to capture what recall M2 sends; verify MD3; sent, DT0; and DT$0; not sent
+    recall_m2_cats = client.execute_script(
+        """
+        const app = globalThis.k4App;
+        const origSend = app.client.sendCat.bind(app.client);
+        const captured = [];
+        app.client.sendCat = (cmd) => { captured.push(cmd); return origSend(cmd); };
+        try {
+          document.querySelector('[data-testid="mem-rcl"]').click();
+          document.querySelector('[data-testid="mem-quick-2"]').click();
+        } finally {
+          app.client.sendCat = origSend;
+        }
+        return captured;
+        """
+    )
+    all_sent = "".join(recall_m2_cats)
+    assert "MD3;" in all_sent, f"Recalling M2 (CW) must send MD3;, got: {recall_m2_cats}"
+    assert "DT0;" not in all_sent, f"Recalling M2 (CW) must NOT send DT0;, got: {recall_m2_cats}"
+    assert "DT$0;" not in all_sent, f"Recalling M2 (CW) must NOT send DT$0;, got: {recall_m2_cats}"
+
+    wait_until(
+        lambda: client.execute_script(
+            "const s = globalThis.k4App.state.getSnapshot().rxA; return s.freqHz === 14025000 && s.mode === 3;"
+        ),
+        "M2 recall restores 14.025 MHz CW",
+    )
+
+    # Cleanup M1 and M2 so localStorage/screenshot stays clean
+    client.execute_script(
+        """
+        if (typeof K4.MemoryStore.clearQuick === 'function') {
+          K4.MemoryStore.clearQuick('20m', 1);
+          K4.MemoryStore.clearQuick('20m', 2);
+        }
+        """
+    )
+
     client.execute_script("globalThis.k4App.inspector.selectDesktopTab('dsp');")
 
     # 3. Side-by-side S-meters (SB1, ticks on both, no MTR, click toggles Mini-Pan A) + Split TX bar placement
@@ -3098,6 +3232,23 @@ def run_http_origin_and_screenshots(
     assert tab_res["labels"] == ["BAND", "MAIN RX", "SUB RX", "DISPLAY", "AUDIO", "TX"], tab_res
     assert tab_res["bandSh"] <= tab_res["bandCh"] + 4, f"BAND tab scrolled ({tab_res['bandSh']} > {tab_res['bandCh']}): {tab_res}"
     assert tab_res["cardTransform"] == "none", f"Expected sentence-case card titles: {tab_res}"
+
+    # Also verify BAND tab fits on 1 screen at 1024x768 (Single RX drawer open)
+    client.set_window_rect(1024, 768)
+    wait_until(lambda: client.execute_script("return Math.abs(window.innerWidth - 1024) <= 20;"), "Resize to 1024x768")
+    band_768 = client.execute_script(
+        """
+        globalThis.k4App.inspector.selectDesktopTab('band-mode');
+        const scroll = document.querySelector('#inspector-drawer .k4-panel-scroll');
+        return scroll ? { sh: scroll.scrollHeight, ch: scroll.clientHeight } : { sh: 9999, ch: 0 };
+        """
+    )
+    assert band_768["sh"] <= band_768["ch"] + 4, (
+        f"BAND tab scrolled at 1024x768 ({band_768['sh']} > {band_768['ch']}): {band_768}"
+    )
+    # Restore to 1440x900 for the remaining checks
+    client.set_window_rect(1440, 900)
+    wait_until(lambda: client.execute_script("return Math.abs(window.innerWidth - 1440) <= 20;"), "Restore to 1440x900")
 
     client.execute_script("globalThis.k4App.inspector.selectDesktopTab('display');")
     client.click_element(client.find_element('[data-testid="cursor-mode-group"] [data-cursor-mode="SLIDE2"]'))
