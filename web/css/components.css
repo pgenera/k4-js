@@ -4315,3 +4315,71 @@
     margin-top: 1px;
   }
 }
+
+/* PWA Update Banner & Settings App Section */
+.k4-update-banner {
+  position: fixed;
+  left: 50%;
+  bottom: 18px;
+  transform: translateX(-50%);
+  z-index: calc(var(--z-toast) - 2);
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: min(480px, calc(100vw - 24px));
+  padding: 7px 10px 7px 12px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--accent-vfo-a-border);
+  background: var(--bg-glass-strong);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  box-shadow: var(--shadow-hud);
+  color: var(--text-primary);
+  font-size: 12px;
+}
+
+.k4-update-banner-text {
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.k4-update-banner-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+
+.k4-update-banner .k4-btn {
+  min-height: 28px;
+  height: 28px;
+  padding: 0 10px;
+  border-radius: var(--radius-pill);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.k4-settings-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+@media (max-width: 959px) {
+  .k4-update-banner {
+    bottom: calc(var(--mobilenav-h) + 10px + env(safe-area-inset-bottom, 0px));
+    width: calc(100vw - 20px);
+    max-width: 440px;
+    justify-content: space-between;
+    border-radius: var(--radius-md);
+    padding: 8px 10px;
+  }
+
+  .k4-update-banner-text {
+    white-space: normal;
+    line-height: 1.25;
+  }
+}

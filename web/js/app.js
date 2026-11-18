@@ -120,6 +120,7 @@
         omnibarModal: document.getElementById('omnibar-modal'),
         connDialog: document.getElementById('connection-dialog'),
         settingsModal: document.getElementById('settings-modal'),
+        pwaUpdateBanner: document.getElementById('pwa-update-banner'),
         toastStack: document.getElementById('toast-stack'),
       };
 
@@ -142,6 +143,7 @@
       if (this.panadapter.setTargetRx) this.panadapter.setTargetRx(this._targetRx);
 
       this._mountStageOverlays();
+      this._initPwa();
       this._initWidgets();
       this._bindEvents();
       this._applyDrawerState();
@@ -530,6 +532,7 @@
             triggerBtn: this._dom.settingsBtn,
             client: this.client,
             prefs: K4.ClientPrefs,
+            pwa: this.pwa,
             onNotify: (msg, level) => this.toast(msg, level),
           })
         : { open() {}, close() {}, isOpen: () => false };
@@ -650,6 +653,7 @@
         }
         if (connMetaChanged) {
           this._syncTxMicStandby();
+          if (this.pwa) this.pwa.notifyActivityChanged();
           this._render(['connection']);
         } else {
           this._scheduleMeterRender(['connection.rttMs']);
@@ -672,6 +676,7 @@
           } else if (typeof this.audio.stopTxCapture === 'function') {
             this.audio.stopTxCapture();
           }
+          if (this.pwa) this.pwa.notifyActivityChanged();
           this._render();
         });
       }
@@ -752,15 +757,28 @@
 
         let allMeterOnly = keyList.length > 0;
         let syncMic = false;
+        let syncPwaActivity = false;
         for (let i = 0; i < keyList.length; i++) {
           const k = keyList[i];
           if (MIC_SYNC_KEYS.has(k)) syncMic = true;
+          if (
+            k === 'txActive' ||
+            k === 'pttHeld' ||
+            k === 'atuTuning' ||
+            k === 'txBufferCount' ||
+            (k === 'connection' && !connMetaUnchanged)
+          ) {
+            syncPwaActivity = true;
+          }
           if (METER_ONLY_KEYS.has(k)) continue;
           if (k === 'connection' && connMetaUnchanged) continue;
           allMeterOnly = false;
         }
         if (syncMic) {
           this._syncTxMicStandby();
+        }
+        if (syncPwaActivity && this.pwa) {
+          this.pwa.notifyActivityChanged();
         }
 
         if (allMeterOnly) {
@@ -1237,7 +1255,135 @@
       }, 200);
     }
 
+    _initPwa() {
+      this._pwaBannerText = null;
+      this._pwaUpdateNowBtn = null;
+      this._pwaUpdateLaterBtn = null;
+      const banner = this._dom.pwaUpdateBanner;
+      if (banner) {
+        banner.textContent = '';
+        this._pwaBannerText = el('span', 'k4-update-banner-text', '');
+        const actions = el('div', 'k4-update-banner-actions');
+
+        this._pwaUpdateNowBtn = el('button', 'k4-btn k4-btn--primary', 'Update now');
+        this._pwaUpdateNowBtn.type = 'button';
+        this._pwaUpdateNowBtn.dataset.testid = 'pwa-update-now';
+        this._pwaUpdateNowBtn.addEventListener('click', () => {
+          if (this.pwa && typeof this.pwa.applyUpdateNow === 'function') {
+            this.pwa.applyUpdateNow();
+          }
+        });
+        actions.appendChild(this._pwaUpdateNowBtn);
+
+        this._pwaUpdateLaterBtn = el('button', 'k4-btn', 'Later');
+        this._pwaUpdateLaterBtn.type = 'button';
+        this._pwaUpdateLaterBtn.dataset.testid = 'pwa-update-later';
+        this._pwaUpdateLaterBtn.addEventListener('click', () => {
+          if (this.pwa && typeof this.pwa.deferUpdate === 'function') {
+            this.pwa.deferUpdate();
+          }
+        });
+        actions.appendChild(this._pwaUpdateLaterBtn);
+
+        banner.appendChild(this._pwaBannerText);
+        banner.appendChild(actions);
+      }
+
+      this.pwa = K4.PwaManager
+        ? new K4.PwaManager({
+            isTxBusy: () => this._isTxBusyForUpdate(),
+            isConnected: () => this._isConnectedForUpdate(),
+            onBeforeReload: () => this._savePostUpdateReconnect(),
+            onUpdateState: (st) => {
+              this._renderPwaUpdateBanner(st);
+              if (this.settingsPanel && typeof this.settingsPanel.syncPwaState === 'function') {
+                this.settingsPanel.syncPwaState(st);
+              }
+            },
+            onNotify: (msg, level) => this.toast(msg, level),
+          })
+        : null;
+    }
+
+    _isTxBusyForUpdate() {
+      const snap = this._getSnapshot();
+      return Boolean(
+        snap.txActive ||
+          snap.pttHeld ||
+          this._pttHeldUi ||
+          this._pttKeyHeld ||
+          snap.atuTuning ||
+          Number(snap.txBufferCount) > 0
+      );
+    }
+
+    _isConnectedForUpdate() {
+      const conn = this._getSnapshot().connection;
+      if (!conn) return false;
+      return (
+        conn.status === 'connected' ||
+        conn.status === 'connecting' ||
+        conn.status === 'authenticating'
+      );
+    }
+
+    _savePostUpdateReconnect() {
+      if (!this._isConnectedForUpdate()) return;
+      try {
+        if (typeof globalThis.sessionStorage === 'undefined' || !globalThis.sessionStorage) return;
+        const opts = this._lastConnectOpts || this.connectionDialog.getOptions();
+        globalThis.sessionStorage.setItem(
+          'k4.pwa.resumeConnect',
+          JSON.stringify({ savedAt: Date.now(), opts })
+        );
+      } catch (_) {}
+    }
+
+    _consumePostUpdateReconnect() {
+      try {
+        if (typeof globalThis.sessionStorage === 'undefined' || !globalThis.sessionStorage) return null;
+        const raw = globalThis.sessionStorage.getItem('k4.pwa.resumeConnect');
+        globalThis.sessionStorage.removeItem('k4.pwa.resumeConnect');
+        if (!raw) return null;
+        const parsed = JSON.parse(raw);
+        if (!parsed || typeof parsed !== 'object' || !parsed.opts) return null;
+        const ageMs = Date.now() - Number(parsed.savedAt || 0);
+        if (!Number.isFinite(ageMs) || ageMs < 0 || ageMs >= 30000) return null;
+        return parsed.opts;
+      } catch (_) {
+        return null;
+      }
+    }
+
+    _renderPwaUpdateBanner(st) {
+      const banner = this._dom.pwaUpdateBanner;
+      if (!banner) return;
+      if (!st || !st.updateReady || st.phase === 'idle' || st.phase === 'checking' || st.phase === 'reloading') {
+        banner.hidden = true;
+        return;
+      }
+      banner.hidden = false;
+      banner.dataset.phase = st.phase;
+
+      if (this._pwaBannerText) {
+        if (st.phase === 'countdown') {
+          this._pwaBannerText.textContent = `Update ready · applying in ${st.countdownSec}s`;
+        } else if (st.phase === 'deferred-tx') {
+          this._pwaBannerText.textContent = 'Update ready · paused during TX';
+        } else {
+          this._pwaBannerText.textContent = 'Update ready';
+        }
+      }
+      if (this._pwaUpdateNowBtn) {
+        this._pwaUpdateNowBtn.disabled = st.phase === 'deferred-tx';
+      }
+      if (this._pwaUpdateLaterBtn) {
+        this._pwaUpdateLaterBtn.hidden = st.phase !== 'countdown';
+      }
+    }
+
     _handleStartup() {
+      const resumeOpts = this._consumePostUpdateReconnect();
       const autoConnect = this._params.get('autoconnect');
       const hasPassword = this._params.has('password');
       const passwordParam = hasPassword ? this._params.get('password') || '' : null;
@@ -1259,7 +1405,11 @@
           // Ignore History API errors on restricted origins.
         }
       }
-      if (autoConnect === '1' || autoConnect === 'true') {
+      if (resumeOpts) {
+        this.connect(resumeOpts).catch(() => {
+          this.openConnectionDialog();
+        });
+      } else if (autoConnect === '1' || autoConnect === 'true') {
         const opts = this.connectionDialog.getOptions();
         if (hasPassword) {
           opts.password = passwordParam;
@@ -1270,10 +1420,14 @@
       } else {
         this.openConnectionDialog();
       }
+      if (this.pwa && typeof this.pwa.start === 'function') {
+        this.pwa.start();
+      }
     }
 
     async connect(opts) {
       const finalOpts = Object.assign({}, this.connectionDialog.getOptions(), opts || {});
+      this._lastConnectOpts = Object.assign({}, finalOpts);
       this._resetTxSafety();
       this._pendingConnectClose = true;
       try {
@@ -1292,8 +1446,10 @@
 
     disconnect() {
       this._pendingConnectClose = false;
+      this._lastConnectOpts = null;
       this._resetTxSafety();
       this.client.disconnect();
+      if (this.pwa) this.pwa.notifyActivityChanged();
       this.toast('Disconnected from radio', 'info');
     }
 
@@ -1481,6 +1637,7 @@
         }
       }
       this._pttHeldUi = true;
+      if (this.pwa) this.pwa.notifyActivityChanged();
       if (this.client && typeof this.client.startPtt === 'function') {
         this.client.startPtt({ maxSeconds: 180 });
       }
@@ -1499,6 +1656,7 @@
       if (wasActive && this.client && typeof this.client.stopPtt === 'function') {
         this.client.stopPtt();
       }
+      if (this.pwa) this.pwa.notifyActivityChanged();
       this._render();
     }
 
@@ -1517,6 +1675,7 @@
       if (this.audio && typeof this.audio.releaseMicStandby === 'function') {
         this.audio.releaseMicStandby();
       }
+      if (this.pwa) this.pwa.notifyActivityChanged();
       this.toast('Stopped TX / returned to receive', 'info');
       this._render();
     }

@@ -5,6 +5,7 @@ A zero-dependency, pure client-side browser panadapter, waterfall, decoded-text 
 - **Zero Node.js / Zero build step**: Pure HTML, CSS, and classic deferred ES scripts (`globalThis.K4`).
 - **Works on `file://` and `http(s)://`**: Includes pure-`BigInt` FIPS 180-4 SHA-384 auth, `ScriptProcessorNode` audio fallback, and `Canvas2D` waterfall fallback when WebGL2 or SecureContext APIs (`crypto.subtle`, `AudioWorklet`, `AudioDecoder`) are absent.
 - **Receive-Only by Default, Hold-PTT Capable**: `K4.RxOnlyGate` defaults every session to `'rx-only'` (blocking TX, tune, keyer, DVR, power, and outbound `0x01` audio frames) until explicitly armed for TX Test or Hold-PTT operation.
+- **Installable Mobile PWA with Background Auto-Updates**: Over `https://` or `http://localhost`, install to your phone Home Screen (`manifest.webmanifest`) and let `sw.js` + `K4.PwaManager` silently precache server updates in the background and reload safely once idle (never interrupting active TX or ATU tuning).
 
 ---
 

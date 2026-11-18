@@ -633,13 +633,18 @@
       this.triggerBtn = opts.triggerBtn || null;
       this.client = opts.client;
       this.prefs = opts.prefs || ClientPrefs;
+      this.pwa = opts.pwa || null;
       this.onNotify = opts.onNotify || (() => {});
       this._isOpen = false;
+      this._checkingUpdate = false;
       this._macroInputs = {};
       this._unsubscribe = null;
 
       this._buildDom();
       this._syncFromPrefs();
+      if (this.pwa && typeof this.pwa.getStatus === 'function') {
+        this.syncPwaState(this.pwa.getStatus());
+      }
       if (this.prefs && typeof this.prefs.onChange === 'function') {
         this._unsubscribe = this.prefs.onChange(() => this._syncFromPrefs());
       }
@@ -816,7 +821,36 @@
       macroSec.appendChild(macroGrid);
       body.appendChild(macroSec);
 
-      // 3. K4 Keyboard Shortcuts Reference
+      // 3. App & Updates (PWA)
+      const pwaSec = el('section', 'k4-settings-section');
+      pwaSec.appendChild(el('h3', 'k4-settings-section-title', 'App & Updates'));
+      this._pwaStatusEl = el('div', 'k4-settings-desc', 'Checking offline & update status...');
+      this._pwaStatusEl.dataset.testid = 'pwa-status-text';
+      pwaSec.appendChild(this._pwaStatusEl);
+
+      const pwaActions = el('div', 'k4-settings-actions');
+      this._pwaCheckBtn = el('button', 'k4-btn', 'Check for Update');
+      this._pwaCheckBtn.type = 'button';
+      this._pwaCheckBtn.dataset.testid = 'pwa-check-update-btn';
+      this._pwaCheckBtn.addEventListener('click', () => {
+        void this._handleCheckUpdateClick();
+      });
+      pwaActions.appendChild(this._pwaCheckBtn);
+
+      this._pwaInstallBtn = el('button', 'k4-btn k4-btn--primary', 'Install App');
+      this._pwaInstallBtn.type = 'button';
+      this._pwaInstallBtn.dataset.testid = 'pwa-install-btn';
+      this._pwaInstallBtn.hidden = true;
+      this._pwaInstallBtn.addEventListener('click', () => {
+        if (this.pwa && typeof this.pwa.promptInstall === 'function') {
+          void this.pwa.promptInstall();
+        }
+      });
+      pwaActions.appendChild(this._pwaInstallBtn);
+      pwaSec.appendChild(pwaActions);
+      body.appendChild(pwaSec);
+
+      // 4. K4 Keyboard Shortcuts Reference
       const shortcutsSec = el('section', 'k4-settings-section');
       shortcutsSec.dataset.testid = 'settings-shortcuts-section';
       shortcutsSec.tabIndex = -1;
@@ -881,9 +915,85 @@
       return this._isOpen;
     }
 
+    async _handleCheckUpdateClick() {
+      if (this._checkingUpdate) return;
+      if (!this.pwa || typeof this.pwa.checkForUpdate !== 'function') {
+        this.onNotify('Update manager unavailable', 'warn');
+        return;
+      }
+      this._checkingUpdate = true;
+      if (this._pwaCheckBtn) {
+        this._pwaCheckBtn.disabled = true;
+        this._pwaCheckBtn.textContent = 'Checking...';
+      }
+      try {
+        const res = await this.pwa.checkForUpdate({ force: true });
+        if (res && res.status === 'update-ready') {
+          this.onNotify('Update downloaded — ready to apply', 'success');
+        } else if (res && res.status === 'up-to-date') {
+          this.onNotify('Already on the latest version', 'info');
+        } else if (res && res.status === 'offline') {
+          this.onNotify('Offline — cannot check for updates', 'warn');
+        } else if (res && res.status === 'unsupported') {
+          this.onNotify('Updates require HTTPS or localhost', 'warn');
+        } else {
+          this.onNotify(res && res.error ? res.error : 'Update check failed', 'error');
+        }
+      } catch (err) {
+        this.onNotify(err && err.message ? err.message : 'Update check failed', 'error');
+      } finally {
+        this._checkingUpdate = false;
+        if (this._pwaCheckBtn) {
+          this._pwaCheckBtn.disabled = false;
+          this._pwaCheckBtn.textContent = 'Check for Update';
+        }
+        if (this.pwa && typeof this.pwa.getStatus === 'function') {
+          this.syncPwaState(this.pwa.getStatus());
+        }
+      }
+    }
+
+    syncPwaState(st) {
+      const status = st || (this.pwa && typeof this.pwa.getStatus === 'function' ? this.pwa.getStatus() : null);
+      if (!status) return;
+      if (this._pwaStatusEl) {
+        const surfaceLabel = status.isStandalone ? 'Installed app' : 'Browser mode';
+        let detail = '';
+        if (!status.supported) {
+          detail = 'Auto-update unavailable (requires HTTPS or localhost)';
+        } else if (status.updateReady) {
+          if (status.phase === 'countdown') {
+            detail = `Update ready · applying in ${status.countdownSec}s`;
+          } else if (status.phase === 'deferred-tx') {
+            detail = 'Update ready · paused during TX';
+          } else {
+            detail = 'Update ready · waiting to reload';
+          }
+        } else if (status.phase === 'checking') {
+          detail = 'Checking for updates...';
+        } else if (status.swActive) {
+          detail = 'Auto-update active';
+        } else if (status.swRegistered) {
+          detail = 'Activating offline cache...';
+        } else {
+          detail = 'Auto-update pending';
+        }
+        this._pwaStatusEl.textContent = `${surfaceLabel} · ${detail}`;
+      }
+      if (this._pwaCheckBtn && !this._checkingUpdate) {
+        this._pwaCheckBtn.disabled = !status.supported;
+      }
+      if (this._pwaInstallBtn) {
+        this._pwaInstallBtn.hidden = !status.canInstall;
+      }
+    }
+
     open(focusSection) {
       if (!this.modal) return;
       this._syncFromPrefs();
+      if (this.pwa && typeof this.pwa.getStatus === 'function') {
+        this.syncPwaState(this.pwa.getStatus());
+      }
       this._isOpen = true;
       this.modal.hidden = false;
       this.modal.dataset.open = 'true';

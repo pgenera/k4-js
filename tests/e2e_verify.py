@@ -4213,6 +4213,133 @@ def run_http_origin_and_screenshots(
     assert os.path.getsize(mobile_png) > 3000, f"Mobile screenshot too small: {mobile_png}"
     client.reset_viewport_size()
 
+    # PWA checks: manifest, icons, SW UPDATE_WATCH_ASSETS parity, and live background auto-update flow
+    manifest_href = client.execute_script(
+        "return document.querySelector('link[rel=\"manifest\"]')?.getAttribute('href') || null;"
+    )
+    assert manifest_href == "manifest.webmanifest", f"Unexpected manifest link href: {manifest_href}"
+
+    manifest_url = urllib.parse.urljoin(http_url, "manifest.webmanifest")
+    with urllib.request.urlopen(manifest_url, timeout=3.0) as resp:
+        assert resp.status == 200, f"GET {manifest_url} returned HTTP {resp.status}"
+        manifest_data = json.loads(resp.read().decode("utf-8"))
+    assert manifest_data.get("display") == "standalone", f"Manifest display must be standalone: {manifest_data}"
+    manifest_icons = manifest_data.get("icons") or []
+    icon_sizes = {ic.get("sizes") for ic in manifest_icons}
+    assert "192x192" in icon_sizes and "512x512" in icon_sizes, f"Missing 192/512 manifest icons: {manifest_icons}"
+    assert any("maskable" in str(ic.get("purpose", "")) for ic in manifest_icons), (
+        f"Missing maskable manifest icon: {manifest_icons}"
+    )
+
+    icon_urls_to_check = [urllib.parse.urljoin(http_url, ic["src"]) for ic in manifest_icons if ic.get("src")]
+    icon_urls_to_check.append(urllib.parse.urljoin(http_url, "icons/apple-touch-icon.png"))
+    for ic_url in icon_urls_to_check:
+        with urllib.request.urlopen(ic_url, timeout=3.0) as ic_resp:
+            ic_bytes = ic_resp.read()
+            assert ic_resp.status == 200 and len(ic_bytes) > 0, f"Icon fetch failed for {ic_url}"
+
+    with open(os.path.join(WEB_DIR, "index.html"), "r", encoding="utf-8") as f:
+        index_html = f.read()
+    with open(os.path.join(WEB_DIR, "sw.js"), "r", encoding="utf-8") as f:
+        sw_source = f.read()
+    index_assets = set()
+    for asset_ref in re.findall(r'(?:href|src)=["\']([^"\']+\.(?:css|js))["\']', index_html):
+        if asset_ref.startswith("css/") or asset_ref.startswith("js/"):
+            index_assets.add("./" + asset_ref)
+    watch_block_match = re.search(r"UPDATE_WATCH_ASSETS\s*=\s*\[(.*?)\];", sw_source, re.S)
+    assert watch_block_match, "Could not locate UPDATE_WATCH_ASSETS in web/sw.js"
+    sw_watched_assets = set(re.findall(r"['\"]([^'\"]+)['\"]", watch_block_match.group(1)))
+    missing_from_sw = sorted(index_assets - sw_watched_assets)
+    assert not missing_from_sw, f"Assets in web/index.html missing from web/sw.js UPDATE_WATCH_ASSETS: {missing_from_sw}"
+
+    wait_until(
+        lambda: client.execute_script("return Boolean(globalThis.k4App?.pwa?.getStatus?.().swActive);"),
+        "Service Worker active on http://localhost",
+        timeout=12.0,
+    )
+
+    client.execute_script(
+        """
+        window.__k4PwaCheck1 = { done: false };
+        (async () => {
+          try {
+            const hasCache = await caches.has('k4-observatory-v1');
+            const res = await globalThis.k4App.pwa.checkForUpdate({ force: true });
+            window.__k4PwaCheck1 = { done: true, hasCache, res };
+          } catch (err) {
+            window.__k4PwaCheck1 = { done: true, error: String(err) };
+          }
+        })();
+        """
+    )
+    pwa_check1 = wait_until(
+        lambda: client.execute_script(
+            "return window.__k4PwaCheck1 && window.__k4PwaCheck1.done ? window.__k4PwaCheck1 : null;"
+        ),
+        "PWA initial up-to-date check",
+        timeout=15.0,
+    )
+    assert "error" not in pwa_check1, f"PWA check1 error: {pwa_check1}"
+    assert pwa_check1["hasCache"] is True, f"Expected k4-observatory-v1 cache to exist: {pwa_check1}"
+    assert pwa_check1["res"]["status"] == "up-to-date", f"Expected initial SW update check up-to-date: {pwa_check1}"
+
+    client.execute_script(
+        """
+        window.__k4PwaCheck2 = { done: false };
+        (async () => {
+          try {
+            const cache = await caches.open('k4-observatory-v1');
+            const manifestAbsUrl = new URL('./manifest.webmanifest', location.href).href;
+            await cache.put(
+              manifestAbsUrl,
+              new Response('{"stale":true}', { headers: { 'Content-Type': 'application/manifest+json' } })
+            );
+            const res = await globalThis.k4App.pwa.checkForUpdate({ force: true });
+            const refreshed = await cache.match(manifestAbsUrl);
+            const refreshedText = refreshed ? await refreshed.text() : '';
+            const banner = document.getElementById('pwa-update-banner');
+            const st = globalThis.k4App.pwa.getStatus();
+            window.__k4PwaCheck2 = {
+              done: true,
+              res,
+              refreshedText,
+              bannerHidden: banner ? banner.hidden : true,
+              bannerText: banner ? banner.textContent : '',
+              phaseBeforeDefer: st.phase,
+            };
+          } catch (err) {
+            window.__k4PwaCheck2 = { done: true, error: String(err) };
+          }
+        })();
+        """
+    )
+    pwa_check2 = wait_until(
+        lambda: client.execute_script(
+            "return window.__k4PwaCheck2 && window.__k4PwaCheck2.done ? window.__k4PwaCheck2 : null;"
+        ),
+        "PWA simulated server update detection",
+        timeout=15.0,
+    )
+    assert "error" not in pwa_check2, f"PWA check2 error: {pwa_check2}"
+    assert pwa_check2["res"]["status"] == "update-ready", f"Expected update-ready after stale cache: {pwa_check2}"
+    assert "./manifest.webmanifest" in (pwa_check2["res"].get("changedUrls") or []), (
+        f"Expected ./manifest.webmanifest in changedUrls: {pwa_check2}"
+    )
+    assert "K4 Spectrum Observatory" in pwa_check2["refreshedText"], (
+        f"Expected CacheStorage manifest refreshed cleanly: {pwa_check2}"
+    )
+    assert pwa_check2["bannerHidden"] is False, f"Expected #pwa-update-banner visible: {pwa_check2}"
+    assert pwa_check2["phaseBeforeDefer"] == "countdown", f"Expected countdown phase while connected: {pwa_check2}"
+
+    deferred_state = client.execute_script(
+        """
+        const btn = document.querySelector('[data-testid="pwa-update-later"]');
+        if (btn) btn.click();
+        return globalThis.k4App.pwa.getStatus().phase;
+        """
+    )
+    assert deferred_state == "deferred-user", f"Expected deferred-user after clicking Later, got {deferred_state}"
+
     stats = http_get_json(stats_url)
     assert stats["txBlockedViolations"] == 0, f"TX leaked to simulator! stats={stats}"
 

@@ -3978,6 +3978,192 @@
     }
   });
 
+  // 51. PwaManager eligibility, SW upgrade vs first-install, TX deferral, loop guard, and manual apply
+  test('PwaManager enforces location eligibility, TX safety, loop guard, and auto-update lifecycle', async () => {
+    const PwaManager = globalThis.K4.PwaManager;
+    assert(typeof PwaManager === 'function', 'K4.PwaManager must exist');
+
+    // Eligibility matrix
+    assertEqual(PwaManager.isEligibleLocation({ protocol: 'https:', hostname: 'k4.fivesevenfive.org' }), true, 'https eligible');
+    assertEqual(PwaManager.isEligibleLocation({ protocol: 'http:', hostname: 'localhost' }), true, 'http://localhost eligible');
+    assertEqual(PwaManager.isEligibleLocation({ protocol: 'http:', hostname: '127.0.0.1' }), true, 'http://127.0.0.1 eligible');
+    assertEqual(PwaManager.isEligibleLocation({ protocol: 'http:', hostname: '[::1]' }), true, 'http://[::1] eligible');
+    assertEqual(PwaManager.isEligibleLocation({ protocol: 'file:', hostname: '' }), false, 'file:// ineligible');
+    assertEqual(PwaManager.isEligibleLocation({ protocol: 'http:', hostname: '192.168.1.50' }), false, 'remote insecure http ineligible');
+
+    function makeEmitter() {
+      const map = new Map();
+      return {
+        addEventListener(type, fn) {
+          if (!map.has(type)) map.set(type, new Set());
+          map.get(type).add(fn);
+        },
+        removeEventListener(type, fn) {
+          if (map.has(type)) map.get(type).delete(fn);
+        },
+        dispatch(type, ev = {}) {
+          if (!map.has(type)) return;
+          for (const fn of Array.from(map.get(type))) fn(ev);
+        },
+      };
+    }
+
+    function makeSessionStore() {
+      const store = new Map();
+      return {
+        getItem(k) { return store.has(k) ? store.get(k) : null; },
+        setItem(k, v) { store.set(k, String(v)); },
+        removeItem(k) { store.delete(k); },
+      };
+    }
+
+    // Subcase A: First install controllerchange MUST NOT trigger updateReady or reload
+    {
+      const sw = Object.assign(makeEmitter(), {
+        controller: null,
+        ready: Promise.resolve(),
+        register: async () => ({ active: { state: 'activated', postMessage() {} }, addEventListener() {} }),
+      });
+      let reloads = 0;
+      const mgr = new PwaManager({
+        navigator: { serviceWorker: sw, onLine: true },
+        window: makeEmitter(),
+        document: Object.assign(makeEmitter(), { visibilityState: 'visible' }),
+        location: { protocol: 'https:', hostname: 'k4.fivesevenfive.org' },
+        sessionStorage: makeSessionStore(),
+        reloadFn: () => { reloads++; },
+        initialCheckDelayMs: -1,
+        checkIntervalMs: 0,
+      });
+      mgr.start();
+      await Promise.resolve();
+      sw.controller = { postMessage() {} };
+      sw.dispatch('controllerchange');
+      assertEqual(mgr.getStatus().updateReady, false, 'first install does not trigger updateReady');
+      assertEqual(reloads, 0, 'first install does not reload');
+      mgr.destroy();
+    }
+
+    // Subcase B: Disconnected background K4_SW_UPDATE_READY auto-reloads + respects 30s loop guard
+    {
+      let nowMs = 100000;
+      const store = makeSessionStore();
+      let reloads = 0;
+      let beforeReloadCalls = 0;
+      const notices = [];
+      const sw = Object.assign(makeEmitter(), {
+        controller: { postMessage() {} },
+        ready: Promise.resolve(),
+        register: async () => ({ active: null, addEventListener() {} }),
+      });
+      const mgr = new PwaManager({
+        navigator: { serviceWorker: sw, onLine: true },
+        window: makeEmitter(),
+        document: Object.assign(makeEmitter(), { visibilityState: 'visible' }),
+        location: { protocol: 'https:', hostname: 'k4.fivesevenfive.org' },
+        sessionStorage: store,
+        nowFn: () => nowMs,
+        reloadFn: () => { reloads++; },
+        onBeforeReload: () => { beforeReloadCalls++; },
+        onNotify: (msg, lvl) => notices.push({ msg, lvl }),
+        disconnectedReloadDelayMs: 5,
+        reloadGuardMs: 30000,
+        initialCheckDelayMs: -1,
+        checkIntervalMs: 0,
+      });
+      mgr.start();
+      await Promise.resolve();
+      sw.dispatch('message', { data: { type: 'K4_SW_UPDATE_READY', changedUrls: ['./js/app.js'] } });
+      await new Promise((r) => setTimeout(r, 30));
+      assertEqual(reloads, 1, 'disconnected update triggers auto reload');
+      assertEqual(beforeReloadCalls, 1, 'onBeforeReload runs before reload');
+      assertEqual(store.getItem('k4.pwa.justUpdated'), '1', 'justUpdated persisted for next load');
+      mgr.destroy();
+
+      // Within 30s loop guard on reloaded session: notifies 'Updated to latest version', blocks 2nd auto-reload
+      nowMs += 5000;
+      let reloads2 = 0;
+      const notices2 = [];
+      const sw2 = Object.assign(makeEmitter(), {
+        controller: { postMessage() {} },
+        ready: Promise.resolve(),
+        register: async () => ({ active: null, addEventListener() {} }),
+      });
+      const mgr2 = new PwaManager({
+        navigator: { serviceWorker: sw2, onLine: true },
+        window: makeEmitter(),
+        document: Object.assign(makeEmitter(), { visibilityState: 'visible' }),
+        location: { protocol: 'https:', hostname: 'k4.fivesevenfive.org' },
+        sessionStorage: store,
+        nowFn: () => nowMs,
+        reloadFn: () => { reloads2++; },
+        onNotify: (msg, lvl) => notices2.push({ msg, lvl }),
+        disconnectedReloadDelayMs: 5,
+        reloadGuardMs: 30000,
+        initialCheckDelayMs: -1,
+        checkIntervalMs: 0,
+      });
+      mgr2.start();
+      assert(notices2.some((n) => n.msg === 'Updated to latest version' && n.lvl === 'success'), 'consumes justUpdated banner notice');
+      assertEqual(store.getItem('k4.pwa.justUpdated'), null, 'justUpdated cleared after startup notice');
+      sw2.dispatch('message', { data: { type: 'K4_SW_UPDATE_READY', changedUrls: ['./js/app.js'] } });
+      await new Promise((r) => setTimeout(r, 25));
+      assertEqual(mgr2.getStatus().phase, 'deferred-user', 'loop guard downgrades rapid 2nd update to manual');
+      assertEqual(reloads2, 0, 'loop guard suppresses auto-reload');
+      assertEqual(mgr2.applyUpdateNow(), true, 'manual applyUpdateNow bypasses loop guard');
+      assertEqual(reloads2, 1, 'manual applyUpdateNow triggers reload');
+      mgr2.destroy();
+    }
+
+    // Subcase C: TX-busy defers update -> RX resumes countdown -> Later defers -> disconnect auto-reloads
+    {
+      let txBusy = true;
+      let connected = true;
+      let reloads = 0;
+      const sw = Object.assign(makeEmitter(), {
+        controller: { postMessage() {} },
+        ready: Promise.resolve(),
+        register: async () => ({ active: null, addEventListener() {} }),
+      });
+      const mgr = new PwaManager({
+        navigator: { serviceWorker: sw, onLine: true },
+        window: makeEmitter(),
+        document: Object.assign(makeEmitter(), { visibilityState: 'visible' }),
+        location: { protocol: 'https:', hostname: 'k4.fivesevenfive.org' },
+        sessionStorage: makeSessionStore(),
+        isTxBusy: () => txBusy,
+        isConnected: () => connected,
+        reloadFn: () => { reloads++; },
+        connectedCountdownSec: 5,
+        disconnectedReloadDelayMs: 5,
+        initialCheckDelayMs: -1,
+        checkIntervalMs: 0,
+      });
+      mgr.start();
+      await Promise.resolve();
+      sw.dispatch('controllerchange'); // Second controller since _hadControllerAtStart === true
+      assertEqual(mgr.getStatus().phase, 'deferred-tx', 'update during TX enters deferred-tx');
+      assertEqual(mgr.applyUpdateNow(), false, 'manual applyUpdateNow refused during TX');
+      assertEqual(reloads, 0, 'no reload while TX active');
+
+      // Stop TX while still connected -> enters countdown
+      txBusy = false;
+      mgr.notifyActivityChanged();
+      assertEqual(mgr.getStatus().phase, 'countdown', 'clearing TX starts connected countdown');
+      assertEqual(mgr.getStatus().countdownSec, 5, 'countdown starts at configured 5s');
+
+      // Defer -> pauses in deferred-user, then disconnect auto-applies
+      mgr.deferUpdate();
+      assertEqual(mgr.getStatus().phase, 'deferred-user', 'deferUpdate enters deferred-user');
+      connected = false;
+      mgr.notifyActivityChanged();
+      assertEqual(mgr.getStatus().phase, 'reloading', 'disconnecting applies previously deferred update');
+      await new Promise((r) => setTimeout(r, 25));
+      assertEqual(reloads, 1, 'disconnect reload executed');
+      mgr.destroy();
+    }
+  });
+
   async function runAll() {
     const resultsEl = document.getElementById('results');
     const summaryEl = document.getElementById('summary');

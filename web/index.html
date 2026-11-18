@@ -4,14 +4,24 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#090B10">
+  <meta name="application-name" content="K4 Radio">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="K4 Radio">
   <title>K4 Spectrum Observatory · RX</title>
-  <link rel="icon" href="data:,">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" type="image/svg+xml" href="icons/icon.svg">
+  <link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
+  <link rel="apple-touch-icon" sizes="180x180" href="icons/apple-touch-icon.png">
   <link rel="stylesheet" href="css/tokens.css">
   <link rel="stylesheet" href="css/layout.css">
   <link rel="stylesheet" href="css/components.css">
 
   <script defer src="js/util/events.js"></script>
   <script defer src="js/util/storage.js"></script>
+  <script defer src="js/util/pwa.js"></script>
   <script defer src="js/protocol/sha384.js"></script>
   <script defer src="js/protocol/framer.js"></script>
   <script defer src="js/protocol/cat-codec.js"></script>
@@ -132,6 +142,7 @@
   <div id="omnibar-modal" class="k4-modal-backdrop" data-testid="omnibar-modal" data-open="false" hidden></div>
   <div id="connection-dialog" class="k4-modal-backdrop" data-testid="conn-dialog" data-open="false" hidden></div>
   <div id="settings-modal" class="k4-modal-backdrop" data-testid="settings-modal" data-open="false" hidden></div>
+  <div id="pwa-update-banner" class="k4-update-banner" data-testid="pwa-update-banner" hidden role="status" aria-live="polite"></div>
   <div id="toast-stack" class="k4-toast-stack" aria-live="polite" aria-atomic="true"></div>
 </body>
 </html>

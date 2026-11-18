@@ -12,6 +12,7 @@ body {
   width: 100%;
   height: 100%;
   overflow: hidden;
+  overscroll-behavior: none;
   background-color: var(--bg-canvas);
   color: var(--text-primary);
   font-family: var(--font-sans);
@@ -507,7 +508,7 @@ select option:disabled {
     min-height: var(--topbar-mobile-h);
     flex-wrap: wrap;
     align-items: center;
-    padding: 3px 5px;
+    padding: calc(3px + env(safe-area-inset-top, 0px)) calc(5px + env(safe-area-inset-right, 0px)) 3px calc(5px + env(safe-area-inset-left, 0px));
     gap: 3px 4px;
   }
 
@@ -650,7 +651,7 @@ select option:disabled {
     grid-template-columns: repeat(6, minmax(0, 1fr));
     align-items: center;
     height: calc(var(--mobilenav-h) + env(safe-area-inset-bottom, 0px));
-    padding: 4px 6px calc(4px + env(safe-area-inset-bottom, 0px));
+    padding: 4px calc(6px + env(safe-area-inset-right, 0px)) calc(4px + env(safe-area-inset-bottom, 0px)) calc(6px + env(safe-area-inset-left, 0px));
     gap: 4px;
     background: var(--bg-glass-strong);
     backdrop-filter: blur(14px);
@@ -709,7 +710,7 @@ select option:disabled {
   }
 
   #top-bar {
-    padding: 2px 6px;
+    padding: calc(2px + env(safe-area-inset-top, 0px)) calc(6px + env(safe-area-inset-right, 0px)) 2px calc(6px + env(safe-area-inset-left, 0px));
     gap: 3px;
     min-height: 36px;
   }
@@ -731,7 +732,7 @@ select option:disabled {
 
 @media (max-width: 520px) {
   #top-bar {
-    padding: 2px 4px;
+    padding: calc(2px + env(safe-area-inset-top, 0px)) calc(4px + env(safe-area-inset-right, 0px)) 2px calc(4px + env(safe-area-inset-left, 0px));
     gap: 2px 3px;
   }
 
