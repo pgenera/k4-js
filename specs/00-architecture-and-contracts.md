@@ -74,7 +74,7 @@ Both `web/index.html` and `web/test.html` MUST load scripts in this exact order:
 - **`sim-deploy`**:
   - `sim/go.mod`, `sim/protocol.go`, `sim/radio.go`, `sim/dsp_synth.go`, `sim/main.go`, `sim/sim_test.go`
   - `scripts/dev.sh`
-  - `deploy/envoy-k4.yaml`, `deploy/k4-websockify.service`, `deploy/k4-websocat.service`
+  - `deploy/k4-websockify.service`, `deploy/k4-websocat.service`
   - `web/test.html`, `tests/browser-unit-tests.js`, `tests/e2e_verify.py`
   - `README.md`
 

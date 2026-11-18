@@ -50,11 +50,11 @@ Then open `web/index.html`, enter your K4 network password (hashed locally via S
 
 ---
 
-## Production Deployment (Envoy + systemd)
+## Production Deployment (Reverse Proxy + systemd)
 
 1. Copy static assets from `web/` to `/var/www/k4/`.
 2. Install either [deploy/k4-websockify.service](deploy/k4-websockify.service) or [deploy/k4-websocat.service](deploy/k4-websocat.service) to `/etc/systemd/system/`, set `K4_HOST` in `/etc/default/k4-bridge`, and enable/start it.
-3. Configure Envoy `1.39.1` using [deploy/envoy-k4.yaml](deploy/envoy-k4.yaml) (`file_server` for `/` and WebSocket upgrade route `/ws` -> `127.0.0.1:9280`).
+3. Configure your TLS reverse proxy (e.g., Caddy) to serve `/var/www/k4/` on `/` and reverse-proxy WebSocket upgrades on `/ws` to `127.0.0.1:9280`.
 
 ---
 

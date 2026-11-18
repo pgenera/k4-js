@@ -33,9 +33,8 @@ Must build with **zero third-party Go module dependencies** (`go.mod`: `module g
 
 ## 2. Dev Launcher & Production Deployment Configs
 - **`scripts/dev.sh`**: executable helper (`--serve` option to also pass `--web=web --file-only` to `websockify`, otherwise just `k4sim` + `websockify 127.0.0.1:9280 127.0.0.1:19205` for opening `file:///path/to/k4-js/web/index.html`). Traps `SIGINT`/`SIGTERM` cleanly.
-- **`deploy/envoy-k4.yaml`**: Complete, documented Envoy `1.39.1` vhost/route/cluster snippet matching `/etc/envoy.yaml` on `k4.example.com` (`envoy.filters.http.file_server` serving `/var/www/k4` + `/ws` WebSocket upgrade route to `127.0.0.1:9280`).
 - **`deploy/k4-websockify.service`** and **`deploy/k4-websocat.service`**: Hardened systemd unit templates documenting exact flags (`websocat -b --websocket-protocol binary ...` vs bare `--binary`).
-- **`README.md`**: Concise quickstart covering `file://` dev mode (`websockify`), real K4 connection, production Envoy setup, and test commands.
+- **`README.md`**: Concise quickstart covering `file://` dev mode (`websockify`), real K4 connection, production reverse-proxy setup, and test commands.
 
 ## 3. Automated Verification Suites (`web/test.html`, `tests/`, Hardware Regression)
 - **`web/test.html` + `tests/browser-unit-tests.js`**:
