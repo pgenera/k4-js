@@ -121,6 +121,11 @@
       this._reloadTimer = null;
       this._initialCheckTimer = null;
       this._cleanups = [];
+
+      this._audioPlaying = false;
+      this._wakeLockSentinel = null;
+      this._wakeLockRequesting = false;
+      this._wakeLockReleaseCleanup = null;
     }
 
     _listen(target, type, fn, options) {
@@ -207,16 +212,32 @@
         });
       }
 
+      if (this._doc) {
+        this._listen(this._doc, 'visibilitychange', () => {
+          if (this._destroyed) return;
+          this._reconcileWakeLock();
+          if (!this._supported) return;
+          if (this._doc.visibilityState !== 'visible') return;
+          if (this._updateReady && this._userDeferred && !this._isTxBusy() && !this._isConnected()) {
+            this._reconcileUpdatePhase();
+            return;
+          }
+          void this.checkForUpdate();
+        });
+      }
+
       const sw = this._nav && this._nav.serviceWorker;
       const eligible = PwaManager.isEligibleLocation(this._loc) && Boolean(sw && typeof sw.register === 'function');
       if (!eligible) {
         this._supported = false;
+        this._reconcileWakeLock();
         this._emitState();
         return;
       }
 
       this._supported = true;
       this._hadControllerAtStart = Boolean(sw.controller);
+      this._reconcileWakeLock();
 
       this._listen(sw, 'controllerchange', () => {
         if (this._destroyed) return;
@@ -237,18 +258,6 @@
           this._handleUpdateReady(data);
         }
       });
-
-      if (this._doc) {
-        this._listen(this._doc, 'visibilitychange', () => {
-          if (this._destroyed) return;
-          if (this._doc.visibilityState !== 'visible') return;
-          if (this._updateReady && this._userDeferred && !this._isTxBusy() && !this._isConnected()) {
-            this._reconcileUpdatePhase();
-            return;
-          }
-          void this.checkForUpdate();
-        });
-      }
 
       if (this._win) {
         this._listen(this._win, 'online', () => {
@@ -407,11 +416,15 @@
         this._phase = 'idle';
         this._emitState();
       }
-      return {
+      const failResult = {
         status: 'failed',
         changedUrls: [],
         error: reply && reply.error ? reply.error : 'Update check failed',
       };
+      if (reply && typeof reply.authRequired === 'boolean') {
+        failResult.authRequired = reply.authRequired;
+      }
+      return failResult;
     }
 
     _sendCheckMessage(target, timeoutMs) {
@@ -612,6 +625,97 @@
       }
     }
 
+    setAudioPlaying(isPlaying) {
+      this._audioPlaying = Boolean(isPlaying);
+      this._reconcileWakeLock();
+    }
+
+    _shouldHoldWakeLock() {
+      return Boolean(
+        this._audioPlaying &&
+          !this._destroyed &&
+          PwaManager.isStandalone(this._win, this._nav) &&
+          (!this._doc || this._doc.visibilityState !== 'hidden')
+      );
+    }
+
+    _reconcileWakeLock() {
+      if (this._shouldHoldWakeLock()) {
+        void this._acquireWakeLock();
+      } else {
+        void this._releaseWakeLock();
+      }
+    }
+
+    async _acquireWakeLock() {
+      if (!this._shouldHoldWakeLock() || this._wakeLockSentinel || this._wakeLockRequesting) {
+        return;
+      }
+      const wl = this._nav && this._nav.wakeLock;
+      if (!wl || typeof wl.request !== 'function') {
+        return;
+      }
+      this._wakeLockRequesting = true;
+      try {
+        const sentinel = await wl.request('screen');
+        if (!sentinel) return;
+        if (!this._shouldHoldWakeLock() || this._destroyed) {
+          if (typeof sentinel.release === 'function') {
+            Promise.resolve(sentinel.release()).catch(() => {});
+          }
+          return;
+        }
+        this._wakeLockSentinel = sentinel;
+        if (typeof sentinel.addEventListener === 'function') {
+          const onRel = () => {
+            if (this._wakeLockReleaseCleanup) {
+              this._wakeLockReleaseCleanup();
+              this._wakeLockReleaseCleanup = null;
+            }
+            if (this._wakeLockSentinel === sentinel) {
+              this._wakeLockSentinel = null;
+              this._emitState();
+            }
+          };
+          sentinel.addEventListener('release', onRel);
+          this._wakeLockReleaseCleanup = () => {
+            if (typeof sentinel.removeEventListener === 'function') {
+              try {
+                sentinel.removeEventListener('release', onRel);
+              } catch (_) {}
+            }
+          };
+        }
+      } catch (_) {
+        // Silently ignore wake lock rejections (e.g., low battery, permissions, backgrounded).
+      } finally {
+        this._wakeLockRequesting = false;
+        this._emitState();
+      }
+    }
+
+    _releaseWakeLock() {
+      const sentinel = this._wakeLockSentinel;
+      if (!sentinel) return Promise.resolve();
+      this._wakeLockSentinel = null;
+      if (this._wakeLockReleaseCleanup) {
+        try {
+          this._wakeLockReleaseCleanup();
+        } catch (_) {}
+        this._wakeLockReleaseCleanup = null;
+      }
+      let releasePromise = Promise.resolve();
+      if (typeof sentinel.release === 'function') {
+        try {
+          releasePromise = Promise.resolve(sentinel.release()).catch(() => {});
+        } catch (_) {
+          releasePromise = Promise.resolve();
+        }
+      }
+      this._emitState();
+      return releasePromise;
+    }
+
     getStatus() {
       return {
         supported: this._supported,
@@ -624,12 +728,14 @@
         updateReady: this._updateReady,
         changedUrls: this._changedUrls.slice(),
         justUpdated: this._justUpdated,
+        wakeLockActive: Boolean(this._wakeLockSentinel),
       };
     }
 
     destroy() {
       this._destroyed = true;
       this._clearTimers();
+      void this._releaseWakeLock();
       for (let i = 0; i < this._cleanups.length; i++) {
         try {
           this._cleanups[i]();

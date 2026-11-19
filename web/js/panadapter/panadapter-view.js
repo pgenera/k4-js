@@ -744,6 +744,10 @@
           this._interaction && this._interaction._dragMode
             ? this._interaction._dragMode
             : '',
+        dragVfoRx:
+          this._interaction && this._interaction._dragMode === 'vfo'
+            ? this._interaction._dragVfoRx
+            : null,
         bookmarks: this._cachedBookmarks,
         bookmarksRev: this._bookmarksRev,
       };

@@ -129,10 +129,16 @@ function extractLocalAssetUrls(htmlText, baseUrl) {
 async function mapWithConcurrency(items, limit, workerFn) {
   const results = new Array(items.length);
   let nextIdx = 0;
+  let aborted = false;
   async function runner() {
-    while (nextIdx < items.length) {
+    while (!aborted && nextIdx < items.length) {
       const idx = nextIdx++;
-      results[idx] = await workerFn(items[idx], idx);
+      try {
+        results[idx] = await workerFn(items[idx], idx);
+      } catch (err) {
+        aborted = true;
+        throw err;
+      }
     }
   }
   const workers = [];
@@ -144,6 +150,58 @@ async function mapWithConcurrency(items, limit, workerFn) {
   return results;
 }
 
+function isSafeSameOriginAssetResponse(resp, expectedPath) {
+  if (!resp || !resp.ok || resp.redirected || resp.type === 'opaqueredirect' || resp.type === 'opaque') {
+    return false;
+  }
+  try {
+    if (!resp.url) return false;
+    const parsed = new URL(resp.url);
+    if (parsed.origin !== self.location.origin) return false;
+  } catch (_) {
+    return false;
+  }
+  const cleanPath = String(expectedPath || '').split(/[?#]/)[0].trim().toLowerCase();
+  if (/\.(?:js|css|webmanifest|json|svg|png)$/.test(cleanPath)) {
+    const ct = (
+      resp.headers && typeof resp.headers.get === 'function' ? resp.headers.get('content-type') || '' : ''
+    ).toLowerCase();
+    if (ct.includes('text/html')) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function isAuthBlockedResponse(resp) {
+  return Boolean(
+    resp &&
+      (resp.type === 'opaqueredirect' ||
+        resp.status === 401 ||
+        resp.status === 403 ||
+        (resp.status >= 300 && resp.status < 400))
+  );
+}
+
+function buildCheckFailedError(resp, relPath) {
+  const authRequired = isAuthBlockedResponse(resp);
+  let msg;
+  if (!resp) {
+    msg = `Network error for ${relPath}`;
+  } else if (resp.type === 'opaqueredirect') {
+    msg = `Redirect blocked (auth required) for ${relPath}`;
+  } else if (!resp.ok) {
+    msg = `HTTP ${resp.status} for ${relPath}`;
+  } else {
+    const ct =
+      (resp.headers && typeof resp.headers.get === 'function' ? resp.headers.get('content-type') : '') || 'unknown';
+    msg = `Unsafe asset response (${resp.type}, ${ct}) for ${relPath}`;
+  }
+  const err = new Error(msg);
+  err.authRequired = authRequired;
+  return err;
+}
+
 self.addEventListener('install', (event) => {
   event.waitUntil(
     (async () => {
@@ -151,8 +209,8 @@ self.addEventListener('install', (event) => {
       await mapWithConcurrency(APP_SHELL_ASSETS, 6, async (relPath) => {
         const resolvedUrl = scopeUrl(relPath);
         try {
-          const resp = await fetchWithTimeout(resolvedUrl, { cache: 'no-cache' }, 8000);
-          if (resp && resp.ok) {
+          const resp = await fetchWithTimeout(resolvedUrl, { cache: 'no-cache', redirect: 'manual' }, 8000);
+          if (isSafeSameOriginAssetResponse(resp, relPath)) {
             await cache.put(resolvedUrl, resp.clone());
           }
         } catch (_) {
@@ -217,23 +275,42 @@ self.addEventListener('fetch', (event) => {
     event.respondWith(
       (async () => {
         const cache = await caches.open(CACHE_NAME);
+        let lastResp = null;
+        let fetchErr = null;
         try {
-          const resp = await fetchWithTimeout(req, { cache: 'no-cache' }, 4500);
-          if (resp && resp.ok) {
-            if (isNavigationToShell(url)) {
-              await Promise.all([
-                cache.put(scopeUrl('./'), resp.clone()),
-                cache.put(scopeUrl('./index.html'), resp.clone()),
-              ]);
+          const resp = await fetchWithTimeout(req, { cache: 'no-cache', redirect: 'manual' }, 4500);
+          if (resp) {
+            if (resp.type === 'opaqueredirect' || (resp.status >= 300 && resp.status < 400)) {
+              return resp;
             }
-            return resp;
+            if (resp.status >= 400 && resp.status < 500) {
+              return resp;
+            }
+            if (isSafeSameOriginAssetResponse(resp, './index.html')) {
+              if (isNavigationToShell(url)) {
+                await Promise.all([
+                  cache.put(scopeUrl('./'), resp.clone()),
+                  cache.put(scopeUrl('./index.html'), resp.clone()),
+                ]);
+              }
+              return resp;
+            }
+            lastResp = resp;
           }
-        } catch (_) {}
-        const fallback =
-          (await cache.match(scopeUrl('./index.html'))) ||
-          (await cache.match(scopeUrl('./')));
-        if (fallback) return fallback;
-        return fetch(req);
+        } catch (err) {
+          fetchErr = err;
+        }
+        if (!lastResp || lastResp.status >= 500 || lastResp.type === 'error') {
+          const fallback =
+            (await cache.match(scopeUrl('./index.html'))) ||
+            (await cache.match(scopeUrl('./')));
+          if (fallback) return fallback;
+        }
+        if (lastResp) return lastResp;
+        if (typeof Response !== 'undefined' && typeof Response.error === 'function') {
+          return Response.error();
+        }
+        throw fetchErr || new Error('Network error');
       })()
     );
     return;
@@ -246,14 +323,19 @@ self.addEventListener('fetch', (event) => {
       (async () => {
         const cache = await caches.open(CACHE_NAME);
         const cached = await cache.match(canonicalKey);
+        let lastResp = null;
+        let fetchErr = null;
         const revalidate = (async () => {
           try {
-            const resp = await fetchWithTimeout(canonicalKey, { cache: 'no-cache' }, 4500);
-            if (resp && resp.ok) {
+            const resp = await fetchWithTimeout(canonicalKey, { cache: 'no-cache', redirect: 'manual' }, 4500);
+            if (isSafeSameOriginAssetResponse(resp, relPath)) {
               await cache.put(canonicalKey, resp.clone());
               return resp;
             }
-          } catch (_) {}
+            lastResp = resp || null;
+          } catch (err) {
+            fetchErr = err;
+          }
           return null;
         })();
         if (cached) {
@@ -262,7 +344,19 @@ self.addEventListener('fetch', (event) => {
         }
         const net = await revalidate;
         if (net) return net;
-        return fetch(req);
+        if (lastResp) {
+          if (lastResp.type === 'opaqueredirect' || (lastResp.status >= 300 && lastResp.status < 600)) {
+            return lastResp;
+          }
+          if (typeof Response !== 'undefined' && typeof Response.error === 'function') {
+            return Response.error();
+          }
+          return lastResp;
+        }
+        if (typeof Response !== 'undefined' && typeof Response.error === 'function') {
+          return Response.error();
+        }
+        throw fetchErr || new Error('Network error');
       })()
     );
     return;
@@ -271,100 +365,135 @@ self.addEventListener('fetch', (event) => {
   event.respondWith(
     (async () => {
       const cache = await caches.open(CACHE_NAME);
+      let lastResp = null;
+      let fetchErr = null;
       try {
-        const resp = await fetchWithTimeout(req, { cache: 'no-cache' }, 4500);
-        if (resp && resp.ok) {
+        const resp = await fetchWithTimeout(req, { cache: 'no-cache', redirect: 'manual' }, 4500);
+        if (isSafeSameOriginAssetResponse(resp, relPath)) {
           await cache.put(canonicalKey, resp.clone());
           return resp;
         }
-      } catch (_) {}
+        lastResp = resp || null;
+      } catch (err) {
+        fetchErr = err;
+      }
+      if (lastResp) {
+        if (lastResp.type === 'opaqueredirect' || (lastResp.status >= 300 && lastResp.status < 400)) {
+          const cached = await cache.match(canonicalKey);
+          if (cached) return cached;
+          return lastResp;
+        }
+        if (lastResp.status >= 400 && lastResp.status < 500) {
+          return lastResp;
+        }
+        const cached = await cache.match(canonicalKey);
+        if (cached) return cached;
+        if (lastResp.status >= 500) {
+          return lastResp;
+        }
+        if (typeof Response !== 'undefined' && typeof Response.error === 'function') {
+          return Response.error();
+        }
+        return lastResp;
+      }
       const cached = await cache.match(canonicalKey);
       if (cached) return cached;
-      return fetch(req);
+      if (typeof Response !== 'undefined' && typeof Response.error === 'function') {
+        return Response.error();
+      }
+      throw fetchErr || new Error('Network error');
     })()
   );
 });
 
 async function runBackgroundUpdateCheck() {
-  const cache = await caches.open(CACHE_NAME);
+  try {
+    const cache = await caches.open(CACHE_NAME);
 
-  const fetched = await mapWithConcurrency(UPDATE_WATCH_ASSETS, 4, async (relPath) => {
-    const url = scopeUrl(relPath);
-    const resp = await fetchWithTimeout(url, { cache: 'no-cache' }, 8000);
-    if (!resp || !resp.ok) {
-      throw new Error(`HTTP ${resp ? resp.status : 'error'} for ${relPath}`);
-    }
-    return { relPath, url, resp };
-  });
+    const fetched = await mapWithConcurrency(UPDATE_WATCH_ASSETS, 4, async (relPath) => {
+      const url = scopeUrl(relPath);
+      const resp = await fetchWithTimeout(url, { cache: 'no-cache', redirect: 'manual' }, 8000);
+      if (!isSafeSameOriginAssetResponse(resp, relPath)) {
+        throw buildCheckFailedError(resp, relPath);
+      }
+      return { relPath, url, resp };
+    });
 
-  const watchedUrls = new Set(fetched.map((item) => item.url));
-  const stagedWrites = [];
-  const changed = [];
-  let indexEntry = null;
+    const watchedUrls = new Set(fetched.map((item) => item.url));
+    const stagedWrites = [];
+    const changed = [];
+    let indexEntry = null;
 
-  for (let i = 0; i < fetched.length; i++) {
-    const item = fetched[i];
-    const cachedResp = await cache.match(item.url);
-    stagedWrites.push(item);
-    if (item.relPath === './index.html') {
-      indexEntry = item;
-    }
-    if (!cachedResp) {
-      // Seed missing cache entry without triggering a false update prompt unless another asset changed.
-      continue;
-    }
-    const differs = await responsesDiffer(cachedResp, item.resp);
-    if (differs) {
-      changed.push(item);
-    }
-  }
-
-  if (indexEntry && changed.some((c) => c.relPath === './index.html')) {
-    const htmlText = await indexEntry.resp.clone().text();
-    const discoveredUrls = extractLocalAssetUrls(htmlText, scopeUrl('./'));
-    const extraUrls = discoveredUrls.filter((u) => !watchedUrls.has(u));
-    if (extraUrls.length > 0) {
-      const extraFetched = await mapWithConcurrency(extraUrls, 4, async (url) => {
-        const resp = await fetchWithTimeout(url, { cache: 'no-cache' }, 8000);
-        if (!resp || !resp.ok) {
-          throw new Error(`HTTP ${resp ? resp.status : 'error'} for discovered asset ${url}`);
-        }
-        return { relPath: url, url, resp };
-      });
-      for (let i = 0; i < extraFetched.length; i++) {
-        stagedWrites.push(extraFetched[i]);
+    for (let i = 0; i < fetched.length; i++) {
+      const item = fetched[i];
+      const cachedResp = await cache.match(item.url);
+      stagedWrites.push(item);
+      if (item.relPath === './index.html') {
+        indexEntry = item;
+      }
+      if (!cachedResp) {
+        // Seed missing cache entry without triggering a false update prompt unless another asset changed.
+        continue;
+      }
+      const differs = await responsesDiffer(cachedResp, item.resp);
+      if (differs) {
+        changed.push(item);
       }
     }
-  }
 
-  // Commit staged writes atomically after all fetches succeed.
-  for (let i = 0; i < stagedWrites.length; i++) {
-    const entry = stagedWrites[i];
-    await cache.put(entry.url, entry.resp.clone());
-    if (entry.relPath === './index.html') {
-      await cache.put(scopeUrl('./'), entry.resp.clone());
+    if (indexEntry && changed.some((c) => c.relPath === './index.html')) {
+      const htmlText = await indexEntry.resp.clone().text();
+      const discoveredUrls = extractLocalAssetUrls(htmlText, scopeUrl('./'));
+      const extraUrls = discoveredUrls.filter((u) => !watchedUrls.has(u));
+      if (extraUrls.length > 0) {
+        const extraFetched = await mapWithConcurrency(extraUrls, 4, async (url) => {
+          const resp = await fetchWithTimeout(url, { cache: 'no-cache', redirect: 'manual' }, 8000);
+          if (!isSafeSameOriginAssetResponse(resp, url)) {
+            throw buildCheckFailedError(resp, url);
+          }
+          return { relPath: url, url, resp };
+        });
+        for (let i = 0; i < extraFetched.length; i++) {
+          stagedWrites.push(extraFetched[i]);
+        }
+      }
     }
-  }
 
-  if (changed.length > 0) {
-    const payload = {
-      type: 'K4_SW_UPDATE_READY',
-      reason: 'assets-changed',
-      changedUrls: changed.map((c) => c.relPath),
+    // Commit staged writes atomically after all fetches succeed.
+    for (let i = 0; i < stagedWrites.length; i++) {
+      const entry = stagedWrites[i];
+      await cache.put(entry.url, entry.resp.clone());
+      if (entry.relPath === './index.html') {
+        await cache.put(scopeUrl('./'), entry.resp.clone());
+      }
+    }
+
+    if (changed.length > 0) {
+      const payload = {
+        type: 'K4_SW_UPDATE_READY',
+        reason: 'assets-changed',
+        changedUrls: changed.map((c) => c.relPath),
+        timestamp: Date.now(),
+      };
+      const clients = await self.clients.matchAll({ type: 'window', includeUncontrolled: false });
+      for (let i = 0; i < clients.length; i++) {
+        clients[i].postMessage(payload);
+      }
+      return payload;
+    }
+
+    return {
+      type: 'K4_SW_UP_TO_DATE',
+      checked: UPDATE_WATCH_ASSETS.length,
       timestamp: Date.now(),
     };
-    const clients = await self.clients.matchAll({ type: 'window', includeUncontrolled: false });
-    for (let i = 0; i < clients.length; i++) {
-      clients[i].postMessage(payload);
-    }
-    return payload;
+  } catch (err) {
+    return {
+      type: 'K4_SW_CHECK_FAILED',
+      authRequired: Boolean(err && err.authRequired),
+      error: err && err.message ? err.message : String(err || 'Update check failed'),
+    };
   }
-
-  return {
-    type: 'K4_SW_UP_TO_DATE',
-    checked: UPDATE_WATCH_ASSETS.length,
-    timestamp: Date.now(),
-  };
 }
 
 function getOrStartUpdateCheck() {
@@ -396,6 +525,7 @@ self.addEventListener('message', (event) => {
           if (replyPort) {
             replyPort.postMessage({
               type: 'K4_SW_CHECK_FAILED',
+              authRequired: Boolean(err && err.authRequired),
               error: err && err.message ? err.message : String(err || 'Update check failed'),
             });
           }

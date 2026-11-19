@@ -3960,13 +3960,19 @@ def run_http_origin_and_screenshots(
     )
     fa_before = client.execute_script("return globalThis.k4App.state.getSnapshot().rxA.freqHz;")
     fb_before = client.execute_script("return globalThis.k4App.state.getSnapshot().rxB.freqHz;")
-    # Tap the panadapter with 7px micro-jitter (< 12px TOUCH_DRAG_THRESHOLD_PX)
+    # Tap the panadapter with 7px micro-jitter (< 18px TOUCH_PAN_THRESHOLD_PX), clear of VFO pills
     pan_tap = client.execute_script(
         """
-        const surf = document.querySelector('.k4-pan-gl') || document.querySelector('.k4-pan-surface');
+        const surf = document.querySelector('.k4-pan-surface') || document.querySelector('.k4-pan-gl');
         if (!surf) return null;
         const r = surf.getBoundingClientRect();
-        return { x: Math.round(r.left + r.width * 0.5), y: Math.round(r.top + r.height * 0.3) };
+        const rend = globalThis.k4App?.panadapter?._renderer;
+        const lay = rend && typeof rend.getLayouts === 'function' ? rend.getLayouts()[0] : null;
+        let yRel = r.height * 0.3;
+        if (lay && lay.specRect) {
+          yRel = Math.min(lay.specRect.y + lay.specRect.h - 12, Math.max(yRel, lay.specRect.y + lay.specRect.h * 0.62));
+        }
+        return { x: Math.round(r.left + r.width * 0.5), y: Math.round(r.top + yRel) };
         """
     )
     if pan_tap:
@@ -4003,6 +4009,121 @@ def run_http_origin_and_screenshots(
             "    && globalThis.k4App._targetRx === 'A';"
         ),
         "Restored Single RX / targetRx=A after Note 4 check",
+    )
+
+    # ── Portrait 390x844 VFO B pill hiding & Sub RX toggle + VFO A pill touch-drag ──
+    client.execute_script(
+        "globalThis.k4App.client.sendCat('FA00014074000;FB00014082000;');"
+        "globalThis.k4App.client.setSubRx(false);"
+        "globalThis.k4App.setTargetRx('A');"
+        "globalThis.k4App.panadapter.resetViewport('A', { syncRadioSpan: false });"
+        "globalThis.k4App.panadapter._renderNow(true);"
+    )
+    pills_portrait_single = wait_until(
+        lambda: client.execute_script(
+            """
+            const s = globalThis.k4App.state.getSnapshot();
+            if (s.subRxEnabled || globalThis.k4App._targetRx !== 'A' || s.rxA.freqHz !== 14074000 || s.rxB.freqHz !== 14082000) return null;
+            globalThis.k4App.panadapter._renderNow(true);
+            const pills = globalThis.k4App.panadapter._renderer.getVfoPillBoxes();
+            return Array.isArray(pills) && pills.length > 0 ? pills : null;
+            """
+        ),
+        "Portrait 390x844 Single RX VFO pill boxes rendered",
+    )
+    assert any(p["rx"] == "A" for p in pills_portrait_single), f"Expected VFO A pill at 390x844: {pills_portrait_single}"
+    assert not any(p["rx"] == "B" for p in pills_portrait_single), (
+        f"Expected VFO B pill hidden on portrait 390x844 with subRx off & target A: {pills_portrait_single}"
+    )
+
+    client.execute_script("globalThis.k4App.client.setSubRx(true);")
+    pills_portrait_sub = wait_until(
+        lambda: client.execute_script(
+            """
+            if (!globalThis.k4App.state.getSnapshot().subRxEnabled) return null;
+            globalThis.k4App.panadapter._renderNow(true);
+            const pills = globalThis.k4App.panadapter._renderer.getVfoPillBoxes();
+            return pills.some((p) => p.rx === 'B') ? pills : null;
+            """
+        ),
+        "Portrait 390x844 shows VFO B pill when Sub RX enabled",
+    )
+    assert any(p["rx"] == "A" for p in pills_portrait_sub) and any(p["rx"] == "B" for p in pills_portrait_sub), (
+        f"Expected both A and B pills when Sub RX enabled: {pills_portrait_sub}"
+    )
+
+    client.execute_script(
+        "globalThis.k4App.client.setSubRx(false);"
+        "globalThis.k4App.client.sendCat('FA00014074000;FB00014025000;');"
+        "globalThis.k4App.panadapter.resetViewport('A', { syncRadioSpan: false });"
+    )
+    pill_drag_info = wait_until(
+        lambda: client.execute_script(
+            """
+            const s = globalThis.k4App.state.getSnapshot();
+            if (s.subRxEnabled || s.rxA.freqHz !== 14074000 || s.rxB.freqHz !== 14025000) return null;
+            globalThis.k4App.panadapter._renderNow(true);
+            const rend = globalThis.k4App.panadapter._renderer;
+            const pills = rend.getVfoPillBoxes();
+            const pillA = pills.find((p) => p.rx === 'A');
+            const lay = rend.getLayouts()[0];
+            const surf = document.querySelector('.k4-pan-surface') || document.querySelector('.k4-pan-gl');
+            if (!pillA || !lay || !lay.specRect || !surf || pills.some((p) => p.rx === 'B')) return null;
+            const r = surf.getBoundingClientRect();
+            return {
+              x: Math.round(r.left + pillA.x + pillA.w * 0.5),
+              y: Math.round(r.top + pillA.y + pillA.h * 0.5),
+              specW: lay.specRect.w,
+              spanHz: globalThis.k4App.panadapter.getVisibleSpanHz('A'),
+              faBefore: s.rxA.freqHz,
+            };
+            """
+        ),
+        "Portrait 390x844 VFO A pill located for touch drag",
+    )
+    fa_before_pill_drag = http_get_json(stats_url)["faHz"]
+    assert fa_before_pill_drag == 14074000, f"Expected faHz=14074000 before pill drag, got {fa_before_pill_drag}"
+    drag_px = 45
+    expected_delta_hz = (drag_px / float(pill_drag_info["specW"])) * float(pill_drag_info["spanHz"])
+    client.perform_actions([{
+        "type": "pointer", "id": "touch_vfo_drag",
+        "parameters": {"pointerType": "touch"},
+        "actions": [
+            {"type": "pointerMove", "duration": 0,  "x": pill_drag_info["x"],            "y": pill_drag_info["y"], "origin": "viewport"},
+            {"type": "pointerDown", "button": 0},
+            {"type": "pointerMove", "duration": 60, "x": pill_drag_info["x"] + 22,       "y": pill_drag_info["y"], "origin": "viewport"},
+            {"type": "pointerMove", "duration": 60, "x": pill_drag_info["x"] + drag_px,  "y": pill_drag_info["y"], "origin": "viewport"},
+            {"type": "pointerUp",   "button": 0},
+        ],
+    }])
+    client.release_actions()
+    wait_until(
+        lambda: (
+            client.execute_script("return globalThis.k4App.state.getSnapshot().rxA.freqHz;") > fa_before_pill_drag + 2000
+            and http_get_json(stats_url)["faHz"] > fa_before_pill_drag + 2000
+        ),
+        "Touch dragging VFO A pill tunes FA upward on simulator",
+        timeout=6.0,
+    )
+    fa_after_pill_drag = http_get_json(stats_url)["faHz"]
+    actual_delta_hz = fa_after_pill_drag - fa_before_pill_drag
+    assert abs(actual_delta_hz - expected_delta_hz) <= 750, (
+        f"VFO A pill +45px touch drag tuned {actual_delta_hz} Hz, expected ~{expected_delta_hz:.0f} Hz (info={pill_drag_info})"
+    )
+
+    # Restore FA/FB, Sub RX, targetRx cleanly before Settings/Tune/mobile screenshot
+    client.execute_script(
+        "globalThis.k4App.client.sendCat('FA00014074000;FB00014025000;');"
+        "globalThis.k4App.client.setSubRx(false);"
+        "globalThis.k4App.setTargetRx('A');"
+        "globalThis.k4App.panadapter.resetViewport('A', { syncRadioSpan: false });"
+    )
+    wait_until(
+        lambda: client.execute_script(
+            "const s = globalThis.k4App.state.getSnapshot();"
+            "return !s.subRxEnabled && globalThis.k4App._targetRx === 'A' && s.rxA.freqHz === 14074000 && s.rxB.freqHz === 14025000;"
+        ) and http_get_json(stats_url)["faHz"] == 14074000,
+        "Restored FA/FB & Single RX after VFO pill touch drag check",
     )
 
     # Mobile 390x844 Settings modal dropdowns open anchored directly at their controls (in-DOM SelectPopover)
@@ -4213,11 +4334,19 @@ def run_http_origin_and_screenshots(
     assert os.path.getsize(mobile_png) > 3000, f"Mobile screenshot too small: {mobile_png}"
     client.reset_viewport_size()
 
-    # PWA checks: manifest, icons, SW UPDATE_WATCH_ASSETS parity, and live background auto-update flow
-    manifest_href = client.execute_script(
-        "return document.querySelector('link[rel=\"manifest\"]')?.getAttribute('href') || null;"
+    # PWA checks: manifest (href + use-credentials), icons, SW OAuth hardening & UPDATE_WATCH_ASSETS parity, and live background auto-update flow
+    manifest_link = client.execute_script(
+        """
+        const el = document.querySelector('link[rel="manifest"]');
+        return el ? { href: el.getAttribute('href'), crossorigin: el.getAttribute('crossorigin') } : null;
+        """
     )
-    assert manifest_href == "manifest.webmanifest", f"Unexpected manifest link href: {manifest_href}"
+    assert manifest_link and manifest_link.get("href") == "manifest.webmanifest", (
+        f"Unexpected manifest link href: {manifest_link}"
+    )
+    assert manifest_link.get("crossorigin") == "use-credentials", (
+        f"Expected manifest link crossorigin='use-credentials', got: {manifest_link}"
+    )
 
     manifest_url = urllib.parse.urljoin(http_url, "manifest.webmanifest")
     with urllib.request.urlopen(manifest_url, timeout=3.0) as resp:
@@ -4242,6 +4371,10 @@ def run_http_origin_and_screenshots(
         index_html = f.read()
     with open(os.path.join(WEB_DIR, "sw.js"), "r", encoding="utf-8") as f:
         sw_source = f.read()
+    assert "redirect: 'manual'" in sw_source, "web/sw.js missing redirect: 'manual' OAuth hardening"
+    assert "function isSafeSameOriginAssetResponse" in sw_source, (
+        "web/sw.js missing isSafeSameOriginAssetResponse OAuth hardening helper"
+    )
     index_assets = set()
     for asset_ref in re.findall(r'(?:href|src)=["\']([^"\']+\.(?:css|js))["\']', index_html):
         if asset_ref.startswith("css/") or asset_ref.startswith("js/"):

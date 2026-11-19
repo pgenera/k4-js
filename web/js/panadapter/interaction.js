@@ -8,7 +8,9 @@
     368000,
   ];
   const DRAG_THRESHOLD_PX = 5;
-  const TOUCH_DRAG_THRESHOLD_PX = 12;
+  const TOUCH_PAN_THRESHOLD_PX = 18;
+  const VFO_DRAG_THRESHOLD_TOUCH_PX = 4;
+  const VFO_DRAG_THRESHOLD_MOUSE_PX = 3;
   const EDGE_HIT_PX = 6;
   const THROTTLE_MS = 50; // max 20 Hz
 
@@ -38,13 +40,18 @@
       this.client = client;
 
       this._destroyed = false;
-      this._dragMode = null; // 'pan' | 'edge' | 'pinch' | null
+      this._dragMode = null; // 'pan' | 'axis-pan' | 'edge' | 'pinch' | 'vfo' | null
       this._activePointerId = null;
       this._startX = 0;
       this._startY = 0;
       this._dragExceeded = false;
       this._dragRx = 'A';
+      this._dragVfoRx = null;
       this._startFreqHz = 14074000;
+      this._vfoDragStartFreqHz = 14074000;
+      this._vfoDragStartSpanHz = 48000;
+      this._vfoDragPlotWidth = 800;
+      this._lockedPillAbsorbed = false;
       this._dragHit = null;
       this._edgeInfo = null;
 
@@ -72,6 +79,9 @@
       this._lastIfCenterSendMs = -1e9;
       this._ifCenterFlushTimer = null;
       this._pendingIfCenter = null;
+      this._lastVfoTuneSendMs = -1e9;
+      this._vfoTuneFlushTimer = null;
+      this._pendingVfoTune = null;
       this._lastRightHandledMs = -1e9;
       this._lastLockWarnMs = -1e9;
 
@@ -80,6 +90,9 @@
       this._onPointerUp = this._handlePointerUp.bind(this);
       this._onPointerCancel = this._handlePointerUp.bind(this);
       this._onPointerLeave = this._handlePointerLeave.bind(this);
+      this._onLostPointerCapture = this._handleLostPointerCapture.bind(this);
+      this._onWindowBlur = this._handleWindowBlur.bind(this);
+      this._onVisibilityChange = this._handleVisibilityChange.bind(this);
       this._onContextMenu = this._handleContextMenu.bind(this);
       this._onAuxClick = this._handleAuxClick.bind(this);
       this._onWheel = this._handleWheel.bind(this);
@@ -93,6 +106,7 @@
       surface.addEventListener('pointerup', this._onPointerUp);
       surface.addEventListener('pointercancel', this._onPointerCancel);
       surface.addEventListener('pointerleave', this._onPointerLeave);
+      surface.addEventListener('lostpointercapture', this._onLostPointerCapture);
       surface.addEventListener('contextmenu', this._onContextMenu);
       surface.addEventListener('auxclick', this._onAuxClick);
       surface.addEventListener('wheel', this._onWheel, { passive: false });
@@ -106,6 +120,12 @@
       surface.addEventListener('gestureend', this._onGestureEnd, {
         passive: false,
       });
+      if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+        window.addEventListener('blur', this._onWindowBlur);
+      }
+      if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
+        document.addEventListener('visibilitychange', this._onVisibilityChange);
+      }
     }
 
     _getLocalPoint(e) {
@@ -257,6 +277,142 @@
       return best;
     }
 
+    _findVfoPillHit(xPx, yPx, isTouch) {
+      const pills =
+        this.renderer && typeof this.renderer.getVfoPillBoxes === 'function'
+          ? this.renderer.getVfoPillBoxes()
+          : [];
+      if (!Array.isArray(pills) || pills.length === 0) return null;
+
+      const padX = isTouch ? 14 : 4;
+      const padY = isTouch ? 12 : 4;
+      let best = null;
+      let bestDistSq = Infinity;
+
+      for (let i = 0; i < pills.length; i++) {
+        const p = pills[i];
+        if (!p) continue;
+        if (
+          xPx >= p.x - padX &&
+          xPx <= p.x + p.w + padX &&
+          yPx >= p.y - padY &&
+          yPx <= p.y + p.h + padY
+        ) {
+          const cx = p.x + p.w * 0.5;
+          const cy = p.y + p.h * 0.5;
+          const dx = xPx - cx;
+          const dy = yPx - cy;
+          const distSq = dx * dx + dy * dy;
+          if (distSq < bestDistSq) {
+            bestDistSq = distSq;
+            best = p;
+          }
+        }
+      }
+      return best;
+    }
+
+    _resolveVfoHitPane(hit, pillHit) {
+      if (
+        !pillHit ||
+        !pillHit.paneRx ||
+        (hit && hit.paneRx === pillHit.paneRx) ||
+        !this.renderer ||
+        typeof this.renderer.getLayouts !== 'function'
+      ) {
+        return hit;
+      }
+      const layouts = this.renderer.getLayouts() || [];
+      let match = null;
+      for (let i = 0; i < layouts.length; i++) {
+        if (layouts[i] && layouts[i].rx === pillHit.paneRx) {
+          match = layouts[i];
+          break;
+        }
+      }
+      if (!match) return hit;
+      const frame =
+        this.view && typeof this.view.getFrameState === 'function'
+          ? this.view.getFrameState()
+          : {};
+      const snap = (hit && hit.snapshot) || frame.snapshot || this._getSnapshot();
+      const paneState = frame.panes ? frame.panes[pillHit.paneRx] : null;
+      const rxKey = pillHit.paneRx === 'B' ? 'rxB' : 'rxA';
+      const rxState = (snap && snap[rxKey]) || {};
+      return Object.assign({}, hit || {}, {
+        layout: match,
+        paneRx: pillHit.paneRx,
+        panCenterHz:
+          paneState && Number.isFinite(paneState.panCenterHz)
+            ? paneState.panCenterHz
+            : rxState.panCenterHz || rxState.freqHz || 14074000,
+        userSpanHz:
+          paneState && Number.isFinite(paneState.userSpanHz) && paneState.userSpanHz > 0
+            ? paneState.userSpanHz
+            : rxState.panSpanHz || 48000,
+        snapshot: snap,
+      });
+    }
+
+    _beginVfoDrag(e, xPx, yPx, pillHit, hit) {
+      const isTouch = e.pointerType === 'touch';
+      if (this._isRxLocked(hit, pillHit.rx)) {
+        this._notifyLocked(pillHit.rx);
+        if (isTouch) {
+          this._lockedPillAbsorbed = true;
+          this._dragMode = null;
+          this._dragVfoRx = null;
+        }
+        return;
+      }
+      const dragHit = this._resolveVfoHitPane(hit, pillHit);
+      const snap = (dragHit && dragHit.snapshot) || this._getSnapshot();
+      const rxKey = pillHit.rx === 'B' ? 'rxB' : 'rxA';
+      const rxState = (snap && snap[rxKey]) || {};
+      const startFreqHz = Number.isFinite(rxState.freqHz)
+        ? rxState.freqHz
+        : Number.isFinite(pillHit.freqHz)
+        ? pillHit.freqHz
+        : 14074000;
+      const startSpanHz =
+        dragHit && Number.isFinite(dragHit.userSpanHz) && dragHit.userSpanHz > 0
+          ? dragHit.userSpanHz
+          : rxState.panSpanHz || 48000;
+      const plotWidth =
+        dragHit && dragHit.layout && dragHit.layout.specRect && dragHit.layout.specRect.w > 0
+          ? dragHit.layout.specRect.w
+          : (this.surface && this.surface.clientWidth) || 800;
+
+      this._dragMode = 'vfo';
+      this._dragVfoRx = pillHit.rx;
+      this._startX = xPx;
+      this._startY = yPx;
+      this._vfoDragStartFreqHz = startFreqHz;
+      this._vfoDragStartSpanHz = startSpanHz;
+      this._vfoDragPlotWidth = Math.max(1, plotWidth);
+      this._dragHit = dragHit;
+      this._dragExceeded = false;
+      this._lockedPillAbsorbed = false;
+
+      if (!isTouch) {
+        this._activePointerId = e.pointerId;
+        if (this.surface && this.surface.style) {
+          this.surface.style.cursor = 'grabbing';
+        }
+        try {
+          this.surface.setPointerCapture(e.pointerId);
+        } catch (_err) {
+          // ignore
+        }
+      } else {
+        this._wasPinched = false;
+      }
+
+      if (this.view && typeof this.view._scheduleRender === 'function') {
+        this.view._scheduleRender();
+      }
+    }
+
     _resolveMouseQsyRx(button, hit, shiftKey) {
       const mode =
         this.view && typeof this.view.getMouseQsyMode === 'function'
@@ -312,7 +468,7 @@
       }
     }
 
-    _tuneClick(xPx, hit, rx, fine, syncTarget = true, isTouchOrMobile = false) {
+    _tuneClick(xPx, hit, rx, fine, syncTarget = true, _isTouchOrMobile = false) {
       if (!hit || !this.client || !rx) return;
       if (syncTarget) {
         this._syncMouseTarget(rx);
@@ -323,11 +479,10 @@
       }
       const rxKey = rx === 'B' ? 'rxB' : 'rxA';
       const rxState = (hit.snapshot && hit.snapshot[rxKey]) || {};
-      const voiceClickSnapKhz = isTouchOrMobile
-        ? false
-        : this.view && typeof this.view.getVoiceClickSnapKhz === 'function'
-        ? this.view.getVoiceClickSnapKhz()
-        : true;
+      const voiceClickSnapKhz =
+        this.view && typeof this.view.getVoiceClickSnapKhz === 'function'
+          ? this.view.getVoiceClickSnapKhz()
+          : true;
       const snappedHz = K4.SpectrumGeometry.dialFreqFromClick({
         xPx,
         plotLeftPx: hit.layout.specRect.x,
@@ -500,6 +655,129 @@
       this._pendingIfCenter = null;
     }
 
+    _cancelPendingVfoTune() {
+      if (this._vfoTuneFlushTimer) {
+        clearTimeout(this._vfoTuneFlushTimer);
+        this._vfoTuneFlushTimer = null;
+      }
+      this._pendingVfoTune = null;
+    }
+
+    _sendVfoTune(rx, freqHz) {
+      if (!this.client || !rx) return;
+      const clamped = clamp(Math.round(freqHz), 100000, 54000000);
+      if (typeof this.client.tune === 'function') {
+        this.client.tune(rx, clamped, { optimistically: true });
+      } else if (typeof this.client.sendCat === 'function' && K4.CatCodec) {
+        this.client.sendCat(K4.CatCodec.builders.freq(rx, clamped));
+      }
+    }
+
+    _sendVfoTuneThrottled(rx, freqHz, forceImmediate = false) {
+      const clamped = clamp(Math.round(freqHz), 100000, 54000000);
+      const now = performance.now();
+      if (forceImmediate || now - this._lastVfoTuneSendMs >= THROTTLE_MS) {
+        if (this._vfoTuneFlushTimer) {
+          clearTimeout(this._vfoTuneFlushTimer);
+          this._vfoTuneFlushTimer = null;
+        }
+        this._pendingVfoTune = null;
+        this._lastVfoTuneSendMs = now;
+        this._sendVfoTune(rx, clamped);
+        return;
+      }
+      this._pendingVfoTune = { rx, freqHz: clamped };
+      if (!this._vfoTuneFlushTimer) {
+        const delay = Math.max(8, THROTTLE_MS - (now - this._lastVfoTuneSendMs));
+        this._vfoTuneFlushTimer = setTimeout(() => {
+          this._vfoTuneFlushTimer = null;
+          if (this._destroyed || !this._pendingVfoTune) return;
+          const p = this._pendingVfoTune;
+          this._pendingVfoTune = null;
+          this._lastVfoTuneSendMs = performance.now();
+          this._sendVfoTune(p.rx, p.freqHz);
+        }, delay);
+      }
+    }
+
+    _applyVfoDrag(xPx, fine, isFinal) {
+      if (!this._dragVfoRx) return;
+      const snap =
+        this._getSnapshot() || (this._dragHit && this._dragHit.snapshot) || {};
+      const rxKey = this._dragVfoRx === 'B' ? 'rxB' : 'rxA';
+      const rxState = (snap && snap[rxKey]) || {};
+      const deltaHz =
+        ((xPx - this._startX) / Math.max(1, this._vfoDragPlotWidth)) *
+        this._vfoDragStartSpanHz;
+      const step = fine ? 1 : rxState.stepHz || 100;
+      const targetHz = clamp(
+        Math.round((this._vfoDragStartFreqHz + deltaHz) / step) * step,
+        100000,
+        54000000
+      );
+      this._sendVfoTuneThrottled(this._dragVfoRx, targetHz, Boolean(isFinal));
+    }
+
+    _resetDragState() {
+      const hadVfoDrag = this._dragMode === 'vfo';
+      this._cancelPendingVfoTune();
+      this._wasPinched = false;
+      this._lockedPillAbsorbed = false;
+      this._dragMode = null;
+      this._dragVfoRx = null;
+      this._activePointerId = null;
+      this._dragExceeded = false;
+      this._edgeInfo = null;
+      this._dragHit = null;
+      if (this.surface && this.surface.style) {
+        this.surface.style.cursor = 'crosshair';
+      }
+      if (hadVfoDrag && this.view && typeof this.view._scheduleRender === 'function') {
+        this.view._scheduleRender();
+      }
+    }
+
+    _clearPointerState() {
+      this._touches.clear();
+      if (this._dragMode === 'pinch') {
+        this._flushPendingSpan();
+      }
+      this._resetDragState();
+    }
+
+    _handleLostPointerCapture(e) {
+      if (this._destroyed) return;
+      if (e && e.pointerId !== undefined) {
+        if (this._touches.has(e.pointerId)) {
+          this._touches.delete(e.pointerId);
+          if (this._dragMode === 'pinch' && this._touches.size < 2) {
+            this._flushPendingSpan();
+          }
+          if (this._touches.size === 0) {
+            this._resetDragState();
+          }
+          return;
+        }
+        if (this._activePointerId !== null && e.pointerId === this._activePointerId) {
+          this._resetDragState();
+        }
+        return;
+      }
+      this._clearPointerState();
+    }
+
+    _handleWindowBlur() {
+      if (this._destroyed) return;
+      this._clearPointerState();
+    }
+
+    _handleVisibilityChange() {
+      if (this._destroyed) return;
+      if (typeof document !== 'undefined' && document.hidden) {
+        this._clearPointerState();
+      }
+    }
+
     _sendIfCenter(rx, freqHz) {
       if (!this.client) return;
       const clamped = clamp(Math.round(freqHz), 100000, 54000000);
@@ -609,6 +887,10 @@
       const hit = this._hitTest(xPx, yPx);
 
       if (e.pointerType === 'touch') {
+        if (e.isPrimary === true) {
+          this._touches.clear();
+          this._resetDragState();
+        }
         this._touches.set(e.pointerId, {
           x: xPx,
           y: yPx,
@@ -622,6 +904,10 @@
         }
 
         if (this._touches.size === 2) {
+          const hadVfoDrag = this._dragMode === 'vfo';
+          this._cancelPendingVfoTune();
+          this._dragVfoRx = null;
+          this._lockedPillAbsorbed = false;
           const mid = this._pinchMidpoint();
           const midHit = this._hitTest(mid.x, mid.y) || hit;
           this._dragMode = 'pinch';
@@ -642,8 +928,17 @@
           const center0 = midHit ? midHit.panCenterHz : 14074000;
           this._pinchAnchorRfHz =
             center0 + (uMid0 - 0.5) * this._pinchStartSpanHz;
+          if (hadVfoDrag && this.view && typeof this.view._scheduleRender === 'function') {
+            this.view._scheduleRender();
+          }
         } else if (this._touches.size === 1) {
+          const pillHit = this._findVfoPillHit(xPx, yPx, true);
+          if (pillHit) {
+            this._beginVfoDrag(e, xPx, yPx, pillHit, hit);
+            return;
+          }
           this._wasPinched = false;
+          this._lockedPillAbsorbed = false;
           this._dragMode = 'pan';
           this._dragExceeded = false;
           this._startX = xPx;
@@ -673,6 +968,12 @@
       }
 
       if (e.button !== 0) return;
+
+      const pillHit = this._findVfoPillHit(xPx, yPx, false);
+      if (pillHit) {
+        this._beginVfoDrag(e, xPx, yPx, pillHit, hit);
+        return;
+      }
 
       const edgeHit = this._findHoveredEdge(xPx, yPx, hit);
       if (edgeHit) {
@@ -778,24 +1079,44 @@
         if (
           this._touches.size === 1 &&
           !this._wasPinched &&
-          this._dragMode === 'pan'
+          !this._lockedPillAbsorbed
         ) {
-          if (
-            !this._dragExceeded &&
-            Math.hypot(xPx - this._startX, yPx - this._startY) >
-              TOUCH_DRAG_THRESHOLD_PX
-          ) {
-            this._dragExceeded = true;
-          }
-          if (this._dragExceeded) {
-            this._applyViewportPanDrag(xPx, false);
+          if (this._dragMode === 'vfo') {
+            if (
+              !this._dragExceeded &&
+              Math.hypot(xPx - this._startX, yPx - this._startY) >
+                VFO_DRAG_THRESHOLD_TOUCH_PX
+            ) {
+              this._dragExceeded = true;
+            }
+            if (this._dragExceeded) {
+              this._applyVfoDrag(xPx, Boolean(e.altKey), false);
+            }
+          } else if (this._dragMode === 'pan') {
+            const dx = xPx - this._startX;
+            const dy = yPx - this._startY;
+            if (
+              !this._dragExceeded &&
+              Math.abs(dx) > TOUCH_PAN_THRESHOLD_PX &&
+              Math.abs(dx) > Math.abs(dy) * 0.85
+            ) {
+              this._dragExceeded = true;
+              this._panLastX = xPx;
+            }
+            if (this._dragExceeded) {
+              this._applyViewportPanDrag(xPx, false);
+            }
           }
         }
         return;
       }
 
       const hit = this._hitTest(xPx, yPx);
-      const edgeHint = this._dragMode ? null : this._findHoveredEdge(xPx, yPx, hit);
+      const vfoHit = this._dragMode
+        ? null
+        : this._findVfoPillHit(xPx, yPx, false);
+      const edgeHint =
+        this._dragMode || vfoHit ? null : this._findHoveredEdge(xPx, yPx, hit);
       if (hit) {
         this.view.setHoverState({
           active: true,
@@ -803,7 +1124,23 @@
           yPx,
           paneRx: hit.paneRx,
           edgeHint,
+          vfoPillRx: vfoHit ? vfoHit.rx : null,
         });
+      }
+
+      if (this._dragMode === 'vfo' && e.pointerId === this._activePointerId) {
+        this.surface.style.cursor = 'grabbing';
+        if (
+          !this._dragExceeded &&
+          Math.hypot(xPx - this._startX, yPx - this._startY) >
+            VFO_DRAG_THRESHOLD_MOUSE_PX
+        ) {
+          this._dragExceeded = true;
+        }
+        if (this._dragExceeded) {
+          this._applyVfoDrag(xPx, Boolean(e.altKey), false);
+        }
+        return;
       }
 
       if (
@@ -830,7 +1167,9 @@
         return;
       }
 
-      this.surface.style.cursor = edgeHint
+      this.surface.style.cursor = vfoHit
+        ? 'grab'
+        : edgeHint
         ? 'ew-resize'
         : hit && hit.inAxis
         ? 'grab'
@@ -841,6 +1180,7 @@
       if (this._destroyed) return;
       if (
         !this._dragMode &&
+        !this._lockedPillAbsorbed &&
         this._activePointerId === null &&
         this._touches.size === 0 &&
         this._isInsideMiniPan(e)
@@ -860,19 +1200,29 @@
           this._flushPendingSpan();
         }
         if (this._touches.size === 0) {
-          if (e.type === 'pointerup' && !this._wasPinched) {
-            if (this._dragExceeded) {
+          if (
+            e.type === 'pointerup' &&
+            !this._wasPinched &&
+            !this._lockedPillAbsorbed
+          ) {
+            if (this._dragMode === 'vfo') {
+              if (this._dragExceeded) {
+                this._applyVfoDrag(xPx, Boolean(e.altKey), true);
+              } else if (this._dragVfoRx) {
+                this._syncMouseTarget(this._dragVfoRx);
+              }
+            } else if (this._dragExceeded) {
               this._applyViewportPanDrag(xPx, true);
             } else {
-              const hit = this._hitTest(xPx, yPx);
+              const hit =
+                this._dragHit || this._hitTest(this._startX, this._startY);
               const rx = this._resolveTouchQsyRx(hit);
-              this._tuneClick(xPx, hit, rx, false, false, true);
+              this._tuneClick(this._startX, hit, rx, false, false, true);
             }
+          } else if (this._dragMode === 'vfo') {
+            this._cancelPendingVfoTune();
           }
-          this._wasPinched = false;
-          this._dragMode = null;
-          this._dragExceeded = false;
-          this._dragHit = null;
+          this._resetDragState();
         }
         return;
       }
@@ -881,13 +1231,17 @@
         return;
       }
 
-      try {
-        this.surface.releasePointerCapture(e.pointerId);
-      } catch (_err) {
-        // ignore
-      }
-
-      if (
+      if (this._dragMode === 'vfo') {
+        if (e.type === 'pointerup') {
+          if (this._dragExceeded) {
+            this._applyVfoDrag(xPx, Boolean(e.altKey), true);
+          } else if (e.button === 0 && this._dragVfoRx) {
+            this._syncMouseTarget(this._dragVfoRx);
+          }
+        } else {
+          this._cancelPendingVfoTune();
+        }
+      } else if (
         this._dragMode === 'edge' ||
         this._dragMode === 'pan' ||
         this._dragMode === 'axis-pan'
@@ -919,12 +1273,16 @@
         }
       }
 
-      this._dragMode = null;
-      this._activePointerId = null;
-      this._dragExceeded = false;
-      this._edgeInfo = null;
-      this._dragHit = null;
-      this.surface.style.cursor = 'crosshair';
+      this._resetDragState();
+      try {
+        this.surface.releasePointerCapture(e.pointerId);
+      } catch (_err) {
+        // ignore
+      }
+      if (!this._destroyed && e.type === 'pointerup' && this.surface && this.surface.style) {
+        const vfoHit = this._findVfoPillHit(xPx, yPx, false);
+        this.surface.style.cursor = vfoHit ? 'grab' : 'crosshair';
+      }
     }
 
     _handlePointerLeave() {
@@ -1138,11 +1496,14 @@
         this._ifCenterFlushTimer = null;
       }
       this._pendingIfCenter = null;
+      this._cancelPendingVfoTune();
+      this._touches.clear();
       this.surface.removeEventListener('pointerdown', this._onPointerDown);
       this.surface.removeEventListener('pointermove', this._onPointerMove);
       this.surface.removeEventListener('pointerup', this._onPointerUp);
       this.surface.removeEventListener('pointercancel', this._onPointerCancel);
       this.surface.removeEventListener('pointerleave', this._onPointerLeave);
+      this.surface.removeEventListener('lostpointercapture', this._onLostPointerCapture);
       this.surface.removeEventListener('contextmenu', this._onContextMenu);
       this.surface.removeEventListener('auxclick', this._onAuxClick);
       this.surface.removeEventListener('wheel', this._onWheel);
@@ -1150,6 +1511,12 @@
       this.surface.removeEventListener('gesturestart', this._onGestureStart);
       this.surface.removeEventListener('gesturechange', this._onGestureChange);
       this.surface.removeEventListener('gestureend', this._onGestureEnd);
+      if (typeof window !== 'undefined' && typeof window.removeEventListener === 'function') {
+        window.removeEventListener('blur', this._onWindowBlur);
+      }
+      if (typeof document !== 'undefined' && typeof document.removeEventListener === 'function') {
+        document.removeEventListener('visibilitychange', this._onVisibilityChange);
+      }
     }
   }
 

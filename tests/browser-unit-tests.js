@@ -4164,6 +4164,700 @@
     }
   });
 
+  // 52. VFO Pill Drag (PanadapterInteraction): touch + mouse relative deltaHz (#FXT0 Track stability), lock refusal, tap-to-select
+  test('PanadapterInteraction VFO pill drag tunes via relative deltaHz (#FXT0 stable), honors lock, and tap selects VFO without detuning', () => {
+    const K4 = globalThis.K4;
+    const listeners = {};
+    const surface = {
+      style: { cursor: 'crosshair' },
+      clientWidth: 800,
+      clientHeight: 400,
+      getBoundingClientRect: () => ({ left: 0, top: 0, width: 800, height: 400 }),
+      addEventListener: (t, fn) => { listeners[t] = fn; },
+      removeEventListener: (t, fn) => { if (listeners[t] === fn) delete listeners[t]; },
+      setPointerCapture: () => {},
+      releasePointerCapture: () => {},
+    };
+
+    const snapshot = {
+      cwPitchHz: 500,
+      dualPanMode: 0,
+      subRxEnabled: true,
+      fixedTune: false,
+      rxA: { freqHz: 14074000, mode: 2, bwHz: 2400, ifShiftHz: 1500, panCenterHz: 14074000, panSpanHz: 48000, stepHz: 100, locked: false },
+      rxB: { freqHz: 14080000, mode: 3, bwHz: 500, ifShiftHz: 500, panCenterHz: 14080000, panSpanHz: 48000, stepHz: 100, locked: false },
+    };
+
+    let targetRx = 'A';
+    let panCenterA = 14074000;
+    const tunes = [];
+    const panCalls = [];
+    const targetSelections = [];
+    const notices = [];
+    const hoverStates = [];
+    let pillBoxes = [
+      { rx: 'A', paneRx: 'A', x: 364, y: 27, w: 72, h: 16, mx: 400, markerHz: 14074000, freqHz: 14074000 },
+      { rx: 'B', paneRx: 'A', x: 464, y: 49, w: 72, h: 16, mx: 500, markerHz: 14080500, freqHz: 14080000 },
+    ];
+
+    const layouts = [
+      {
+        rx: 'A',
+        paneRect: { x: 0, y: 0, w: 800, h: 400 },
+        axisRect: { x: 0, y: 0, w: 800, h: 22 },
+        specRect: { x: 0, y: 22, w: 800, h: 180 },
+        wfRect: { x: 0, y: 202, w: 800, h: 198 },
+      },
+    ];
+
+    const view = {
+      getTargetRx: () => targetRx,
+      setTargetRx: (rx) => { targetRx = rx === 'B' ? 'B' : 'A'; targetSelections.push(targetRx); },
+      selectTargetFromMouse: (rx) => { targetRx = rx === 'B' ? 'B' : 'A'; targetSelections.push(targetRx); },
+      getMouseQsyMode: () => 'lr',
+      getVoiceClickSnapKhz: () => true,
+      isMobileViewport: () => false,
+      notify: (msg, level) => notices.push({ msg, level }),
+      setHoverState: (s) => hoverStates.push(s),
+      setLastClickFreqHz: () => {},
+      _scheduleRender: () => {},
+      panViewportByHz: (rx, dHz) => panCalls.push({ rx, dHz }),
+      getFrameState: () => ({
+        snapshot,
+        dualPanMode: snapshot.dualPanMode,
+        targetRx,
+        panes: {
+          A: { panCenterHz: panCenterA, userSpanHz: 48000 },
+          B: { panCenterHz: snapshot.rxB.panCenterHz, userSpanHz: 48000 },
+        },
+      }),
+    };
+    const renderer = {
+      getLayouts: () => layouts,
+      getVfoPillBoxes: () => pillBoxes.slice(),
+    };
+    const client = {
+      tune: (rx, hz) => {
+        tunes.push({ rx, hz });
+        if (rx === 'A') {
+          snapshot.rxA.freqHz = hz;
+          // Simulate #FXT0 Track mode where panCenterHz follows VFO A immediately
+          if (!snapshot.fixedTune) {
+            panCenterA = hz;
+            snapshot.rxA.panCenterHz = hz;
+          }
+        } else {
+          snapshot.rxB.freqHz = hz;
+        }
+      },
+      setDisplay: (rx, patch) => panCalls.push({ rx, patch }),
+    };
+
+    const interaction = new K4.PanadapterInteraction({
+      surface,
+      renderer,
+      view,
+      state: { getSnapshot: () => snapshot },
+      client,
+    });
+    const fire = (type, opts) => {
+      if (listeners[type]) listeners[type](Object.assign({ type, button: 0, shiftKey: false, altKey: false }, opts));
+    };
+
+    try {
+      // 1) Single-finger touch drag on VFO A pill (within touch padY=12 above pill A) with #FXT0 Track-mode stability
+      fire('pointerdown', { pointerId: 1, pointerType: 'touch', isPrimary: true, clientX: 400, clientY: 20 });
+      assertEqual(interaction._dragMode, 'vfo', 'touch on VFO A pill enters vfo drag mode');
+      assertEqual(interaction._dragVfoRx, 'A', 'dragVfoRx set to A');
+      fire('pointermove', { pointerId: 1, pointerType: 'touch', clientX: 403, clientY: 20 }); // 3px <= 4px touch threshold
+      assertEqual(tunes.length, 0, 'touch move <= 4px does not tune yet');
+
+      // +100px across 800px / 48kHz = +6000 Hz -> 14080000 (shifts panCenterA to 14080000 in #FXT0)
+      fire('pointermove', { pointerId: 1, pointerType: 'touch', clientX: 500, clientY: 20 });
+      assertEqual(tunes.length, 1, 'touch drag > 4px emits first VFO A tune');
+      assertEqual(tunes[0].rx, 'A', 'tuned rx is A');
+      assertEqual(tunes[0].hz, 14080000, '+100px touch drag tunes +6000 Hz');
+
+      // Subsequent move to +150px from _startX must compute relative to start (14074000 + 9000 = 14083000), NOT accumulate!
+      fire('pointermove', { pointerId: 1, pointerType: 'touch', clientX: 550, clientY: 20 });
+      fire('pointerup', { pointerId: 1, pointerType: 'touch', clientX: 550, clientY: 20 });
+      assertEqual(snapshot.rxA.freqHz, 14083000, '#FXT0 Track-mode drag computes relative deltaHz without runaway accumulation');
+      assertEqual(panCalls.length, 0, 'VFO pill drag never pans viewport');
+      assertEqual(interaction._dragMode, null, 'pointerup resets dragMode');
+
+      // 2) Desktop mouse hover + left-drag on VFO B pill (including altKey fine 1 Hz step)
+      tunes.length = 0;
+      fire('pointermove', { pointerId: 2, pointerType: 'mouse', clientX: 500, clientY: 57 });
+      assertEqual(surface.style.cursor, 'grab', 'hovering VFO pill shows grab cursor');
+      assertEqual(hoverStates[hoverStates.length - 1].vfoPillRx, 'B', 'hoverState records hovered vfoPillRx B');
+
+      fire('pointerdown', { pointerId: 2, pointerType: 'mouse', button: 0, clientX: 500, clientY: 57 });
+      assertEqual(surface.style.cursor, 'grabbing', 'dragging VFO pill shows grabbing cursor');
+      fire('pointermove', { pointerId: 2, pointerType: 'mouse', button: 0, clientX: 502, clientY: 57 }); // 2px <= 3px mouse threshold
+      assertEqual(tunes.length, 0, 'mouse move <= 3px does not tune yet');
+
+      // +7px * 60 Hz/px = +420 Hz; altKey=true tunes to 1 Hz precision (14080420)
+      fire('pointermove', { pointerId: 2, pointerType: 'mouse', button: 0, clientX: 507, clientY: 57, altKey: true });
+      fire('pointerup', { pointerId: 2, pointerType: 'mouse', button: 0, clientX: 507, clientY: 57, altKey: true });
+      assertEqual(snapshot.rxB.freqHz, 14080420, 'left-mouse VFO B drag with altKey tunes 1 Hz fine delta');
+      assertEqual(tunes[tunes.length - 1].rx, 'B', 'tuned rx is B');
+      assertEqual(panCalls.length, 0, 'mouse VFO pill drag never pans viewport');
+      assertEqual(surface.style.cursor, 'grab', 'pointerup over pill restores grab cursor');
+
+      // 3) Tapping VFO pill without exceeding drag threshold selects target VFO without detuning
+      tunes.length = 0;
+      targetRx = 'A';
+      targetSelections.length = 0;
+      fire('pointerdown', { pointerId: 3, pointerType: 'touch', isPrimary: true, clientX: 500, clientY: 57 });
+      fire('pointermove', { pointerId: 3, pointerType: 'touch', clientX: 502, clientY: 58 }); // hypot(2,1) <= 4px
+      fire('pointerup', { pointerId: 3, pointerType: 'touch', clientX: 502, clientY: 58 });
+      assertEqual(tunes.length, 0, 'touch tap on VFO B pill does not detune');
+      assertEqual(targetRx, 'B', 'touch tap on VFO B pill selects targetRx B');
+      assertEqual(panCalls.length, 0, 'touch tap on VFO pill does not pan');
+
+      fire('pointerdown', { pointerId: 4, pointerType: 'mouse', button: 0, clientX: 400, clientY: 35 });
+      fire('pointermove', { pointerId: 4, pointerType: 'mouse', button: 0, clientX: 401, clientY: 35 }); // 1px <= 3px
+      fire('pointerup', { pointerId: 4, pointerType: 'mouse', button: 0, clientX: 401, clientY: 35 });
+      assertEqual(tunes.length, 0, 'mouse click on VFO A pill does not detune');
+      assertEqual(targetRx, 'A', 'mouse click on VFO A pill selects targetRx A');
+
+      // 4) Overlapping pills pick nearest center
+      pillBoxes = [
+        { rx: 'A', paneRx: 'A', x: 100, y: 27, w: 60, h: 16, mx: 130, markerHz: 14083000, freqHz: 14083000 },
+        { rx: 'B', paneRx: 'A', x: 140, y: 27, w: 60, h: 16, mx: 170, markerHz: 14080420, freqHz: 14080420 },
+      ];
+      fire('pointerdown', { pointerId: 5, pointerType: 'touch', isPrimary: true, clientX: 162, clientY: 35 });
+      fire('pointerup', { pointerId: 5, pointerType: 'touch', clientX: 162, clientY: 35 });
+      assertEqual(targetRx, 'B', 'overlapping pills select nearest center (B)');
+      assertEqual(tunes.length, 0, 'overlapping pill tap does not detune');
+
+      // 5) Locked VFO refusal (both touch and mouse) without panning or tuning
+      pillBoxes = [
+        { rx: 'A', paneRx: 'A', x: 364, y: 27, w: 72, h: 16, mx: 400, markerHz: 14083000, freqHz: 14083000 },
+      ];
+      snapshot.rxA.locked = true;
+      notices.length = 0;
+      interaction._lastLockWarnMs = -1e9;
+      fire('pointerdown', { pointerId: 6, pointerType: 'touch', isPrimary: true, clientX: 400, clientY: 35 });
+      fire('pointermove', { pointerId: 6, pointerType: 'touch', clientX: 480, clientY: 35 });
+      fire('pointerup', { pointerId: 6, pointerType: 'touch', clientX: 480, clientY: 35 });
+      assertEqual(tunes.length, 0, 'locked VFO touch pill drag refuses tuning');
+      assertEqual(panCalls.length, 0, 'locked VFO touch pill drag refuses panning');
+      assert(notices.some((n) => n.level === 'warn'), 'locked VFO touch pill warns user');
+      assertEqual(interaction._lockedPillAbsorbed, false, 'pointerup clears _lockedPillAbsorbed');
+
+      notices.length = 0;
+      interaction._lastLockWarnMs = -1e9;
+      fire('pointerdown', { pointerId: 7, pointerType: 'mouse', button: 0, clientX: 400, clientY: 35 });
+      fire('pointermove', { pointerId: 7, pointerType: 'mouse', button: 0, clientX: 480, clientY: 35 });
+      fire('pointerup', { pointerId: 7, pointerType: 'mouse', button: 0, clientX: 480, clientY: 35 });
+      assertEqual(tunes.length, 0, 'locked VFO mouse pill drag refuses tuning');
+      assertEqual(panCalls.length, 0, 'locked VFO mouse pill drag refuses panning');
+      assert(notices.some((n) => n.level === 'warn'), 'locked VFO mouse pill warns user');
+    } finally {
+      interaction.destroy();
+    }
+  });
+
+  // 53. Reliable Mobile Tap-to-Tune (PanadapterInteraction): touchdown coord, jitter thresholds, isPrimary ghost cleanup, voiceClickSnapKhz
+  test('PanadapterInteraction reliable mobile tap: uses touchdown coords, ignores vertical/<18px jitter, clears ghost touches, honors voiceClickSnapKhz', () => {
+    const K4 = globalThis.K4;
+    const savedPref = K4.ClientPrefs ? K4.ClientPrefs.get('voiceClickSnapKhz') : true;
+    const savedStorage = K4.storage ? K4.storage.get('prefs.voiceClickSnapKhz', true) : true;
+    const listeners = {};
+    const surface = {
+      style: { cursor: 'crosshair' },
+      clientWidth: 480,
+      clientHeight: 360,
+      getBoundingClientRect: () => ({ left: 0, top: 0, width: 480, height: 360 }),
+      addEventListener: (t, fn) => { listeners[t] = fn; },
+      removeEventListener: (t, fn) => { if (listeners[t] === fn) delete listeners[t]; },
+      setPointerCapture: () => {},
+      releasePointerCapture: () => {},
+    };
+
+    const snapshot = {
+      cwPitchHz: 500,
+      dualPanMode: 0,
+      subRxEnabled: false,
+      rxA: { freqHz: 14074000, mode: 6, bwHz: 2700, ifShiftHz: 1500, panCenterHz: 14074000, panSpanHz: 48000, stepHz: 100, locked: false },
+      rxB: { freqHz: 14025000, mode: 3, bwHz: 500, ifShiftHz: 500, panCenterHz: 14025000, panSpanHz: 48000, stepHz: 100, locked: false },
+    };
+
+    let panCenterA = 14074000;
+    let voiceSnap = true;
+    const tunes = [];
+    const pans = [];
+    const layouts = [
+      {
+        rx: 'A',
+        paneRect: { x: 0, y: 0, w: 480, h: 360 },
+        axisRect: { x: 0, y: 0, w: 480, h: 22 },
+        specRect: { x: 0, y: 22, w: 480, h: 140 },
+        wfRect: { x: 0, y: 162, w: 480, h: 198 },
+      },
+    ];
+    const view = {
+      getTargetRx: () => 'A',
+      isMobileViewport: () => true,
+      getVoiceClickSnapKhz: () => voiceSnap,
+      setHoverState: () => {},
+      setLastClickFreqHz: () => {},
+      panViewportByHz: (rx, dHz) => pans.push({ rx, dHz }),
+      getFrameState: () => ({
+        snapshot,
+        dualPanMode: 0,
+        panes: { A: { panCenterHz: panCenterA, userSpanHz: 48000 } },
+      }),
+    };
+    const renderer = { getLayouts: () => layouts, getVfoPillBoxes: () => [] };
+    const client = {
+      tune: (rx, hz) => {
+        tunes.push({ rx, hz });
+        if (rx === 'A') snapshot.rxA.freqHz = hz;
+      },
+      sendCat: () => {},
+    };
+
+    const interaction = new K4.PanadapterInteraction({
+      surface,
+      renderer,
+      view,
+      state: { getSnapshot: () => snapshot },
+      client,
+    });
+    const fire = (type, opts) => {
+      if (listeners[type]) listeners[type](Object.assign({ type, button: 0, pointerType: 'touch', shiftKey: false, altKey: false }, opts));
+    };
+
+    try {
+      // 1) Touchdown (_startX, _startY) is used when finger rolls slightly (< 18px) before pointerup
+      // 480px width / 48kHz = 100 Hz/px; x=290 -> 14079000 Hz, x=302 -> 14080200 Hz
+      fire('pointerdown', { pointerId: 1, isPrimary: true, clientX: 290, clientY: 100 });
+      fire('pointermove', { pointerId: 1, clientX: 302, clientY: 103 }); // dx=12 < 18
+      fire('pointerup', { pointerId: 1, clientX: 302, clientY: 103 });
+      assertEqual(tunes.length, 1, 'slight roll < 18px still fires tap-to-tune');
+      assertEqual(tunes[0].hz, 14079000, 'touch tap uses touchdown X (290 -> 14079000) rather than roll pointerup X (302)');
+      assertEqual(pans.length, 0, 'roll < 18px does not pan');
+
+      // 2) Vertical jitter (dy=15, dx=5) and < 18px horizontal jitter (dx=16, dy=2) and vertical-dominant swipe (dx=22, dy=30) do not pan
+      tunes.length = 0;
+      fire('pointerdown', { pointerId: 2, isPrimary: true, clientX: 200, clientY: 100 });
+      fire('pointermove', { pointerId: 2, clientX: 205, clientY: 115 });
+      fire('pointerup', { pointerId: 2, clientX: 205, clientY: 115 });
+      assertEqual(tunes.length, 1, 'vertical jitter dy=15 dx=5 stays tap-to-tune');
+      assertEqual(tunes[0].hz, 14070000, 'vertical jitter tap tunes touchdown X=200 (14070000 Hz)');
+      assertEqual(pans.length, 0, 'vertical jitter never pans');
+
+      tunes.length = 0;
+      fire('pointerdown', { pointerId: 3, isPrimary: true, clientX: 200, clientY: 100 });
+      fire('pointermove', { pointerId: 3, clientX: 216, clientY: 102 });
+      fire('pointerup', { pointerId: 3, clientX: 216, clientY: 102 });
+      assertEqual(tunes.length, 1, '16px horizontal jitter (< 18px) stays tap-to-tune');
+      assertEqual(tunes[0].hz, 14070000, '16px jitter tap still uses touchdown X=200');
+      assertEqual(pans.length, 0, '16px jitter never pans');
+
+      tunes.length = 0;
+      fire('pointerdown', { pointerId: 4, isPrimary: true, clientX: 200, clientY: 100 });
+      fire('pointermove', { pointerId: 4, clientX: 222, clientY: 130 }); // |dx|=22 <= |dy|*0.85=25.5
+      fire('pointerup', { pointerId: 4, clientX: 222, clientY: 130 });
+      assertEqual(tunes.length, 1, 'vertical-dominant move dx=22 dy=30 stays tap-to-tune');
+      assertEqual(pans.length, 0, 'vertical-dominant move does not enter pan');
+
+      // Horizontal drag > 18px & horizontal-dominant DOES pan without tuning (and resets _panLastX at threshold cross)
+      tunes.length = 0;
+      fire('pointerdown', { pointerId: 5, isPrimary: true, clientX: 200, clientY: 100 });
+      fire('pointermove', { pointerId: 5, clientX: 225, clientY: 102 }); // crosses 18px: _panLastX reset to 225 (delta 0)
+      fire('pointermove', { pointerId: 5, clientX: 275, clientY: 102 }); // +50px -> -5000 Hz
+      fire('pointerup', { pointerId: 5, clientX: 275, clientY: 102 });
+      assertEqual(tunes.length, 0, 'horizontal pan > 18px does not tap-tune');
+      assert(pans.some((p) => p.dHz === -5000), `expected -5000 Hz pan without 25px threshold jump, got ${JSON.stringify(pans)}`);
+
+      // 3) isPrimary: true resets stale ghost entries in _touches (from dropped pinch) and lostpointercapture clears state
+      fire('pointerdown', { pointerId: 10, isPrimary: true, clientX: 180, clientY: 100 });
+      fire('pointerdown', { pointerId: 11, isPrimary: false, clientX: 260, clientY: 100 });
+      assertEqual(interaction._touches.size, 2, 'two touches enter pinch');
+      assertEqual(interaction._wasPinched, true, 'pinch sets _wasPinched=true');
+      // Drop pointerup/cancel for 10 & 11, then begin fresh touch with isPrimary: true
+      tunes.length = 0;
+      fire('pointerdown', { pointerId: 12, isPrimary: true, clientX: 240, clientY: 100 });
+      assertEqual(interaction._touches.size, 1, 'isPrimary:true clears ghost _touches entries');
+      assertEqual(interaction._wasPinched, false, 'isPrimary:true clears stale _wasPinched');
+      fire('pointerup', { pointerId: 12, clientX: 240, clientY: 100 });
+      assertEqual(tunes.length, 1, 'fresh tap after ghost pinch tunes cleanly');
+      assertEqual(tunes[0].hz, 14074000, 'fresh tap tunes exact touchdown freq');
+
+      fire('pointerdown', { pointerId: 13, isPrimary: true, clientX: 240, clientY: 100 });
+      fire('lostpointercapture', { pointerId: 13 });
+      assertEqual(interaction._touches.size, 0, 'lostpointercapture clears _touches entry');
+      assertEqual(interaction._dragMode, null, 'lostpointercapture resets _dragMode');
+
+      // 4) voiceClickSnapKhz preference IS honored on touch/mobile taps (USB mode 2)
+      snapshot.rxA.mode = 2;
+      panCenterA = 14227300;
+      voiceSnap = true;
+      tunes.length = 0;
+      fire('pointerdown', { pointerId: 14, isPrimary: true, clientX: 240, clientY: 100 });
+      fire('pointerup', { pointerId: 14, clientX: 240, clientY: 100 });
+      assertEqual(tunes[0].hz, 14227000, 'mobile touch tap honors voiceClickSnapKhz=true (snaps 14227300 -> 14227000)');
+
+      voiceSnap = false;
+      tunes.length = 0;
+      fire('pointerdown', { pointerId: 15, isPrimary: true, clientX: 240, clientY: 100 });
+      fire('pointerup', { pointerId: 15, clientX: 240, clientY: 100 });
+      assertEqual(tunes[0].hz, 14227300, 'mobile touch tap honors voiceClickSnapKhz=false (stepHz 100 exact)');
+
+      if (K4.ClientPrefs && typeof K4.ClientPrefs.set === 'function' && typeof K4.PanadapterView === 'function') {
+        const host = document.createElement('div');
+        host.style.width = '390px';
+        host.style.height = '320px';
+        document.body.appendChild(host);
+        let pv = null;
+        try {
+          K4.ClientPrefs.set('voiceClickSnapKhz', true);
+          pv = new K4.PanadapterView({ container: host, state: new K4.RadioState(), client: { sendCat() {}, tune() {}, setDisplay() {} }, renderer: '2d' });
+          assertEqual(pv.getVoiceClickSnapKhz(), true, 'PanadapterView inherits voiceClickSnapKhz=true from prefs');
+          K4.ClientPrefs.set('voiceClickSnapKhz', false);
+          pv.setVoiceClickSnapKhz(K4.ClientPrefs.get('voiceClickSnapKhz'));
+          assertEqual(pv.getVoiceClickSnapKhz(), false, 'PanadapterView reflects voiceClickSnapKhz=false');
+        } finally {
+          if (pv && typeof pv.destroy === 'function') pv.destroy();
+          host.remove();
+        }
+      }
+    } finally {
+      interaction.destroy();
+      if (K4.ClientPrefs && typeof K4.ClientPrefs.set === 'function') {
+        K4.ClientPrefs.set('voiceClickSnapKhz', savedPref);
+      }
+      if (K4.storage && typeof K4.storage.set === 'function') {
+        K4.storage.set('prefs.voiceClickSnapKhz', savedStorage);
+      }
+    }
+  });
+
+  // 54. Portrait Mobile VFO B Hiding (PanadapterCanvas2D / drawMainOverlay / getVfoPillBoxes)
+  test('PanadapterCanvas2D portrait mobile hides VFO B pill when subRx off & target A, shows when subRx on, target B, or landscape', () => {
+    const K4 = globalThis.K4;
+    assertEqual(typeof K4.PanadapterCanvas2D.prototype.getVfoPillBoxes, 'function', 'PanadapterCanvas2D exposes getVfoPillBoxes');
+    assertEqual(typeof K4.PanadapterWebGL2.prototype.getVfoPillBoxes, 'function', 'PanadapterWebGL2 exposes getVfoPillBoxes');
+
+    const host = document.createElement('div');
+    host.style.position = 'relative';
+    host.style.width = '390px';
+    host.style.height = '520px';
+    document.body.appendChild(host);
+
+    const renderer = new K4.PanadapterCanvas2D(host, { palette: 'obsidian' });
+    try {
+      const makeFrame = ({ subRxEnabled, targetRx, dualPanMode, isPortraitMobile }) => ({
+        snapshot: {
+          cwPitchHz: 500,
+          subRxEnabled,
+          splitEnabled: false,
+          dualPanMode,
+          rxA: { freqHz: 14074000, mode: 2, bwHz: 2400, ifShiftHz: 1500, panCenterHz: 14074000, panSpanHz: 48000 },
+          rxB: { freqHz: 14080000, mode: 2, bwHz: 2400, ifShiftHz: 1500, panCenterHz: 14080000, panSpanHz: 48000 },
+        },
+        panes: {
+          A: { panCenterHz: 14074000, userSpanHz: 48000, binsReady: false, refDbm: -110, scaleDb: 80 },
+          B: { panCenterHz: 14080000, userSpanHz: 48000, binsReady: false, refDbm: -110, scaleDb: 80 },
+        },
+        dualPanMode,
+        targetRx,
+        isPortraitMobile,
+        peakHold: false,
+        hover: null,
+        dragVfoRx: null,
+      });
+
+      // 1) Portrait mobile (390x520) with subRxEnabled=false, targetRx='A', dualPanMode=0 -> VFO A shown, VFO B hidden (even though B is in span)
+      renderer.render(makeFrame({ subRxEnabled: false, targetRx: 'A', dualPanMode: 0, isPortraitMobile: true }));
+      let pills = renderer.getVfoPillBoxes();
+      assert(pills.some((p) => p.rx === 'A'), `portrait mobile must draw VFO A pill: ${JSON.stringify(pills)}`);
+      assert(!pills.some((p) => p.rx === 'B'), `portrait mobile must hide VFO B pill when Sub RX off & target A: ${JSON.stringify(pills)}`);
+      const pillA = pills.find((p) => p.rx === 'A');
+      assert(pillA.w >= 22 && pillA.h === 18, `narrow portrait pill should be >=22x18: ${JSON.stringify(pillA)}`);
+
+      // 2) Portrait mobile with subRxEnabled=true -> VFO B shown
+      renderer.render(makeFrame({ subRxEnabled: true, targetRx: 'A', dualPanMode: 0, isPortraitMobile: true }));
+      pills = renderer.getVfoPillBoxes();
+      assert(pills.some((p) => p.rx === 'A') && pills.some((p) => p.rx === 'B'), `portrait mobile with subRxEnabled=true must show A and B: ${JSON.stringify(pills)}`);
+      const pillB = pills.find((p) => p.rx === 'B');
+      assert(pillB.y > pills.find((p) => p.rx === 'A').y, 'VFO B pill stacks below VFO A pill');
+
+      // 3) Portrait mobile with subRxEnabled=false, targetRx='B' -> VFO B shown
+      renderer.render(makeFrame({ subRxEnabled: false, targetRx: 'B', dualPanMode: 0, isPortraitMobile: true }));
+      pills = renderer.getVfoPillBoxes();
+      assert(pills.some((p) => p.rx === 'A') && pills.some((p) => p.rx === 'B'), `portrait mobile with targetRx=B must show B: ${JSON.stringify(pills)}`);
+
+      // 4) Landscape (844x390) with subRxEnabled=false, targetRx='A' -> VFO B shown (when B is in view)
+      host.style.width = '844px';
+      host.style.height = '390px';
+      renderer.resize();
+      renderer.render(makeFrame({ subRxEnabled: false, targetRx: 'A', dualPanMode: 0, isPortraitMobile: false }));
+      pills = renderer.getVfoPillBoxes();
+      assert(pills.some((p) => p.rx === 'A') && pills.some((p) => p.rx === 'B'), `landscape 844x390 with B in view must show VFO B pill: ${JSON.stringify(pills)}`);
+    } finally {
+      renderer.destroy();
+      host.remove();
+    }
+  });
+
+  // 55. PwaManager Screen Wake Lock lifecycle & K4_SW_CHECK_FAILED authRequired propagation
+  test('PwaManager manages standalone audio screen wake lock and preserves authRequired on check failure', async () => {
+    const PwaManager = globalThis.K4.PwaManager;
+
+    function makeEmitter() {
+      const map = new Map();
+      return {
+        addEventListener(type, fn) {
+          if (!map.has(type)) map.set(type, new Set());
+          map.get(type).add(fn);
+        },
+        removeEventListener(type, fn) {
+          if (map.has(type)) map.get(type).delete(fn);
+        },
+        dispatch(type, ev = {}) {
+          if (!map.has(type)) return;
+          for (const fn of Array.from(map.get(type))) fn(ev);
+        },
+      };
+    }
+
+    function makeSessionStore() {
+      const store = new Map();
+      return {
+        getItem(k) { return store.has(k) ? store.get(k) : null; },
+        setItem(k, v) { store.set(k, String(v)); },
+        removeItem(k) { store.delete(k); },
+      };
+    }
+
+    // Subcase A: Standalone PWA + audio playing acquires, mute releases, visibility hidden/visible releases & re-acquires
+    {
+      let reqCount = 0;
+      const sentinels = [];
+      const makeSentinel = () => {
+        const s = Object.assign(makeEmitter(), {
+          released: false,
+          releaseCalls: 0,
+          release: async () => {
+            s.releaseCalls++;
+            s.released = true;
+          },
+        });
+        sentinels.push(s);
+        return s;
+      };
+      const win = Object.assign(makeEmitter(), {
+        matchMedia: (q) => ({ matches: q === '(display-mode: standalone)' }),
+      });
+      const doc = Object.assign(makeEmitter(), { visibilityState: 'visible' });
+      const nav = {
+        onLine: true,
+        wakeLock: {
+          request: async (kind) => {
+            assertEqual(kind, 'screen', 'wakeLock.request receives screen');
+            reqCount++;
+            return makeSentinel();
+          },
+        },
+      };
+
+      const mgr = new PwaManager({
+        navigator: nav,
+        window: win,
+        document: doc,
+        location: { protocol: 'file:', hostname: '' },
+        sessionStorage: makeSessionStore(),
+        initialCheckDelayMs: -1,
+        checkIntervalMs: 0,
+      });
+      try {
+        mgr.start();
+        assertEqual(mgr.getStatus().wakeLockActive, false, 'wakeLock initially inactive before audio');
+
+        mgr.setAudioPlaying(true);
+        await Promise.resolve();
+        await Promise.resolve();
+        assertEqual(reqCount, 1, 'standalone + audio playing acquires wakeLock once');
+        assertEqual(mgr.getStatus().wakeLockActive, true, 'wakeLockActive true after acquisition');
+
+        // Tab/PWA hidden -> releases wake lock
+        doc.visibilityState = 'hidden';
+        doc.dispatch('visibilitychange');
+        assertEqual(sentinels[0].releaseCalls, 1, 'visibility hidden releases wakeLock sentinel');
+        assertEqual(mgr.getStatus().wakeLockActive, false, 'wakeLockActive false while hidden');
+
+        // Tab/PWA visible again -> re-acquires wake lock
+        doc.visibilityState = 'visible';
+        doc.dispatch('visibilitychange');
+        await Promise.resolve();
+        await Promise.resolve();
+        assertEqual(reqCount, 2, 'visibility visible re-acquires wakeLock');
+        assertEqual(mgr.getStatus().wakeLockActive, true, 'wakeLockActive true after visible re-acquire');
+
+        // Mute / stop audio -> releases wake lock
+        mgr.setAudioPlaying(false);
+        assertEqual(sentinels[1].releaseCalls, 1, 'setAudioPlaying(false) releases wakeLock sentinel');
+        assertEqual(mgr.getStatus().wakeLockActive, false, 'wakeLockActive false after audio stop/mute');
+      } finally {
+        mgr.destroy();
+      }
+    }
+
+    // Subcase B: Non-standalone browser mode skips wakeLock completely
+    {
+      let reqCount = 0;
+      const win = Object.assign(makeEmitter(), {
+        matchMedia: () => ({ matches: false }),
+      });
+      const doc = Object.assign(makeEmitter(), { visibilityState: 'visible' });
+      const nav = {
+        onLine: true,
+        standalone: false,
+        wakeLock: {
+          request: async () => {
+            reqCount++;
+            return { release: async () => {} };
+          },
+        },
+      };
+      const mgr = new PwaManager({
+        navigator: nav,
+        window: win,
+        document: doc,
+        location: { protocol: 'file:', hostname: '' },
+        sessionStorage: makeSessionStore(),
+        initialCheckDelayMs: -1,
+        checkIntervalMs: 0,
+      });
+      try {
+        mgr.start();
+        mgr.setAudioPlaying(true);
+        await Promise.resolve();
+        assertEqual(reqCount, 0, 'non-standalone mode skips wakeLock.request completely');
+        assertEqual(mgr.getStatus().wakeLockActive, false, 'wakeLockActive stays false in non-standalone mode');
+      } finally {
+        mgr.destroy();
+      }
+    }
+
+    // Subcase C: wakeLock.request rejection resolves silently without throwing or logging errors, plus iOS standalone + race release
+    {
+      const win = Object.assign(makeEmitter(), { matchMedia: () => ({ matches: false }) });
+      const doc = Object.assign(makeEmitter(), { visibilityState: 'visible' });
+      const navReject = {
+        onLine: true,
+        standalone: true,
+        wakeLock: {
+          request: async () => {
+            throw new Error('NotAllowedError');
+          },
+        },
+      };
+      const mgrReject = new PwaManager({
+        navigator: navReject,
+        window: win,
+        document: doc,
+        location: { protocol: 'file:', hostname: '' },
+        sessionStorage: makeSessionStore(),
+        initialCheckDelayMs: -1,
+        checkIntervalMs: 0,
+      });
+      try {
+        mgrReject.start();
+        mgrReject.setAudioPlaying(true);
+        await new Promise((r) => setTimeout(r, 10));
+        assertEqual(mgrReject.getStatus().wakeLockActive, false, 'rejected wakeLock.request keeps wakeLockActive false silently');
+      } finally {
+        mgrReject.destroy();
+      }
+
+      // Pending wakeLock resolves AFTER setAudioPlaying(false) -> immediately released by race guard
+      let resolveReq = null;
+      let raceReleased = 0;
+      const mgrRace = new PwaManager({
+        navigator: {
+          onLine: true,
+          standalone: true,
+          wakeLock: {
+            request: () => new Promise((resolve) => { resolveReq = resolve; }),
+          },
+        },
+        window: win,
+        document: doc,
+        location: { protocol: 'file:', hostname: '' },
+        sessionStorage: makeSessionStore(),
+        initialCheckDelayMs: -1,
+        checkIntervalMs: 0,
+      });
+      try {
+        mgrRace.start();
+        mgrRace.setAudioPlaying(true);
+        mgrRace.setAudioPlaying(false);
+        resolveReq({ release: async () => { raceReleased++; } });
+        await Promise.resolve();
+        await Promise.resolve();
+        assertEqual(raceReleased, 1, 'late-resolving wakeLock after audio stopped is immediately released');
+        assertEqual(mgrRace.getStatus().wakeLockActive, false, 'wakeLockActive stays false after race release');
+      } finally {
+        mgrRace.destroy();
+      }
+    }
+
+    // Subcase D: K4_SW_CHECK_FAILED preserves authRequired: true in checkForUpdate()
+    {
+      function FakeMessageChannel() {
+        const ch = this;
+        ch.port1 = { onmessage: null };
+        ch.port2 = {
+          postMessage(data) {
+            queueMicrotask(() => {
+              if (ch.port1.onmessage) ch.port1.onmessage({ data });
+            });
+          },
+        };
+      }
+      let replyPayload = { type: 'K4_SW_CHECK_FAILED', authRequired: true, error: 'Redirect blocked (auth required)' };
+      const controller = {
+        postMessage(msg, ports) {
+          assertEqual(msg.type, 'K4_SW_CHECK_UPDATE', 'checkForUpdate sends K4_SW_CHECK_UPDATE');
+          ports[0].postMessage(replyPayload);
+        },
+      };
+      const sw = Object.assign(makeEmitter(), {
+        controller,
+        ready: Promise.resolve(),
+        register: async () => ({ active: controller, addEventListener() {}, update: async () => {} }),
+      });
+      const mgr = new PwaManager({
+        navigator: { serviceWorker: sw, onLine: true },
+        window: makeEmitter(),
+        document: Object.assign(makeEmitter(), { visibilityState: 'visible' }),
+        location: { protocol: 'https:', hostname: 'k4.fivesevenfive.org' },
+        sessionStorage: makeSessionStore(),
+        MessageChannel: FakeMessageChannel,
+        initialCheckDelayMs: -1,
+        checkIntervalMs: 0,
+      });
+      try {
+        mgr.start();
+        const resAuth = await mgr.checkForUpdate({ force: true });
+        assertEqual(resAuth.status, 'failed', 'K4_SW_CHECK_FAILED maps to failed status');
+        assertEqual(resAuth.authRequired, true, 'authRequired: true preserved by checkForUpdate()');
+
+        replyPayload = { type: 'K4_SW_CHECK_FAILED', authRequired: false, error: 'HTTP 500 for ./index.html' };
+        const resNoAuth = await mgr.checkForUpdate({ force: true });
+        assertEqual(resNoAuth.status, 'failed', '500 failure maps to failed status');
+        assertEqual(resNoAuth.authRequired, false, 'authRequired: false preserved by checkForUpdate()');
+      } finally {
+        mgr.destroy();
+      }
+    }
+  });
+
   async function runAll() {
     const resultsEl = document.getElementById('results');
     const summaryEl = document.getElementById('summary');

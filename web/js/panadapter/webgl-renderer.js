@@ -751,6 +751,20 @@ void main() {
     return txPinHz;
   }
 
+  function isPortraitMobileViewport(cssW, cssH, frameState) {
+    if (frameState && typeof frameState.isPortraitMobile === 'boolean') {
+      return frameState.isPortraitMobile;
+    }
+    if (
+      typeof window !== 'undefined' &&
+      window.innerWidth > 0 &&
+      window.innerHeight > 0
+    ) {
+      return window.innerWidth <= 959 && window.innerHeight > window.innerWidth;
+    }
+    return cssW > 0 && cssH > 0 && cssW <= 959 && cssH > cssW;
+  }
+
   function drawMainOverlay({
     overlayCtx,
     cssW,
@@ -758,7 +772,11 @@ void main() {
     dpr,
     layouts,
     frameState,
+    vfoPillBoxes,
   }) {
+    if (Array.isArray(vfoPillBoxes)) {
+      vfoPillBoxes.length = 0;
+    }
     if (!overlayCtx || cssW <= 0 || cssH <= 0) return;
 
     const ctx = overlayCtx;
@@ -770,7 +788,9 @@ void main() {
     const cwPitchHz = Number.isFinite(snapshot.cwPitchHz) ? snapshot.cwPitchHz : 500;
     const subRxEnabled = Boolean(snapshot.subRxEnabled);
     const splitEnabled = Boolean(snapshot.splitEnabled);
+    const targetRx = frameState && frameState.targetRx ? frameState.targetRx : 'A';
     const hover = frameState && frameState.hover;
+    const isPortraitMobile = isPortraitMobileViewport(cssW, cssH, frameState);
 
     const monoFont =
       '"SF Mono", ui-monospace, "Cascadia Mono", "Roboto Mono", monospace';
@@ -968,10 +988,18 @@ void main() {
           fill: 'rgba(56, 189, 248, 0.18)',
           edge: 'rgba(56, 189, 248, 0.72)',
           showCurtain: true,
-          primary: frameState.targetRx !== 'B',
+          primary: targetRx !== 'B',
         });
-        const showBCurtain = subRxEnabled || frameState.targetRx === 'B';
-        const showBNeedle = subRxEnabled || splitEnabled || frameState.targetRx === 'B' || (rxB.freqHz >= viewLeftHz && rxB.freqHz <= viewRightHz);
+        const hideBOnPortraitMobile =
+          isPortraitMobile && paneRx === 'A' && !subRxEnabled && targetRx !== 'B';
+        const showBCurtain =
+          !hideBOnPortraitMobile && (subRxEnabled || targetRx === 'B');
+        const showBNeedle =
+          !hideBOnPortraitMobile &&
+          (subRxEnabled ||
+            splitEnabled ||
+            targetRx === 'B' ||
+            (rxB.freqHz >= viewLeftHz && rxB.freqHz <= viewRightHz));
         if (showBNeedle) {
           vfosToDraw.push({
             key: 'B',
@@ -980,7 +1008,7 @@ void main() {
             fill: 'rgba(34, 197, 94, 0.14)',
             edge: 'rgba(34, 197, 94, 0.68)',
             showCurtain: showBCurtain,
-            primary: frameState.targetRx === 'B',
+            primary: targetRx === 'B',
           });
         }
       }
@@ -1078,29 +1106,56 @@ void main() {
           ctx.lineTo(mx, specRect.y + specRect.h);
           ctx.stroke();
 
+          const isNarrowSpec = specRect.w < 460;
           const pillText =
-            (specRect.w >= 460
+            (!isNarrowSpec
               ? vfo.key + ' ' + K4.formatFreqMHz(vfo.state.freqHz)
               : vfo.key) + lockSuffix;
           ctx.font = 'bold 10px ' + monoFont;
           const textW = ctx.measureText(pillText).width;
-          const pillW = textW + 10;
-          const pillH = 16;
+          const pillW = isNarrowSpec ? Math.max(22, textW + 12) : textW + 10;
+          const pillH = isNarrowSpec ? 18 : 16;
           const pillX = clamp(
             mx - pillW / 2,
             specRect.x + 4,
             specRect.x + specRect.w - pillW - 4
           );
-          const pillY = vfo.key === 'B' && vfosToDraw.length > 1 ? specRect.y + 24 : specRect.y + 5;
+          const pillY =
+            vfo.key === 'B' && vfosToDraw.length > 1
+              ? specRect.y + 27
+              : specRect.y + 5;
+
+          const isPillHighlighted = Boolean(
+            (frameState && frameState.dragVfoRx === vfo.key) ||
+              (hover && hover.vfoPillRx === vfo.key)
+          );
 
           drawRoundedPill(ctx, pillX, pillY, pillW, pillH, 4);
           ctx.fillStyle = vfo.color;
           ctx.fill();
+          if (isPillHighlighted) {
+            ctx.strokeStyle = '#F8FAFC';
+            ctx.lineWidth = 1.5;
+            ctx.stroke();
+          }
           ctx.fillStyle = '#090B10';
           ctx.textAlign = 'center';
           ctx.textBaseline = 'middle';
           ctx.fillText(pillText, pillX + pillW / 2, pillY + pillH / 2 + 0.5);
           occupiedBoxes.push({ x: pillX, y: pillY, w: pillW, h: pillH });
+          if (Array.isArray(vfoPillBoxes)) {
+            vfoPillBoxes.push({
+              rx: vfo.key,
+              paneRx,
+              x: pillX,
+              y: pillY,
+              w: pillW,
+              h: pillH,
+              mx,
+              markerHz,
+              freqHz: vfo.state.freqHz,
+            });
+          }
         } else if (vfo.primary || subRxEnabled) {
           // Off-screen VFO direction badge
           const isLeft = markerHz < viewLeftHz;
@@ -1108,7 +1163,7 @@ void main() {
           ctx.font = 'bold 10px ' + monoFont;
           const bw = ctx.measureText(badge).width + 10;
           const bx = isLeft ? specRect.x + 6 : specRect.x + specRect.w - bw - 6;
-          const by = vfo.key === 'B' ? specRect.y + 24 : specRect.y + 6;
+          const by = vfo.key === 'B' ? specRect.y + 27 : specRect.y + 6;
           drawRoundedPill(ctx, bx, by, bw, 16, 4);
           ctx.fillStyle = 'rgba(14, 19, 29, 0.88)';
           ctx.fill();
@@ -1623,6 +1678,8 @@ void main() {
         ? document.documentElement.dataset.theme || ''
         : '';
 
+    const isPortraitMobile = isPortraitMobileViewport(cssW, cssH, frameState);
+
     let hoverPart = '0';
     if (hover && hover.active) {
       const hPane = panes[hover.paneRx];
@@ -1631,8 +1688,11 @@ void main() {
         Math.round(hover.xPx || 0),
         Math.round(hover.yPx || 0),
         hover.edgeHint ? (hover.edgeHint.rx || '') + ':' + (hover.edgeHint.edge || '') : '',
+        hover.vfoPillRx || '',
         hPane ? hPane.binSeq || 0 : 0,
       ].join(',');
+    } else if (hover && hover.vfoPillRx) {
+      hoverPart = 'pill:' + hover.vfoPillRx;
     }
 
     let bmPart = '';
@@ -1655,7 +1715,9 @@ void main() {
       snap.subRxEnabled ||
         snap.splitEnabled ||
         dualPanMode === 1 ||
-        dualPanMode === 2
+        dualPanMode === 2 ||
+        (frameState && (frameState.targetRx === 'B' || frameState.dragVfoRx === 'B')) ||
+        !isPortraitMobile
     );
 
     let layoutPart = '';
@@ -1679,11 +1741,13 @@ void main() {
       hudTopInset,
       paletteName || '',
       theme,
+      isPortraitMobile ? 1 : 0,
       dualPanMode,
       layoutPart,
       frameState && frameState.targetRx ? frameState.targetRx : 'A',
       peakHold ? 1 : 0,
       frameState && frameState.dragState ? frameState.dragState : '',
+      frameState && frameState.dragVfoRx ? frameState.dragVfoRx : '',
       Number.isFinite(snap.cwPitchHz) ? snap.cwPitchHz : 500,
       snap.subRxEnabled ? 1 : 0,
       snap.splitEnabled ? 1 : 0,
@@ -1703,7 +1767,7 @@ void main() {
       rxOverlaySignaturePart(rxA),
       needB ? rxOverlaySignaturePart(rxB) : '',
       paneOverlaySignaturePart(panes.A, peakHold),
-      needB || dualPanMode === 1 || dualPanMode === 2
+      snap.subRxEnabled || snap.splitEnabled || dualPanMode === 1 || dualPanMode === 2
         ? paneOverlaySignaturePart(panes.B, peakHold)
         : '',
     ].join('#');
@@ -2408,6 +2472,7 @@ void main() {
       this.dpr = 1;
       this._hudTopInset = 0;
       this._layouts = [];
+      this._vfoPills = [];
       this._lastLayoutKey = '';
       this._lastOverlaySig = null;
       this._destroyed = false;
@@ -2706,8 +2771,20 @@ void main() {
       }
     }
 
+    getVfoPillBoxes() {
+      return this._vfoPills.slice();
+    }
+
+    clearVfoPills() {
+      this._vfoPills.length = 0;
+    }
+
     renderOverlayAndMiniPans(frameState, layouts) {
-      if (this._destroyed || this.cssW <= 0 || this.cssH <= 0) return;
+      if (this._destroyed) return;
+      if (this.cssW <= 0 || this.cssH <= 0) {
+        this._vfoPills.length = 0;
+        return;
+      }
       const sig = computeOverlaySignature({
         frameState,
         layouts,
@@ -2719,6 +2796,7 @@ void main() {
       });
       if (sig !== this._lastOverlaySig) {
         this._lastOverlaySig = sig;
+        this._vfoPills.length = 0;
         drawMainOverlay({
           overlayCtx: this.overlayCtx,
           cssW: this.cssW,
@@ -2726,6 +2804,7 @@ void main() {
           dpr: this.dpr,
           layouts,
           frameState,
+          vfoPillBoxes: this._vfoPills,
         });
         bumpPerf(this.perf, 'overlayDraws');
       } else {
@@ -2742,6 +2821,7 @@ void main() {
     destroy() {
       if (this._destroyed) return;
       this._destroyed = true;
+      this._vfoPills.length = 0;
       if (this._hudResizeObserver) {
         this._hudResizeObserver.disconnect();
         this._hudResizeObserver = null;
@@ -3180,6 +3260,10 @@ void main() {
       return this.layouts;
     }
 
+    getVfoPillBoxes() {
+      return this._ctrl.getVfoPillBoxes();
+    }
+
     _setScissorRect(cssRect, devW, devH) {
       const gl = this.gl;
       const left = Math.round(cssRect.x * this.dpr);
@@ -3485,6 +3569,7 @@ void main() {
       const devW = this.glCanvas.width;
       const devH = this.glCanvas.height;
       if (this.cssW <= 0 || this.cssH <= 0 || devW <= 0 || devH <= 0) {
+        this._ctrl.clearVfoPills();
         return;
       }
 
@@ -3745,6 +3830,10 @@ void main() {
       return this.layouts;
     }
 
+    getVfoPillBoxes() {
+      return this._ctrl.getVfoPillBoxes();
+    }
+
     _drawSpectrum2D(specRect, pane, accentHex, accentFillTop) {
       const bins = pane && pane.shownDbm;
       if (!pane || !pane.binsReady || !bins || bins.length < 2) return;
@@ -3927,6 +4016,7 @@ void main() {
       this.layouts = this._ctrl.getLayouts(dualPanMode, snap);
 
       if (this.cssW <= 0 || this.cssH <= 0 || !this.ctx) {
+        this._ctrl.clearVfoPills();
         return;
       }
 

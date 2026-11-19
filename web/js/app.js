@@ -693,6 +693,7 @@
           const aDiag = this.audio && this.audio.getDiagnostics ? this.audio.getDiagnostics() : { started: false, muted: true };
           this._syncAudioToggleUi(snap, aDiag);
           this._updateConnLatency(snap, aDiag);
+          this._syncPwaWakeLock(aDiag);
           if (this.inspector) {
             if (typeof this.inspector._getVisibleTabId === 'function' && this.inspector._getVisibleTabId() === 'audio') {
               this.inspector.update(snap, ['audio']);
@@ -704,6 +705,7 @@
             }
           }
         };
+        this.audio.on('started', syncMediaUi);
         this.audio.on('mute', syncMediaUi);
         this.audio.on('mediaAction', syncMediaUi);
         this.audio.on('stopped', syncMediaUi);
@@ -1934,6 +1936,7 @@
         const nextMuted = typeof forceMute === 'boolean' ? forceMute : !this.audio.isMuted();
         this.audio.setMuted(nextMuted);
       }
+      this._syncPwaWakeLock();
       this._scheduleRender();
     }
 
@@ -2244,6 +2247,14 @@
       const status = conn.status || 'disconnected';
       const dlgOpen = Boolean(this._dom.connDialog && this._dom.connDialog.dataset.open === 'true');
       this._disconnectedCard.hidden = !(status === 'disconnected' && !dlgOpen);
+    }
+
+    _syncPwaWakeLock(aDiag) {
+      const diag =
+        aDiag || (this.audio && this.audio.getDiagnostics ? this.audio.getDiagnostics() : { started: false, muted: true });
+      if (this.pwa && typeof this.pwa.setAudioPlaying === 'function') {
+        this.pwa.setAudioPlaying(Boolean(diag && diag.started && !diag.muted));
+      }
     }
 
     _syncAudioToggleUi(snap, aDiagOverride) {
