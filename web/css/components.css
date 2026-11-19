@@ -4383,3 +4383,110 @@
     line-height: 1.25;
   }
 }
+
+/* Live Band Demo Bar & Controls */
+.k4-btn-demo {
+  border-color: rgba(56, 189, 248, 0.45);
+  color: #7dd3fc;
+}
+.k4-btn-demo:hover:not(:disabled) {
+  background: rgba(56, 189, 248, 0.14);
+  border-color: rgba(56, 189, 248, 0.75);
+}
+
+.k4-demo-bar {
+  position: absolute;
+  left: 12px;
+  bottom: 12px;
+  z-index: 25;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  max-width: calc(100% - 24px);
+  padding: 6px 10px;
+  border-radius: 10px;
+  background: rgba(9, 11, 16, 0.88);
+  border: 1px solid rgba(56, 189, 248, 0.35);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(8px);
+  font-size: 12px;
+  color: var(--text-1, #e6edf3);
+}
+
+.k4-demo-badge {
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: rgba(56, 189, 248, 0.18);
+  border: 1px solid rgba(56, 189, 248, 0.45);
+  color: #7dd3fc;
+  font-weight: 700;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  white-space: nowrap;
+}
+
+.k4-demo-title {
+  color: var(--text-2, #9aa4b2);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.k4-demo-bookmarks {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+}
+
+.k4-demo-chip {
+  padding: 3px 8px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.06);
+  color: #e6edf3;
+  font-size: 11px;
+  font-family: var(--font-mono, monospace);
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+
+.k4-demo-chip:hover {
+  background: rgba(56, 189, 248, 0.2);
+  border-color: rgba(56, 189, 248, 0.55);
+}
+
+.k4-demo-audio-cta {
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(34, 197, 94, 0.6);
+  background: rgba(34, 197, 94, 0.2);
+  color: #86efac;
+  font-weight: 700;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.k4-demo-audio-cta:hover {
+  background: rgba(34, 197, 94, 0.32);
+}
+
+.k4-demo-close {
+  background: transparent;
+  border: none;
+  color: var(--text-2, #9aa4b2);
+  font-size: 16px;
+  line-height: 1;
+  padding: 0 4px;
+  cursor: pointer;
+}
+
+.k4-demo-close:hover {
+  color: #fff;
+}
+
+@media (max-width: 959px) {
+  .k4-demo-title {
+    display: none;
+  }
+}

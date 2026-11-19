@@ -223,6 +223,19 @@
       });
       foot.appendChild(this.disconnectBtn);
 
+      this.demoBtn = document.createElement('button');
+      this.demoBtn.type = 'button';
+      this.demoBtn.className = 'k4-btn-ghost k4-btn-demo';
+      this.demoBtn.dataset.testid = 'demo-connect-btn';
+      this.demoBtn.textContent = 'Live Band Demo';
+      this.demoBtn.title = 'Launch self-contained single-band I/Q demo (no radio needed)';
+      this.demoBtn.addEventListener('click', () => {
+        this._launchDemo();
+      });
+      if (typeof K4.DemoSocket === 'function') {
+        foot.appendChild(this.demoBtn);
+      }
+
       const cancelBtn = document.createElement('button');
       cancelBtn.type = 'button';
       cancelBtn.className = 'k4-btn-ghost';
@@ -241,6 +254,33 @@
       modal.appendChild(card);
 
       modal.addEventListener('click', () => this.close());
+    }
+
+    async _launchDemo() {
+      if (this._connecting) return;
+      this.setError('');
+      this._connecting = true;
+      if (this.demoBtn) {
+        this.demoBtn.disabled = true;
+        this.demoBtn.textContent = 'Loading Demo…';
+      }
+      try {
+        await this.onConnectSubmit({
+          wsUrl: 'demo://band',
+          password: '',
+          encodeMode: 1,
+          subprotocolMode: 'none',
+          latencyTier: 2,
+        });
+      } catch (err) {
+        this.setError(err && err.message ? err.message : 'Demo load failed');
+      } finally {
+        this._connecting = false;
+        if (this.demoBtn) {
+          this.demoBtn.disabled = false;
+          this.demoBtn.textContent = 'Live Band Demo';
+        }
+      }
     }
 
     getOptions() {

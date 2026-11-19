@@ -18,6 +18,8 @@ const UPDATE_WATCH_ASSETS = [
   './js/protocol/binary-packets.js',
   './js/transport/rx-only-gate.js',
   './js/state/radio-state.js',
+  './js/demo/ddc-demod.js',
+  './js/demo/demo-socket.js',
   './js/transport/k4-client.js',
   './js/panadapter/band-plan.js',
   './js/panadapter/color-luts.js',

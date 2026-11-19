@@ -1,0 +1,45 @@
+{
+  "version": 1,
+  "title": "20m Demo Band (CW + FT8 + RTTY Test I/Q)",
+  "source": "Synthetic 20.25 kHz I/Q Test Bundle (replace with KiwiSDR capture)",
+  "band": "20m",
+  "bandNumber": "05",
+  "iqFile": "band.iq.bin",
+  "format": "int16-le-iq",
+  "centerFreqHz": 14074000,
+  "sampleRateHz": 20250,
+  "frames": 240570,
+  "durationSec": 11.88,
+  "minFreqHz": 14064280,
+  "maxFreqHz": 14083720,
+  "defaultFreqHz": 14067500,
+  "defaultMode": "CW",
+  "defaultSpanHz": 18000,
+  "noiseFloorOffsetDb": -118.0,
+  "bookmarks": [
+    {
+      "label": "CW CQ 14.0675 MHz",
+      "freqHz": 14067500,
+      "mode": "CW",
+      "snrDb": 26.0
+    },
+    {
+      "label": "CW W1AW 14.0697 MHz",
+      "freqHz": 14069700,
+      "mode": "CW",
+      "snrDb": 20.0
+    },
+    {
+      "label": "FT8 14.0740 MHz",
+      "freqHz": 14074000,
+      "mode": "DATA-A",
+      "snrDb": 18.0
+    },
+    {
+      "label": "RTTY 14.0798 MHz",
+      "freqHz": 14079800,
+      "mode": "AFSK-A",
+      "snrDb": 22.0
+    }
+  ]
+}

@@ -535,8 +535,15 @@
       this._lastPingSentPerfMs = null;
       this._framer.reset();
 
+      const isDemo = wsUrl.startsWith('demo://');
+      if (isDemo && typeof this.setTxPosture === 'function') {
+        this.setTxPosture('rx-only', { silentCat: true });
+      }
+
       let attempts;
-      if (subprotocolMode === 'binary') {
+      if (isDemo) {
+        attempts = [undefined];
+      } else if (subprotocolMode === 'binary') {
         attempts = [['binary']];
       } else if (subprotocolMode === 'none') {
         attempts = [undefined];
@@ -564,7 +571,14 @@
           const protocols = attempts[attemptIdx];
           let ws;
           try {
-            ws = protocols ? new WebSocket(wsUrl, protocols) : new WebSocket(wsUrl);
+            if (isDemo) {
+              if (typeof K4.DemoSocket !== 'function') {
+                throw new Error('Demo mode module (K4.DemoSocket) is not loaded');
+              }
+              ws = new K4.DemoSocket(wsUrl, opts.demoOptions || {});
+            } else {
+              ws = protocols ? new WebSocket(wsUrl, protocols) : new WebSocket(wsUrl);
+            }
           } catch (err) {
             const msg = err && err.message ? err.message : String(err);
             this.state.updateConnection({

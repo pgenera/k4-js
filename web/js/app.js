@@ -1384,9 +1384,113 @@
       }
     }
 
+    _initDemoListeners() {
+      if (this._demoListenersBound) return;
+      this._demoListenersBound = true;
+      if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+        window.addEventListener('k4-demo-notice', (ev) => {
+          const msg = ev && ev.detail && ev.detail.message;
+          if (msg) this.toast(msg, 'info');
+        });
+        window.addEventListener('k4-demo-progress', (ev) => {
+          const d = ev && ev.detail;
+          if (d && d.phase === 'ready' && d.manifest) {
+            this._mountDemoBar(d.manifest);
+          }
+        });
+      }
+    }
+
+    _mountDemoBar(manifest) {
+      if (!this._dom.panStage || !manifest) return;
+      this._unmountDemoBar();
+
+      const bar = el('div', 'k4-demo-bar');
+      bar.id = 'k4-demo-bar';
+      bar.dataset.testid = 'demo-bar';
+      bar.setAttribute('role', 'region');
+      bar.setAttribute('aria-label', 'Live Band Demo Controls');
+
+      const badge = el('span', 'k4-demo-badge', `DEMO · ${(manifest.band || 'BAND').toUpperCase()}`);
+      bar.appendChild(badge);
+
+      const title = el('span', 'k4-demo-title', manifest.title || 'Recorded RF Band');
+      bar.appendChild(title);
+
+      const bms = Array.isArray(manifest.bookmarks) ? manifest.bookmarks : [];
+      if (bms.length > 0) {
+        const bmWrap = el('div', 'k4-demo-bookmarks');
+        for (let i = 0; i < bms.length; i++) {
+          const bm = bms[i];
+          const btn = el('button', 'k4-demo-chip', bm.label || `${(bm.freqHz / 1e6).toFixed(4)}`);
+          btn.type = 'button';
+          btn.title = `Tune VFO A to ${bm.label || bm.freqHz} (${bm.mode || 'USB'})`;
+          btn.addEventListener('click', () => {
+            if (bm.mode && typeof this.client.setMode === 'function') {
+              this.client.setMode('A', bm.mode);
+            }
+            if (Number.isFinite(Number(bm.freqHz)) && typeof this.client.tune === 'function') {
+              this.client.tune('A', Number(bm.freqHz));
+            }
+          });
+          bmWrap.appendChild(btn);
+        }
+        bar.appendChild(bmWrap);
+      }
+
+      const audioBtn = el('button', 'k4-demo-audio-cta', 'Enable Audio');
+      audioBtn.type = 'button';
+      audioBtn.dataset.testid = 'demo-enable-audio';
+      audioBtn.addEventListener('click', () => {
+        if (this._dom.audioToggleBtn) {
+          this._dom.audioToggleBtn.click();
+        }
+        audioBtn.hidden = true;
+      });
+      if (this.audio && typeof this.audio.getDiagnostics === 'function') {
+        const diag = this.audio.getDiagnostics();
+        if (diag && diag.started && !diag.muted) audioBtn.hidden = true;
+      }
+      bar.appendChild(audioBtn);
+      this._demoAudioCta = audioBtn;
+
+      const closeBtn = el('button', 'k4-demo-close', '×');
+      closeBtn.type = 'button';
+      closeBtn.title = 'Hide demo bar';
+      closeBtn.addEventListener('click', () => this._unmountDemoBar());
+      bar.appendChild(closeBtn);
+
+      this._dom.panStage.appendChild(bar);
+      this._demoBarEl = bar;
+    }
+
+    _unmountDemoBar() {
+      if (this._demoBarEl && this._demoBarEl.parentNode) {
+        this._demoBarEl.parentNode.removeChild(this._demoBarEl);
+      }
+      this._demoBarEl = null;
+      this._demoAudioCta = null;
+    }
+
     _handleStartup() {
+      this._initDemoListeners();
       const resumeOpts = this._consumePostUpdateReconnect();
       const autoConnect = this._params.get('autoconnect');
+      const demoParam = this._params.get('demo');
+      const host =
+        typeof location !== 'undefined' && location.hostname
+          ? String(location.hostname).toLowerCase()
+          : '';
+      const isHostedDemoHost =
+        host.endsWith('.github.io') || host.endsWith('.pages.dev');
+      const wantDemo =
+        demoParam === '1' ||
+        demoParam === 'true' ||
+        (demoParam !== '0' &&
+          demoParam !== 'false' &&
+          autoConnect !== '1' &&
+          autoConnect !== 'true' &&
+          (Boolean(globalThis.K4_DEMO_DEFAULT) || isHostedDemoHost));
       const hasPassword = this._params.has('password');
       const passwordParam = hasPassword ? this._params.get('password') || '' : null;
       if (
@@ -1409,6 +1513,16 @@
       }
       if (resumeOpts) {
         this.connect(resumeOpts).catch(() => {
+          this.openConnectionDialog();
+        });
+      } else if (wantDemo && typeof K4.DemoSocket === 'function') {
+        this.connect({
+          wsUrl: 'demo://band',
+          password: '',
+          encodeMode: 1,
+          subprotocolMode: 'none',
+          latencyTier: 2,
+        }).catch(() => {
           this.openConnectionDialog();
         });
       } else if (autoConnect === '1' || autoConnect === 'true') {
@@ -1440,6 +1554,11 @@
           this._pendingConnectClose = false;
           this.connectionDialog.close();
         }
+        if (finalOpts.wsUrl && String(finalOpts.wsUrl).startsWith('demo://') && K4.DemoSocket && K4.DemoSocket.lastManifest) {
+          this._mountDemoBar(K4.DemoSocket.lastManifest);
+        } else {
+          this._unmountDemoBar();
+        }
       } catch (err) {
         this._pendingConnectClose = false;
         throw err;
@@ -1450,6 +1569,7 @@
       this._pendingConnectClose = false;
       this._lastConnectOpts = null;
       this._resetTxSafety();
+      this._unmountDemoBar();
       this.client.disconnect();
       if (this.pwa) this.pwa.notifyActivityChanged();
       this.toast('Disconnected from radio', 'info');
