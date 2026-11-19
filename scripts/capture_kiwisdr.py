@@ -521,9 +521,15 @@ def capture_sweep_on_host(
                 tag = payload[:3]
                 body = payload[3:]
                 if tag == b"MSG":
-                    text = body.decode("latin-1", errors="replace")
-                    if "too_busy=" in text or "inactivity_timeout" in text:
-                        raise RuntimeError(f"KiwiSDR ended session: {text.strip()[:80]}")
+                    text = body.decode("latin-1", errors="replace").strip()
+                    for pair in text.split(" "):
+                        if "=" not in pair:
+                            continue
+                        k, v = pair.split("=", 1)
+                        if k == "too_busy":
+                            raise RuntimeError(f"KiwiSDR is busy (too_busy={v})")
+                        if k == "inactivity_timeout":
+                            raise RuntimeError(f"KiwiSDR inactivity timeout ({v})")
                     continue
                 if tag != b"SND" or len(body) < 17:
                     continue
