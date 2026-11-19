@@ -417,6 +417,183 @@ def capture_with_failover(
     raise RuntimeError(f"All hosts failed for {freq_khz:.1f} kHz: {last_err}")
 
 
+def capture_sweep_on_host(
+    host: str,
+    port: int,
+    tls: bool,
+    centers_khz: list,
+    start_idx: int,
+    duration_sec: float,
+    out_dir: str,
+    tile_metas: list,
+    password: str = "#",
+    user: str = "k4-js-demo",
+    timeout: float = 12.0,
+    settle_sec: float = 0.65,
+) -> int:
+    """Capture remaining tiles [start_idx..] on a single persistent KiwiSDR connection."""
+    ts = int(time.time())
+    path = f"/{ts}/SND"
+    proto = "wss" if tls else "ws"
+    print(f"[kiwi] Opening persistent sweep session to {proto}://{host}:{port}{path} ...", flush=True)
+    ws = SimpleWebSocket(host, port, path, tls=tls, timeout=timeout)
+
+    sample_rate = None
+    ar_sent = False
+    last_keepalive = time.monotonic()
+    idx = start_idx
+
+    try:
+        ws.send_text(f"SET auth t=kiwi p={password}")
+        ws.send_text(f"SET ident_user={user}")
+        ws.send_text("SET keepalive")
+
+        handshake_start = time.monotonic()
+        while not ar_sent:
+            if time.monotonic() - handshake_start > timeout:
+                raise RuntimeError("Timed out waiting for KiwiSDR sample_rate handshake")
+            item = ws.recv(timeout=2.0)
+            if item is None:
+                continue
+            _, payload = item
+            if len(payload) < 3 or payload[:3] != b"MSG":
+                continue
+            text = payload[3:].decode("latin-1", errors="replace").strip()
+            for pair in text.split(" "):
+                if "=" not in pair:
+                    continue
+                k, v = pair.split("=", 1)
+                if k == "too_busy":
+                    raise RuntimeError(f"KiwiSDR is busy (too_busy={v})")
+                if k == "badp" and v != "0":
+                    raise RuntimeError(f"KiwiSDR rejected password (badp={v})")
+                if k == "sample_rate":
+                    try:
+                        sr = float(v)
+                        if sr > 1000:
+                            sample_rate = int(round(sr))
+                    except ValueError:
+                        pass
+            if sample_rate:
+                ws.send_text(f"SET AR OK in={sample_rate} out={sample_rate}")
+                ws.send_text("SET compression=0")
+                ws.send_text("SET agc=0 hang=0 thresh=-100 slope=6 decay=1000 manGain=50")
+                ws.send_text("SET squelch=0 max=0")
+                ws.send_text("SET keepalive")
+                ar_sent = True
+
+        half_bw = int(sample_rate * 0.48)
+        settle_frames = int(round(sample_rate * settle_sec))
+        target_frames = int(round(sample_rate * duration_sec))
+        print(f"[kiwi] Connected to {host}:{port} (sample_rate={sample_rate} Hz, ±{half_bw} Hz)", flush=True)
+
+        while idx < len(centers_khz):
+            freq_khz = centers_khz[idx]
+            ws.send_text(f"SET mod=iq low_cut={-half_bw} high_cut={half_bw} freq={freq_khz:.3f}")
+            ws.send_text("SET keepalive")
+            print(
+                f"[sweep] Tile {idx + 1}/{len(centers_khz)}: {freq_khz:.1f} kHz ({duration_sec:.1f}s)...",
+                flush=True,
+            )
+
+            settled = 0
+            iq_chunks = []
+            total_frames = 0
+            overflows = 0
+            rssi_sum = 0.0
+            rssi_count = 0
+            tile_start = time.monotonic()
+
+            while total_frames < target_frames:
+                now = time.monotonic()
+                if now - last_keepalive >= 3.5:
+                    ws.send_text("SET keepalive")
+                    last_keepalive = now
+                if now - tile_start > duration_sec + 25.0:
+                    raise RuntimeError(f"Timed out capturing tile {idx} @ {freq_khz:.1f} kHz")
+
+                item = ws.recv(timeout=2.0)
+                if item is None:
+                    continue
+                _, payload = item
+                if len(payload) < 3:
+                    continue
+                tag = payload[:3]
+                body = payload[3:]
+                if tag == b"MSG":
+                    text = body.decode("latin-1", errors="replace")
+                    if "too_busy=" in text or "inactivity_timeout" in text:
+                        raise RuntimeError(f"KiwiSDR ended session: {text.strip()[:80]}")
+                    continue
+                if tag != b"SND" or len(body) < 17:
+                    continue
+
+                flags, _seq = struct.unpack("<BI", body[0:5])
+                (smeter,) = struct.unpack(">H", body[5:7])
+                if not (flags & SND_FLAG_STEREO):
+                    continue
+
+                raw_iq = body[17:]
+                n_frames = (len(raw_iq) // 2) // 2
+                if n_frames <= 0:
+                    continue
+
+                # Discard initial retune transient frames
+                if settled < settle_frames:
+                    settled += n_frames
+                    continue
+
+                rssi_sum += 0.1 * smeter - 127.0
+                rssi_count += 1
+                if flags & SND_FLAG_ADC_OVFL:
+                    overflows += 1
+
+                if flags & SND_FLAG_LITTLE_ENDIAN:
+                    le_bytes = raw_iq[: n_frames * 4]
+                else:
+                    vals = struct.unpack(f">{n_frames * 2}h", raw_iq[: n_frames * 4])
+                    le_bytes = struct.pack(f"<{n_frames * 2}h", *vals)
+
+                iq_chunks.append(le_bytes)
+                total_frames += n_frames
+
+            raw_all = b"".join(iq_chunks)[: target_frames * 4]
+            actual_frames = len(raw_all) // 4
+            out_wav = os.path.join(out_dir, f"tile_{idx:02d}.wav")
+            with wave.open(out_wav, "wb") as wf:
+                wf.setnchannels(2)
+                wf.setsampwidth(2)
+                wf.setframerate(sample_rate)
+                wf.writeframes(raw_all)
+
+            meta = {
+                "source": f"kiwisdr://{host}:{port}",
+                "centerFreqHz": int(round(freq_khz * 1000.0)),
+                "sampleRateHz": sample_rate,
+                "frames": actual_frames,
+                "durationSec": round(actual_frames / float(sample_rate), 3),
+                "avgRssiDbm": round(rssi_sum / max(1, rssi_count), 1),
+                "adcOverflows": overflows,
+                "capturedAtUtc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "wavPath": os.path.abspath(out_wav),
+            }
+            with open(os.path.splitext(out_wav)[0] + ".json", "w", encoding="utf-8") as f:
+                json.dump(meta, f, indent=2)
+                f.write("\n")
+
+            tile_metas[idx] = meta
+            print(
+                f"[sweep] Saved tile_{idx:02d}.wav ({meta['durationSec']}s @ {sample_rate} Hz, "
+                f"RSSI {meta['avgRssiDbm']} dBm)",
+                flush=True,
+            )
+            idx += 1
+
+        return idx
+    finally:
+        ws.close()
+
+
 def run_sweep(args, host_list: list) -> int:
     os.makedirs(args.out_dir, exist_ok=True)
     step_khz = args.step_khz if args.step_khz > 0 else 18.0
@@ -426,37 +603,40 @@ def run_sweep(args, host_list: list) -> int:
 
     print(
         f"[sweep] Capturing {n_tiles} tiles across {args.start_khz:.1f}–{args.start_khz + n_tiles * step_khz:.1f} kHz "
-        f"(step {step_khz:.1f} kHz, {args.duration:.1f}s/tile, parallel={args.parallel})",
+        f"(step {step_khz:.1f} kHz, {args.duration:.1f}s/tile, single persistent connection per host)",
         flush=True,
     )
 
     tile_metas = [None] * n_tiles
+    next_idx = 0
+    last_err = None
 
-    def worker(idx: int):
-        wav_path = os.path.join(args.out_dir, f"tile_{idx:02d}.wav")
-        return idx, capture_with_failover(
-            host_list=host_list,
-            start_idx=idx % len(host_list),
-            freq_khz=centers_khz[idx],
-            duration_sec=args.duration,
-            out_wav=wav_path,
-            password=args.password,
-            timeout=args.timeout,
-        )
+    for h, p, tls in host_list:
+        if next_idx >= n_tiles:
+            break
+        try:
+            next_idx = capture_sweep_on_host(
+                host=h,
+                port=p,
+                tls=tls,
+                centers_khz=centers_khz,
+                start_idx=next_idx,
+                duration_sec=args.duration,
+                out_dir=args.out_dir,
+                tile_metas=tile_metas,
+                password=args.password,
+                timeout=args.timeout,
+            )
+        except Exception as exc:
+            last_err = exc
+            print(
+                f"[sweep] {h}:{p} stopped at tile {next_idx}/{n_tiles} ({exc}); trying next host...",
+                file=sys.stderr,
+                flush=True,
+            )
 
-    workers = max(1, min(args.parallel, n_tiles))
-    if workers == 1:
-        for i in range(n_tiles):
-            _, meta = worker(i)
-            tile_metas[i] = meta
-            if i + 1 < n_tiles:
-                time.sleep(0.5)
-    else:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as ex:
-            futs = [ex.submit(worker, i) for i in range(n_tiles)]
-            for fut in concurrent.futures.as_completed(futs):
-                idx, meta = fut.result()
-                tile_metas[idx] = meta
+    if next_idx < n_tiles:
+        raise RuntimeError(f"Sweep incomplete ({next_idx}/{n_tiles} tiles captured): {last_err}")
 
     sweep_index = {
         "version": 1,
