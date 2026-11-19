@@ -6,6 +6,52 @@ A zero-dependency, pure client-side browser panadapter, waterfall, decoded-text 
 - **Works on `file://` and `http(s)://`**: Includes pure-`BigInt` FIPS 180-4 SHA-384 auth, `ScriptProcessorNode` audio fallback, and `Canvas2D` waterfall fallback when WebGL2 or SecureContext APIs (`crypto.subtle`, `AudioWorklet`, `AudioDecoder`) are absent.
 - **Receive-Only by Default, Hold-PTT Capable**: `K4.RxOnlyGate` defaults every session to `'rx-only'` (blocking TX, tune, keyer, DVR, power, and outbound `0x01` audio frames) until explicitly armed for TX Test or Hold-PTT operation.
 - **Installable Mobile PWA with Background Auto-Updates**: Over `https://` or `http://localhost`, install to your phone Home Screen (`manifest.webmanifest`) and let `sw.js` + `K4.PwaManager` silently precache server updates in the background and reload safely once idle (never interrupting active TX or ATU tuning).
+- **Self-Contained Live Band Demo (Zero Backend)**: Includes an in-browser virtual K4 transport (`K4.DemoSocket`) and quadrature DDC SDR demodulator (`K4.DemoDemodulator`) capable of playing real multi-tile off-the-air I/Q recordings directly from static hosting (GitHub Pages / Cloudflare Pages).
+
+---
+
+## Live Interactive Demo
+
+Try `k4-js` immediately in your browser—no radio or backend server required:
+
+**[Launch Live 20m SSB Demo → `https://pgenera.github.io/k4-js/`](https://pgenera.github.io/k4-js/)**
+
+The hosted demo streams a real off-the-air **162 kHz wideband 20m SSB** recording (`14.200–14.362 MHz`, 9 stitched `20.25 kHz` KiwiSDR I/Q tiles) through an in-browser FFT + Weaver DDC demodulator in strict receive-only mode. Click **Enable Audio**, then click or drag anywhere on the panadapter/waterfall to tune live SSB voices, adjust `BW`/`IS` filters, or toggle `SUB` RX.
+
+### Screenshots
+
+**Mobile (`390×844` PWA)**
+
+<table>
+  <tr>
+    <td><img src="docs/screenshots/mobile-demo.png" alt="k4-js mobile panadapter and waterfall demo" width="320" /></td>
+    <td><img src="docs/screenshots/mobile-controls.png" alt="k4-js mobile receiver controls sheet" width="320" /></td>
+  </tr>
+</table>
+
+**Desktop (`1440×900`)**
+
+![k4-js desktop 20m wideband SSB demo](docs/screenshots/desktop-demo.png)
+
+### Capturing Your Own Demo Band (KiwiSDR)
+
+Replace the bundled demo recording with any live HF band slice using the zero-dependency capture and prep scripts:
+
+```bash
+# Sweep ~145 kHz across 20m SSB over a single persistent KiwiSDR connection
+python3 scripts/capture_kiwisdr.py \
+  --hosts w7dq.proxy.kiwisdr.com:8073,kb6c.proxy.kiwisdr.com:8073 \
+  --start-khz 14200 --span-khz 145 --step-khz 18 --duration 12 \
+  --out-dir /tmp/20m_sweep
+
+# Align noise floors across tiles, crossfade loop seams, and generate web/demo/
+python3 scripts/prepare_demo_band.py \
+  --sweep /tmp/20m_sweep/sweep.json \
+  --band 20m --title "20m Wideband SSB (Live Off-The-Air)" \
+  --out-dir web/demo
+```
+
+Pushes to `main` automatically redeploy `web/` to GitHub Pages via [`.github/workflows/deploy-demo.yml`](.github/workflows/deploy-demo.yml) (and `web/_headers` is included for zero-config Cloudflare Pages hosting).
 
 ---
 
