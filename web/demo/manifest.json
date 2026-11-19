@@ -1,51 +1,130 @@
 {
-  "version": 1,
-  "title": "20m Live Off-The-Air (FT8 / Digital)",
+  "version": 2,
+  "title": "20m Wideband SSB (14.200\u201314.345 MHz Live Off-The-Air)",
   "source": "kiwisdr://w7dq.proxy.kiwisdr.com:8073",
   "band": "20m",
   "bandNumber": "05",
-  "iqFile": "band.iq.bin",
   "format": "int16-le-iq",
-  "centerFreqHz": 14074500,
-  "sampleRateHz": 20251,
-  "frames": 503845,
-  "durationSec": 24.88,
-  "minFreqHz": 14064779,
-  "maxFreqHz": 14084220,
-  "defaultFreqHz": 14073500,
-  "defaultMode": "DATA-A",
-  "defaultSpanHz": 18000,
+  "centerFreqHz": 14281000,
+  "minFreqHz": 14199684,
+  "maxFreqHz": 14362315,
+  "defaultFreqHz": 14299000,
+  "defaultMode": "USB",
+  "defaultSpanHz": 144000,
   "noiseFloorOffsetDb": -118.0,
+  "tiles": [
+    {
+      "iqFile": "tile_00.iq.bin",
+      "centerFreqHz": 14209000,
+      "sampleRateHz": 20251,
+      "frames": 240582,
+      "durationSec": 11.88
+    },
+    {
+      "iqFile": "tile_01.iq.bin",
+      "centerFreqHz": 14227000,
+      "sampleRateHz": 20251,
+      "frames": 240582,
+      "durationSec": 11.88
+    },
+    {
+      "iqFile": "tile_02.iq.bin",
+      "centerFreqHz": 14245000,
+      "sampleRateHz": 20251,
+      "frames": 240582,
+      "durationSec": 11.88
+    },
+    {
+      "iqFile": "tile_03.iq.bin",
+      "centerFreqHz": 14263000,
+      "sampleRateHz": 20251,
+      "frames": 240582,
+      "durationSec": 11.88
+    },
+    {
+      "iqFile": "tile_04.iq.bin",
+      "centerFreqHz": 14281000,
+      "sampleRateHz": 20251,
+      "frames": 240582,
+      "durationSec": 11.88
+    },
+    {
+      "iqFile": "tile_05.iq.bin",
+      "centerFreqHz": 14299000,
+      "sampleRateHz": 20251,
+      "frames": 240582,
+      "durationSec": 11.88
+    },
+    {
+      "iqFile": "tile_06.iq.bin",
+      "centerFreqHz": 14317000,
+      "sampleRateHz": 20251,
+      "frames": 240582,
+      "durationSec": 11.88
+    },
+    {
+      "iqFile": "tile_07.iq.bin",
+      "centerFreqHz": 14335000,
+      "sampleRateHz": 20251,
+      "frames": 240582,
+      "durationSec": 11.88
+    },
+    {
+      "iqFile": "tile_08.iq.bin",
+      "centerFreqHz": 14353000,
+      "sampleRateHz": 20251,
+      "frames": 240582,
+      "durationSec": 11.88
+    }
+  ],
   "bookmarks": [
     {
-      "label": "DATA-A 14.0735 MHz",
-      "freqHz": 14073500,
-      "mode": "DATA-A",
-      "snrDb": 10.0
+      "label": "USB 14.2155 MHz",
+      "freqHz": 14215500,
+      "mode": "USB",
+      "snrDb": 28.2
     },
     {
-      "label": "DATA-A 14.0747 MHz",
-      "freqHz": 14074750,
-      "mode": "DATA-A",
-      "snrDb": 35.6
+      "label": "USB 14.2260 MHz",
+      "freqHz": 14226000,
+      "mode": "USB",
+      "snrDb": 35.8
     },
     {
-      "label": "DATA-A 14.0761 MHz",
-      "freqHz": 14076050,
-      "mode": "DATA-A",
-      "snrDb": 32.9
+      "label": "USB 14.2335 MHz",
+      "freqHz": 14233500,
+      "mode": "USB",
+      "snrDb": 24.0
     },
     {
-      "label": "DATA-A 14.0812 MHz",
-      "freqHz": 14081200,
-      "mode": "DATA-A",
-      "snrDb": 23.3
+      "label": "USB 14.2445 MHz",
+      "freqHz": 14244500,
+      "mode": "USB",
+      "snrDb": 22.1
     },
     {
-      "label": "DATA-A 14.0824 MHz",
-      "freqHz": 14082450,
-      "mode": "DATA-A",
-      "snrDb": 38.5
+      "label": "USB 14.2595 MHz",
+      "freqHz": 14259500,
+      "mode": "USB",
+      "snrDb": 29.1
+    },
+    {
+      "label": "USB 14.2990 MHz",
+      "freqHz": 14299000,
+      "mode": "USB",
+      "snrDb": 36.0
+    },
+    {
+      "label": "USB 14.3035 MHz",
+      "freqHz": 14303500,
+      "mode": "USB",
+      "snrDb": 24.7
+    },
+    {
+      "label": "USB 14.3315 MHz",
+      "freqHz": 14331500,
+      "mode": "USB",
+      "snrDb": 22.2
     }
   ]
 }
