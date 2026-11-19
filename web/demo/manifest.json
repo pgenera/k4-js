@@ -1,45 +1,51 @@
 {
   "version": 1,
-  "title": "20m Demo Band (CW + FT8 + RTTY Test I/Q)",
-  "source": "Synthetic 20.25 kHz I/Q Test Bundle (replace with KiwiSDR capture)",
+  "title": "20m Live Off-The-Air (FT8 / Digital)",
+  "source": "kiwisdr://w7dq.proxy.kiwisdr.com:8073",
   "band": "20m",
   "bandNumber": "05",
   "iqFile": "band.iq.bin",
   "format": "int16-le-iq",
-  "centerFreqHz": 14074000,
-  "sampleRateHz": 20250,
-  "frames": 240570,
-  "durationSec": 11.88,
-  "minFreqHz": 14064280,
-  "maxFreqHz": 14083720,
-  "defaultFreqHz": 14067500,
-  "defaultMode": "CW",
+  "centerFreqHz": 14074500,
+  "sampleRateHz": 20251,
+  "frames": 503845,
+  "durationSec": 24.88,
+  "minFreqHz": 14064779,
+  "maxFreqHz": 14084220,
+  "defaultFreqHz": 14073500,
+  "defaultMode": "DATA-A",
   "defaultSpanHz": 18000,
   "noiseFloorOffsetDb": -118.0,
   "bookmarks": [
     {
-      "label": "CW CQ 14.0675 MHz",
-      "freqHz": 14067500,
-      "mode": "CW",
-      "snrDb": 26.0
-    },
-    {
-      "label": "CW W1AW 14.0697 MHz",
-      "freqHz": 14069700,
-      "mode": "CW",
-      "snrDb": 20.0
-    },
-    {
-      "label": "FT8 14.0740 MHz",
-      "freqHz": 14074000,
+      "label": "DATA-A 14.0735 MHz",
+      "freqHz": 14073500,
       "mode": "DATA-A",
-      "snrDb": 18.0
+      "snrDb": 10.0
     },
     {
-      "label": "RTTY 14.0798 MHz",
-      "freqHz": 14079800,
-      "mode": "AFSK-A",
-      "snrDb": 22.0
+      "label": "DATA-A 14.0747 MHz",
+      "freqHz": 14074750,
+      "mode": "DATA-A",
+      "snrDb": 35.6
+    },
+    {
+      "label": "DATA-A 14.0761 MHz",
+      "freqHz": 14076050,
+      "mode": "DATA-A",
+      "snrDb": 32.9
+    },
+    {
+      "label": "DATA-A 14.0812 MHz",
+      "freqHz": 14081200,
+      "mode": "DATA-A",
+      "snrDb": 23.3
+    },
+    {
+      "label": "DATA-A 14.0824 MHz",
+      "freqHz": 14082450,
+      "mode": "DATA-A",
+      "snrDb": 38.5
     }
   ]
 }
