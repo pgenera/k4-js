@@ -191,6 +191,7 @@
 
       this._manifest = opts.manifest || null;
       this._preloadedIq = opts.iqInt16 || null;
+      this._preloadedTiles = opts.tiles || null;
       this._demod = null;
 
       // Virtual K4 radio state
@@ -222,46 +223,59 @@
     async _initAsync() {
       try {
         let manifest = this._manifest;
-        let iqInt16 = this._preloadedIq;
+        let loadedTiles = this._preloadedTiles || null;
 
-        if (!manifest || !iqInt16) {
+        if (!manifest || !loadedTiles) {
           const basePath = this._resolveDemoBase();
           dispatchDemoEvent('k4-demo-progress', { phase: 'manifest', loaded: 0, total: 0, pct: 0 });
-          const mResp = await fetch(basePath + 'manifest.json');
-          if (!mResp.ok) {
-            throw new Error(`Demo manifest HTTP ${mResp.status}`);
-          }
-          manifest = await mResp.json();
-          const iqUrl = basePath + (manifest.iqFile || 'band.iq.bin');
-          const iqResp = await fetch(iqUrl);
-          if (!iqResp.ok) {
-            throw new Error(`Demo I/Q data HTTP ${iqResp.status}`);
-          }
-          const totalBytes = Number(iqResp.headers.get('content-length') || 0);
-          let buf;
-          if (iqResp.body && typeof iqResp.body.getReader === 'function') {
-            const reader = iqResp.body.getReader();
-            const chunks = [];
-            let loaded = 0;
-            while (true) {
-              const { done, value } = await reader.read();
-              if (done) break;
-              chunks.push(value);
-              loaded += value.byteLength;
-              const pct = totalBytes > 0 ? Math.min(100, Math.round((loaded / totalBytes) * 100)) : 50;
-              dispatchDemoEvent('k4-demo-progress', { phase: 'iq', loaded, total: totalBytes, pct });
+          if (!manifest) {
+            const mResp = await fetch(basePath + 'manifest.json');
+            if (!mResp.ok) {
+              throw new Error(`Demo manifest HTTP ${mResp.status}`);
             }
-            const merged = new Uint8Array(loaded);
-            let offset = 0;
-            for (let i = 0; i < chunks.length; i++) {
-              merged.set(chunks[i], offset);
-              offset += chunks[i].byteLength;
-            }
-            buf = merged.buffer;
+            manifest = await mResp.json();
+          }
+
+          if (this._preloadedIq) {
+            loadedTiles = [{
+              iqInt16: this._preloadedIq,
+              sampleRateHz: manifest.sampleRateHz || 20250,
+              centerFreqHz: manifest.centerFreqHz || 14074000,
+            }];
           } else {
-            buf = await iqResp.arrayBuffer();
+            const tileSpecs =
+              Array.isArray(manifest.tiles) && manifest.tiles.length > 0
+                ? manifest.tiles
+                : [{
+                    iqFile: manifest.iqFile || 'band.iq.bin',
+                    centerFreqHz: manifest.centerFreqHz || 14074000,
+                    sampleRateHz: manifest.sampleRateHz || 20250,
+                  }];
+
+            let completedCount = 0;
+            loadedTiles = await Promise.all(
+              tileSpecs.map(async (spec) => {
+                const resp = await fetch(basePath + spec.iqFile);
+                if (!resp.ok) {
+                  throw new Error(`Demo tile ${spec.iqFile} HTTP ${resp.status}`);
+                }
+                const buf = await resp.arrayBuffer();
+                completedCount++;
+                const pct = Math.round((completedCount / tileSpecs.length) * 100);
+                dispatchDemoEvent('k4-demo-progress', {
+                  phase: 'iq',
+                  loaded: completedCount,
+                  total: tileSpecs.length,
+                  pct,
+                });
+                return {
+                  iqInt16: new Int16Array(buf),
+                  sampleRateHz: spec.sampleRateHz || manifest.sampleRateHz || 20250,
+                  centerFreqHz: spec.centerFreqHz || manifest.centerFreqHz || 14074000,
+                };
+              })
+            );
           }
-          iqInt16 = new Int16Array(buf);
         }
 
         if (this._closed) return;
@@ -270,7 +284,7 @@
         DemoSocket._lastManifest = manifest;
 
         const modeDef = MODE_NAME_TO_CODE[manifest.defaultMode] || MODE_NAME_TO_CODE.USB;
-        const defaultSpan = clamp(Number(manifest.defaultSpanHz || 18000), 6000, 48000);
+        const defaultSpan = clamp(Number(manifest.defaultSpanHz || 18000), 6000, 368000);
         const startFreq = Number(manifest.defaultFreqHz || manifest.centerFreqHz || 14074000);
         const secondBm =
           Array.isArray(manifest.bookmarks) && manifest.bookmarks.length > 1
@@ -286,13 +300,12 @@
         this._panCenterB = Number(manifest.centerFreqHz || subFreq);
 
         this._demod = new K4.DemoDemodulator({
-          iqInt16,
-          sampleRateHz: manifest.sampleRateHz || 20250,
+          tiles: loadedTiles,
           centerFreqHz: manifest.centerFreqHz || startFreq,
           noiseFloorOffsetDb: manifest.noiseFloorOffsetDb,
         });
 
-        dispatchDemoEvent('k4-demo-progress', { phase: 'ready', loaded: iqInt16.byteLength, total: iqInt16.byteLength, pct: 100, manifest });
+        dispatchDemoEvent('k4-demo-progress', { phase: 'ready', loaded: 100, total: 100, pct: 100, manifest });
 
         this.readyState = 1; // OPEN
         if (typeof this.onopen === 'function') {
@@ -783,7 +796,7 @@
         if (arg) {
           const n = Number(arg);
           if (Number.isFinite(n) && n >= 1000) {
-            rx.panSpanHz = clamp(Math.round(n), 6000, 48000);
+            rx.panSpanHz = clamp(Math.round(n), 6000, 368000);
           }
         }
         return `${isB ? '#SPN$' : '#SPN'}${padInt(rx.panSpanHz, 6)};`;

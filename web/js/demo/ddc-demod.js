@@ -97,21 +97,17 @@
     return {
       ncoPhase: 0,
       afPhase: 0,
-      // Two cascaded complex biquads (4th-order Butterworth LPF)
       c1: makeBiquadLp(20250, 1400, 0.5411961),
       c2: makeBiquadLp(20250, 1400, 1.306563),
       lastFc: 1400,
       lastFs: 20250,
-      // Filter delay states (stage 1 & 2, I & Q)
       i1x1: 0, i1x2: 0, i1y1: 0, i1y2: 0,
       q1x1: 0, q1x2: 0, q1y1: 0, q1y2: 0,
       i2x1: 0, i2x2: 0, i2y1: 0, i2y2: 0,
       q2x1: 0, q2x2: 0, q2y1: 0, q2y2: 0,
-      // AM DC blocker / FM prev sample
       amDc: 0,
       fmPrevI: 0,
       fmPrevQ: 0,
-      // AGC envelope
       agcEnv: 0.02,
       smeterDbm: -115.0,
     };
@@ -136,7 +132,6 @@
         return { carrier, center: carrier - (isVal || pitch), sideband: -1 };
       case 6: // DATA
         if (sub === 1 || sub === 2) {
-          // AFSK-A / FSK-D (LSB convention on K4)
           return { carrier, center: carrier - 85, sideband: -1 };
         }
         return { carrier, center: carrier + (isVal || 1500), sideband: 1 };
@@ -154,30 +149,51 @@
     }
   }
 
+  function normalizeTile(raw) {
+    const iq = raw.iqInt16 instanceof Int16Array ? raw.iqInt16 : new Int16Array(0);
+    const sr = Math.max(8000, Number(raw.sampleRateHz || 20250));
+    const center = Number(raw.centerFreqHz || 14074000);
+    return {
+      iq,
+      totalFrames: iq.length >> 1,
+      sampleRateHz: sr,
+      centerFreqHz: center,
+      minHz: center - sr * 0.47,
+      maxHz: center + sr * 0.47,
+      cursor: 0.0,
+      fftDbm: new Float32Array(FFT_SIZE),
+      noiseFloorDbm: -118.0,
+    };
+  }
+
   /**
-   * Real-time in-browser SDR DDC + FFT engine backed by a looped complex I/Q buffer.
+   * Real-time in-browser multi-tile SDR DDC + stitched FFT engine.
+   * Accepts either `tiles: [{ iqInt16, sampleRateHz, centerFreqHz }, ...]`
+   * or legacy single-tile `{ iqInt16, sampleRateHz, centerFreqHz }`.
    */
   class DemoDemodulator {
-    /**
-     * @param {Object} opts
-     * @param {Int16Array} opts.iqInt16 Interleaved [I0, Q0, I1, Q1, ...]
-     * @param {number} opts.sampleRateHz Input I/Q sample rate (e.g. 12000, 20250, 48000)
-     * @param {number} opts.centerFreqHz RF center frequency of the I/Q recording in Hz
-     * @param {number} [opts.noiseFloorOffsetDb=-118] Calibration offset mapping full-scale dBFS to dBm
-     */
     constructor(opts = {}) {
-      this.iq = opts.iqInt16 instanceof Int16Array ? opts.iqInt16 : new Int16Array(0);
-      this.totalFrames = this.iq.length >> 1;
-      this.sampleRateHz = Math.max(8000, Number(opts.sampleRateHz || 20250));
-      this.centerFreqHz = Number(opts.centerFreqHz || 14074000);
+      const rawTiles = Array.isArray(opts.tiles) && opts.tiles.length > 0
+        ? opts.tiles
+        : [{
+            iqInt16: opts.iqInt16,
+            sampleRateHz: opts.sampleRateHz,
+            centerFreqHz: opts.centerFreqHz,
+          }];
+
+      this.tiles = rawTiles.map(normalizeTile).sort((a, b) => a.centerFreqHz - b.centerFreqHz);
+      this.centerFreqHz = Number(
+        opts.centerFreqHz ||
+          (this.tiles.length > 0
+            ? (this.tiles[0].centerFreqHz + this.tiles[this.tiles.length - 1].centerFreqHz) * 0.5
+            : 14074000)
+      );
       this.calOffsetDb = Number.isFinite(Number(opts.noiseFloorOffsetDb))
         ? Number(opts.noiseFloorOffsetDb) + 76.0
         : -42.0;
 
-      this._cursor = 0.0; // Fractional sample index in [0, totalFrames)
       this._fftRe = new Float32Array(FFT_SIZE);
       this._fftIm = new Float32Array(FFT_SIZE);
-      this._fftDbm = new Float32Array(FFT_SIZE);
       this._avgPanA = new Float32Array(FFT_SIZE);
       this._avgPanB = new Float32Array(FFT_SIZE);
       this._avgInitA = false;
@@ -189,7 +205,6 @@
     }
 
     _nextNoise() {
-      // Fast xorshift32 in [-1, 1]
       let x = this._rngState | 0;
       x ^= x << 13;
       x ^= x >>> 17;
@@ -198,52 +213,65 @@
       return ((x & 0xffff) / 32768.0) - 1.0;
     }
 
-    _updateFilterIfNeeded(ch, fc) {
-      const clampedFc = clamp(fc, 60, Math.min(4800, this.sampleRateHz * 0.42));
-      if (Math.abs(clampedFc - ch.lastFc) > 12 || ch.lastFs !== this.sampleRateHz) {
-        ch.c1 = makeBiquadLp(this.sampleRateHz, clampedFc, 0.5411961);
-        ch.c2 = makeBiquadLp(this.sampleRateHz, clampedFc, 1.306563);
+    _pickTileForFreq(freqHz) {
+      let best = null;
+      let bestDist = Infinity;
+      for (let i = 0; i < this.tiles.length; i++) {
+        const t = this.tiles[i];
+        const dist = Math.abs(freqHz - t.centerFreqHz);
+        if (dist < bestDist) {
+          bestDist = dist;
+          best = t;
+        }
+      }
+      return best;
+    }
+
+    _updateFilterIfNeeded(ch, fs, fc) {
+      const clampedFc = clamp(fc, 60, Math.min(4800, fs * 0.42));
+      if (Math.abs(clampedFc - ch.lastFc) > 12 || Math.abs(ch.lastFs - fs) > 1) {
+        ch.c1 = makeBiquadLp(fs, clampedFc, 0.5411961);
+        ch.c2 = makeBiquadLp(fs, clampedFc, 1.306563);
         ch.lastFc = clampedFc;
-        ch.lastFs = this.sampleRateHz;
+        ch.lastFs = fs;
       }
     }
 
-    _demodChannelBlock(ch, startCursor, rxState, cwPitchHz, outFloat, nOut) {
-      if (this.totalFrames < 16) {
+    _demodChannelBlock(ch, rxState, cwPitchHz, outFloat, nOut) {
+      const pb = passbandCenterHz(rxState, cwPitchHz);
+      const tile = this._pickTileForFreq(pb.center);
+      if (!tile || tile.totalFrames < 16) {
         outFloat.fill(0, 0, nOut);
         ch.smeterDbm = -125;
         return;
       }
 
-      const fs = this.sampleRateHz;
+      const fs = tile.sampleRateHz;
       const stepIn = fs / AUDIO_SR;
-      const pb = passbandCenterHz(rxState, cwPitchHz);
       const bw = clamp(Number(rxState.bwHz || 2400), 50, 4800);
       const halfBw = Math.max(80, bw * 0.5);
-      this._updateFilterIfNeeded(ch, halfBw);
+      this._updateFilterIfNeeded(ch, fs, halfBw);
 
-      const mixHz = pb.center - this.centerFreqHz;
+      const mixHz = pb.center - tile.centerFreqHz;
       const inBand = Math.abs(mixHz) <= fs * 0.49;
       const ncoStep = (-TWO_PI * mixHz) / fs;
 
-      // Audio pitch offset from passband center back to carrier
       let afHz = Math.abs(pb.center - pb.carrier);
       if (pb.sideband === 0 || pb.sideband === 2) afHz = 0;
       const afStep = (TWO_PI * afHz) / AUDIO_SR;
 
       const c1 = ch.c1;
       const c2 = ch.c2;
-      const iq = this.iq;
-      const total = this.totalFrames;
+      const iq = tile.iq;
+      const total = tile.totalFrames;
       const inv32768 = 1.0 / 32768.0;
 
-      // Advance input filter across the exact input sample range corresponding to nOut output samples
+      const startCursor = tile.cursor;
       const curStartInt = Math.floor(startCursor);
       const curEnd = startCursor + nOut * stepIn;
       const curEndInt = Math.floor(curEnd);
       const totalIn = Math.max(1, curEndInt - curStartInt + 2);
 
-      // Keep a small scratch buffer for filtered I/Q at input sample rate so we can linearly interpolate to 12 kHz
       if (!ch._filtI || ch._filtI.length < totalIn) {
         ch._filtI = new Float32Array(totalIn + 64);
         ch._filtQ = new Float32Array(totalIn + 64);
@@ -272,7 +300,6 @@
           xi = rawI * cs - rawQ * sn;
           xq = rawI * sn + rawQ * cs;
         } else {
-          // Gentle band noise if tuned outside recorded slice
           xi = this._nextNoise() * 0.0025;
           xq = this._nextNoise() * 0.0025;
         }
@@ -280,13 +307,11 @@
         if (nco > Math.PI) nco -= TWO_PI;
         else if (nco < -Math.PI) nco += TWO_PI;
 
-        // Stage 1 LPF
         const y1i = c1.b0 * xi + c1.b1 * i1x1 + c1.b2 * i1x2 - c1.a1 * i1y1 - c1.a2 * i1y2;
         i1x2 = i1x1; i1x1 = xi; i1y2 = i1y1; i1y1 = y1i;
         const y1q = c1.b0 * xq + c1.b1 * q1x1 + c1.b2 * q1x2 - c1.a1 * q1y1 - c1.a2 * q1y2;
         q1x2 = q1x1; q1x1 = xq; q1y2 = q1y1; q1y1 = y1q;
 
-        // Stage 2 LPF
         const y2i = c2.b0 * y1i + c2.b1 * i2x1 + c2.b2 * i2x2 - c2.a1 * i2y1 - c2.a2 * i2y2;
         i2x2 = i2x1; i2x1 = y1i; i2y2 = i2y1; i2y1 = y2i;
         const y2q = c2.b0 * y1q + c2.b1 * q2x1 + c2.b2 * q2x2 - c2.a1 * q2y1 - c2.a2 * q2y2;
@@ -303,12 +328,10 @@
       ch.i2x1 = i2x1; ch.i2x2 = i2x2; ch.i2y1 = i2y1; ch.i2y2 = i2y2;
       ch.q2x1 = q2x1; ch.q2x2 = q2x2; ch.q2y1 = q2y1; ch.q2y2 = q2y2;
 
-      // S-meter in dBm (calibrated to K4 noise floor)
       const meanPwr = powerAcc / totalIn;
       const instDbm = clamp(10.0 * Math.log10(meanPwr + 1e-12) + this.calOffsetDb, -127.0, -25.0);
       ch.smeterDbm = ch.smeterDbm * 0.6 + instDbm * 0.4;
 
-      // Resample to 12 kHz + Weaver demodulate + AGC
       const agcMode = Number(rxState.agc !== undefined ? rxState.agc : 2);
       const agcAttack = agcMode === 2 ? 0.12 : 0.05;
       const agcDecay = agcMode === 2 ? 0.0025 : 0.0007;
@@ -332,18 +355,14 @@
 
         let sample = 0;
         if (pb.sideband === 1) {
-          // USB / CW / DATA-A
           sample = bi * Math.cos(afPhase) - bq * Math.sin(afPhase);
         } else if (pb.sideband === -1) {
-          // LSB / CW-R / DATA-R
           sample = bi * Math.cos(afPhase) + bq * Math.sin(afPhase);
         } else if (pb.sideband === 0) {
-          // AM envelope + DC block
           const env = Math.sqrt(bi * bi + bq * bq);
           amDc = amDc * 0.995 + env * 0.005;
           sample = (env - amDc) * 1.4;
         } else {
-          // FM quadrature discriminator
           const denom = bi * bi + bq * bq + 1e-6;
           sample = ((fmPI * bq - fmPQ * bi) / denom) * 0.25;
           fmPI = bi;
@@ -378,31 +397,25 @@
       ch.fmPrevQ = fmPQ;
     }
 
-    /**
-     * Render one 20 ms stereo EM1 PCM audio frame (240 samples/ch @ 12 kHz) and advance I/Q cursor.
-     * @param {Object} rxA
-     * @param {Object} rxB
-     * @param {boolean} subRxEnabled
-     * @param {number} cwPitchHz
-     * @returns {Uint8Array} 960-byte S16LE interleaved stereo payload (L=A, R=B or A)
-     */
     renderAudioFrame(rxA, rxB, subRxEnabled, cwPitchHz = 500) {
       if (!this._tmpL) {
         this._tmpL = new Float32Array(AUDIO_FRAME_SAMPLES);
         this._tmpR = new Float32Array(AUDIO_FRAME_SAMPLES);
       }
-      const startCursor = this._cursor;
-      this._demodChannelBlock(this._rxA, startCursor, rxA, cwPitchHz, this._tmpL, AUDIO_FRAME_SAMPLES);
+      this._demodChannelBlock(this._rxA, rxA, cwPitchHz, this._tmpL, AUDIO_FRAME_SAMPLES);
       if (subRxEnabled && rxB) {
-        this._demodChannelBlock(this._rxB, startCursor, rxB, cwPitchHz, this._tmpR, AUDIO_FRAME_SAMPLES);
+        this._demodChannelBlock(this._rxB, rxB, cwPitchHz, this._tmpR, AUDIO_FRAME_SAMPLES);
       } else {
         this._tmpR.set(this._tmpL);
         this._rxB.smeterDbm = -125.0;
       }
 
-      // Advance playback cursor seamlessly across loop boundary
-      if (this.totalFrames > 0) {
-        this._cursor = (this._cursor + (AUDIO_FRAME_SAMPLES * this.sampleRateHz) / AUDIO_SR) % this.totalFrames;
+      // Advance every tile's playback cursor smoothly so the entire wideband waterfall stays alive
+      for (let i = 0; i < this.tiles.length; i++) {
+        const t = this.tiles[i];
+        if (t.totalFrames > 0) {
+          t.cursor = (t.cursor + (AUDIO_FRAME_SAMPLES * t.sampleRateHz) / AUDIO_SR) % t.totalFrames;
+        }
       }
 
       const out = new Uint8Array(AUDIO_FRAME_SAMPLES * 4);
@@ -420,14 +433,15 @@
       return rx === 'B' ? this._rxB.smeterDbm : this._rxA.smeterDbm;
     }
 
-    _computeCurrentFftDbm() {
-      if (this.totalFrames < FFT_SIZE) {
-        this._fftDbm.fill(-122.0);
-        return -122.0;
+    _computeTileFft(tile) {
+      if (tile.totalFrames < FFT_SIZE) {
+        tile.fftDbm.fill(-122.0);
+        tile.noiseFloorDbm = -122.0;
+        return;
       }
-      const start = Math.floor(this._cursor);
-      const total = this.totalFrames;
-      const iq = this.iq;
+      const start = Math.floor(tile.cursor);
+      const total = tile.totalFrames;
+      const iq = tile.iq;
       const re = this._fftRe;
       const im = this._fftIm;
       const inv32768 = 1.0 / 32768.0;
@@ -443,67 +457,77 @@
 
       const normSq = HANN_SUM * HANN_SUM;
       const half = FFT_SIZE >> 1;
+      const outDbm = tile.fftDbm;
       let floorSum = 0;
       let floorCnt = 0;
 
       for (let i = 0; i < FFT_SIZE; i++) {
-        // fftshift: bin 0 -> center, bin half -> -fs/2
         const src = (i + half) & (FFT_SIZE - 1);
         const magSq = (re[src] * re[src] + im[src] * im[src]) / normSq;
         const dbm = clamp(10.0 * Math.log10(magSq + 1e-13) + this.calOffsetDb, -145.0, -10.0);
-        this._fftDbm[i] = dbm;
+        outDbm[i] = dbm;
         if (i >= 64 && i < FFT_SIZE - 64 && (i & 7) === 0) {
           floorSum += dbm;
           floorCnt++;
         }
       }
-      return floorCnt > 0 ? floorSum / floorCnt : -118.0;
+      tile.noiseFloorDbm = floorCnt > 0 ? floorSum / floorCnt : -118.0;
     }
 
-    /**
-     * Compute a 1024-bin K4 PAN (0x02) or MiniPAN (0x03) uint8 spectrum frame.
-     * @param {Object} opts
-     * @param {string} opts.rx 'A' or 'B'
-     * @param {number} opts.panCenterHz Center RF frequency of the PAN window
-     * @param {number} opts.spanHz Total span of the 1024 bins in Hz
-     * @param {number} [opts.averaging=2] K4 #AVG level (1..20)
-     * @param {boolean} [opts.miniPan=false] Use MiniPAN +118 offset instead of PAN +162
-     * @returns {{ bins: Uint8Array, noiseFloorDbm: number }}
-     */
     computeSpectrumBins(opts = {}) {
       const rx = opts.rx === 'B' ? 'B' : 'A';
       const panCenterHz = Number(opts.panCenterHz || this.centerFreqHz);
-      const spanHz = Math.max(1000, Number(opts.spanHz || this.sampleRateHz));
+      const spanHz = Math.max(1000, Number(opts.spanHz || 24000));
       const avg = clamp(Number(opts.averaging || 2), 1, 20);
       const miniPan = Boolean(opts.miniPan);
       const byteOffset = miniPan ? MINIPAN_BYTE_OFFSET : PAN_BYTE_OFFSET;
 
-      const noiseFloorDbm = this._computeCurrentFftDbm();
+      const halfSpan = spanHz * 0.5;
+      const viewMin = panCenterHz - halfSpan;
+      const viewMax = panCenterHz + halfSpan;
+
+      // Compute FFT only for tiles intersecting the current viewport
+      const activeTiles = [];
+      let floorSum = 0;
+      for (let i = 0; i < this.tiles.length; i++) {
+        const t = this.tiles[i];
+        if (t.maxHz >= viewMin && t.minHz <= viewMax) {
+          this._computeTileFft(t);
+          activeTiles.push(t);
+          floorSum += t.noiseFloorDbm;
+        }
+      }
+      const noiseFloorDbm = activeTiles.length > 0 ? floorSum / activeTiles.length : -118.0;
+      const outFloor = noiseFloorDbm - 4.0;
+
       const alpha = miniPan ? 0.55 : clamp(1.2 / Math.max(1, avg), 0.08, 1.0);
       const avgBuf = rx === 'B' ? this._avgPanB : this._avgPanA;
       const isInit = rx === 'B' ? this._avgInitB : this._avgInitA;
-
       const out = new Uint8Array(FFT_SIZE);
-      const halfSpan = spanHz * 0.5;
-      const iqFs = this.sampleRateHz;
-      const iqCenter = this.centerFreqHz;
-      const fftDbm = this._fftDbm;
-      const outFloor = noiseFloorDbm - 4.0;
 
+      const nActive = activeTiles.length;
       for (let i = 0; i < FFT_SIZE; i++) {
-        const f = panCenterHz - halfSpan + (i / (FFT_SIZE - 1)) * spanHz;
-        const rel = (f - iqCenter) / iqFs + 0.5;
-        let dbm;
-        if (rel >= 0.02 && rel <= 0.98) {
+        const f = viewMin + (i / (FFT_SIZE - 1)) * spanHz;
+        let wSum = 0;
+        let dbmSum = 0;
+
+        for (let tIdx = 0; tIdx < nActive; tIdx++) {
+          const t = activeTiles[tIdx];
+          const rel = (f - t.centerFreqHz) / t.sampleRateHz + 0.5;
+          if (rel < 0.03 || rel > 0.97) continue;
           const pos = rel * (FFT_SIZE - 1);
           const k0 = Math.floor(pos);
           const frac = pos - k0;
           const k1 = Math.min(FFT_SIZE - 1, k0 + 1);
-          dbm = fftDbm[k0] + (fftDbm[k1] - fftDbm[k0]) * frac;
-        } else {
-          // Subtle realistic noise outside the recorded I/Q passband
-          dbm = outFloor + this._nextNoise() * 2.2;
+          const val = t.fftDbm[k0] + (t.fftDbm[k1] - t.fftDbm[k0]) * frac;
+          // Smooth raised edge weight so overlapping tiles blend with zero visible seam
+          const edgeDist = Math.min(rel - 0.03, 0.97 - rel);
+          const w = Math.min(1.0, edgeDist / 0.08);
+          dbmSum += val * w;
+          wSum += w;
         }
+
+        let dbm = wSum > 0 ? dbmSum / wSum : outFloor + this._nextNoise() * 2.2;
 
         if (!miniPan) {
           const smoothed = isInit ? avgBuf[i] + (dbm - avgBuf[i]) * alpha : dbm;

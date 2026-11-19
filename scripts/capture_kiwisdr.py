@@ -2,23 +2,31 @@
 """
 Zero-dependency KiwiSDR I/Q capture utility for k4-js static band demos.
 
-Connects to a public KiwiSDR's SND WebSocket endpoint in `mod=iq` mode,
-records uncompressed 16-bit complex I/Q samples into a stereo WAV file
-(Left = I, Right = Q), and writes a companion JSON metadata sidecar.
+Supports:
+  1. Single-slice capture (--freq-khz)
+  2. Multi-tile wideband sweep (--start-khz + --span-khz), stepping across a band
+     with automatic overlap and optional multi-host failover/parallelism (--hosts, --parallel).
 
-Supports direct TCP as well as HTTP_PROXY / HTTPS_PROXY CONNECT tunneling.
-
-Example:
+Examples:
+  # Wideband 20m SSB sweep (~145 kHz, 8 contiguous 18 kHz tiles, 12 s each):
   python3 scripts/capture_kiwisdr.py \
-      --host kiwisdr.example.org --port 8073 \
-      --freq-khz 14074.5 --duration 25 \
+      --hosts w7dq.proxy.kiwisdr.com:8073,kb6c.proxy.kiwisdr.com:8073,173.48.189.54:8073 \
+      --start-khz 14200 --span-khz 145 --duration 12 \
+      --out-dir /tmp/20m_sweep
+
+  # Single-slice capture:
+  python3 scripts/capture_kiwisdr.py \
+      --host w7dq.proxy.kiwisdr.com --port 8073 \
+      --freq-khz 14235 --duration 25 \
       --out /tmp/20m_iq.wav
 """
 
 import argparse
 import base64
+import concurrent.futures
 import hashlib
 import json
+import math
 import os
 import select
 import socket
@@ -203,6 +211,24 @@ class SimpleWebSocket:
             pass
 
 
+def parse_host_spec(spec: str, default_port: int = 8073, default_tls: bool = False):
+    s = spec.strip()
+    tls = default_tls
+    if s.startswith("https://") or s.startswith("wss://"):
+        tls = True
+        s = s.split("://", 1)[1]
+    elif s.startswith("http://") or s.startswith("ws://"):
+        s = s.split("://", 1)[1]
+    s = s.split("/", 1)[0]
+    if ":" in s:
+        h, p = s.rsplit(":", 1)
+        port = int(p)
+    else:
+        h = s
+        port = 443 if tls else default_port
+    return h, port, bool(tls or port == 443)
+
+
 def capture_kiwisdr_iq(
     host: str,
     port: int,
@@ -217,7 +243,7 @@ def capture_kiwisdr_iq(
     ts = int(time.time())
     path = f"/{ts}/SND"
     proto = "wss" if tls else "ws"
-    print(f"[kiwi] Connecting to {proto}://{host}:{port}{path} ...", flush=True)
+    print(f"[kiwi] Connecting to {proto}://{host}:{port}{path} @ {freq_khz:.3f} kHz ...", flush=True)
     ws = SimpleWebSocket(host, port, path, tls=tls, timeout=timeout)
 
     sample_rate = None
@@ -277,7 +303,7 @@ def capture_kiwisdr_iq(
                 if sample_rate and not ar_sent:
                     half_bw = int(sample_rate * 0.48)
                     print(
-                        f"[kiwi] Sample rate: {sample_rate} Hz (±{half_bw} Hz), tuning IQ to {freq_khz:.3f} kHz",
+                        f"[kiwi] {host}:{port} sample_rate={sample_rate} Hz (±{half_bw} Hz), recording {duration_sec:.1f}s @ {freq_khz:.3f} kHz",
                         flush=True,
                     )
                     ws.send_text(f"SET AR OK in={sample_rate} out={sample_rate}")
@@ -301,17 +327,14 @@ def capture_kiwisdr_iq(
                 if flags & SND_FLAG_ADC_OVFL:
                     overflows += 1
                 if not (flags & SND_FLAG_STEREO):
-                    # Wait until mode switch to IQ takes effect
                     continue
 
-                # Stereo IQ packets have a 10-byte GPS header after the 7-byte SND header
                 raw_iq = body[17:]
                 n_samples = len(raw_iq) // 2
                 n_frames = n_samples // 2
                 if n_frames <= 0:
                     continue
 
-                # Convert to little-endian int16 interleaved (I, Q) for WAV
                 if flags & SND_FLAG_LITTLE_ENDIAN:
                     le_bytes = raw_iq[: n_frames * 4]
                 else:
@@ -350,7 +373,7 @@ def capture_kiwisdr_iq(
         "avgRssiDbm": round(rssi_sum / max(1, rssi_count), 1),
         "adcOverflows": overflows,
         "capturedAtUtc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        "wavPath": out_wav,
+        "wavPath": os.path.abspath(out_wav),
     }
     meta_path = os.path.splitext(out_wav)[0] + ".json"
     with open(meta_path, "w", encoding="utf-8") as f:
@@ -358,34 +381,144 @@ def capture_kiwisdr_iq(
         f.write("\n")
 
     print(
-        f"[kiwi] Captured {meta['durationSec']} s ({total_frames} frames @ {sample_rate} Hz, "
-        f"avg RSSI {meta['avgRssiDbm']} dBm, OV {overflows}) -> {out_wav}",
+        f"[kiwi] Done {freq_khz:.1f} kHz: {meta['durationSec']}s @ {sample_rate} Hz "
+        f"(RSSI {meta['avgRssiDbm']} dBm, OV {overflows}) -> {out_wav}",
         flush=True,
     )
     return meta
 
 
+def capture_with_failover(
+    host_list: list,
+    start_idx: int,
+    freq_khz: float,
+    duration_sec: float,
+    out_wav: str,
+    password: str,
+    timeout: float,
+) -> dict:
+    last_err = None
+    for offset in range(len(host_list)):
+        h, p, tls = host_list[(start_idx + offset) % len(host_list)]
+        try:
+            return capture_kiwisdr_iq(
+                host=h,
+                port=p,
+                freq_khz=freq_khz,
+                duration_sec=duration_sec,
+                out_wav=out_wav,
+                password=password,
+                tls=tls,
+                timeout=timeout,
+            )
+        except Exception as exc:
+            last_err = exc
+            print(f"[kiwi] {h}:{p} failed for {freq_khz:.1f} kHz ({exc}), trying next host...", file=sys.stderr, flush=True)
+    raise RuntimeError(f"All hosts failed for {freq_khz:.1f} kHz: {last_err}")
+
+
+def run_sweep(args, host_list: list) -> int:
+    os.makedirs(args.out_dir, exist_ok=True)
+    step_khz = args.step_khz if args.step_khz > 0 else 18.0
+    n_tiles = max(1, int(math.ceil(args.span_khz / step_khz)))
+    first_center_khz = args.start_khz + step_khz * 0.5
+    centers_khz = [round(first_center_khz + i * step_khz, 3) for i in range(n_tiles)]
+
+    print(
+        f"[sweep] Capturing {n_tiles} tiles across {args.start_khz:.1f}–{args.start_khz + n_tiles * step_khz:.1f} kHz "
+        f"(step {step_khz:.1f} kHz, {args.duration:.1f}s/tile, parallel={args.parallel})",
+        flush=True,
+    )
+
+    tile_metas = [None] * n_tiles
+
+    def worker(idx: int):
+        wav_path = os.path.join(args.out_dir, f"tile_{idx:02d}.wav")
+        return idx, capture_with_failover(
+            host_list=host_list,
+            start_idx=idx % len(host_list),
+            freq_khz=centers_khz[idx],
+            duration_sec=args.duration,
+            out_wav=wav_path,
+            password=args.password,
+            timeout=args.timeout,
+        )
+
+    workers = max(1, min(args.parallel, n_tiles))
+    if workers == 1:
+        for i in range(n_tiles):
+            _, meta = worker(i)
+            tile_metas[i] = meta
+            if i + 1 < n_tiles:
+                time.sleep(0.5)
+    else:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as ex:
+            futs = [ex.submit(worker, i) for i in range(n_tiles)]
+            for fut in concurrent.futures.as_completed(futs):
+                idx, meta = fut.result()
+                tile_metas[idx] = meta
+
+    sweep_index = {
+        "version": 1,
+        "startKhz": args.start_khz,
+        "spanKhz": args.span_khz,
+        "stepKhz": step_khz,
+        "capturedAtUtc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "tiles": tile_metas,
+    }
+    sweep_path = os.path.join(args.out_dir, "sweep.json")
+    with open(sweep_path, "w", encoding="utf-8") as f:
+        json.dump(sweep_index, f, indent=2)
+        f.write("\n")
+
+    print(f"[sweep] Complete! Wrote {sweep_path} ({n_tiles} tiles)", flush=True)
+    return 0
+
+
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Capture uncompressed complex I/Q WAV from a KiwiSDR")
-    ap.add_argument("--host", required=True, help="KiwiSDR hostname or IP")
+    ap = argparse.ArgumentParser(description="Capture uncompressed complex I/Q WAV(s) from public KiwiSDR(s)")
+    ap.add_argument("--host", help="Single KiwiSDR hostname or IP")
     ap.add_argument("--port", type=int, default=8073, help="KiwiSDR port (default: 8073)")
-    ap.add_argument("--freq-khz", type=float, required=True, help="Center frequency in kHz (e.g. 14074.5)")
-    ap.add_argument("--duration", type=float, default=25.0, help="Recording duration in seconds (default: 25)")
-    ap.add_argument("--out", required=True, help="Output stereo 16-bit I/Q WAV path")
+    ap.add_argument("--hosts", help="Comma-separated list of host[:port] for failover or parallel sweep")
+    ap.add_argument("--freq-khz", type=float, help="Center frequency in kHz for single-slice capture")
+    ap.add_argument("--start-khz", type=float, help="Start frequency in kHz for multi-tile sweep")
+    ap.add_argument("--span-khz", type=float, help="Total span in kHz for multi-tile sweep (e.g. 145)")
+    ap.add_argument("--step-khz", type=float, default=18.0, help="Tile spacing in kHz (default: 18.0 for 20.25 kHz Kiwis; use 10.5 for 12 kHz)")
+    ap.add_argument("--parallel", type=int, default=1, help="Concurrent tile captures across --hosts (default: 1)")
+    ap.add_argument("--duration", type=float, default=15.0, help="Recording duration per slice in seconds (default: 15)")
+    ap.add_argument("--out", help="Output stereo 16-bit I/Q WAV path (single-slice mode)")
+    ap.add_argument("--out-dir", help="Output directory for multi-tile sweep (sweep mode)")
     ap.add_argument("--password", default="#", help="KiwiSDR password if required (default: #)")
-    ap.add_argument("--tls", action="store_true", help="Use wss:// TLS (auto-enabled when --port 443)")
+    ap.add_argument("--tls", action="store_true", help="Use wss:// TLS (auto-enabled when port is 443)")
     ap.add_argument("--timeout", type=float, default=12.0, help="Connection/handshake timeout in seconds")
     args = ap.parse_args()
 
+    host_list = []
+    if args.hosts:
+        for item in args.hosts.split(","):
+            if item.strip():
+                host_list.append(parse_host_spec(item, default_port=args.port, default_tls=args.tls))
+    elif args.host:
+        host_list.append(parse_host_spec(args.host, default_port=args.port, default_tls=args.tls))
+    else:
+        ap.error("Provide --host or --hosts")
+
     try:
-        capture_kiwisdr_iq(
-            host=args.host,
-            port=args.port,
+        if args.start_khz is not None and args.span_khz is not None:
+            if not args.out_dir:
+                ap.error("Sweep mode requires --out-dir")
+            return run_sweep(args, host_list)
+
+        if args.freq_khz is None or not args.out:
+            ap.error("Provide either (--freq-khz and --out) or (--start-khz, --span-khz, and --out-dir)")
+
+        capture_with_failover(
+            host_list=host_list,
+            start_idx=0,
             freq_khz=args.freq_khz,
             duration_sec=args.duration,
             out_wav=args.out,
             password=args.password,
-            tls=bool(args.tls or args.port == 443),
             timeout=args.timeout,
         )
         return 0
