@@ -3136,7 +3136,17 @@
       return Boolean(window.isSecureContext);
     }
 
+    _isDemoMode(snapshot) {
+      const s = snapshot || (typeof this._snap === 'function' ? this._snap() : null);
+      const wsUrl = (s && s.connection && s.connection.wsUrl) || '';
+      return Boolean(
+        (this.client && typeof this.client.isDemoMode === 'function' && this.client.isDemoMode()) ||
+        String(wsUrl).startsWith('demo://')
+      );
+    }
+
     async _refreshMicDevices() {
+      if (this._isDemoMode()) return;
       if (!this.audio || typeof this.audio.listAudioInputs !== 'function') return;
       try {
         const list = await this.audio.listAudioInputs();
@@ -3915,29 +3925,33 @@
 
     _updateTxAndSensors(snapshot, aDiag) {
       const { tel, vs, sag, isAmps, peakIs, pt, lt, tf, fwdWatts, peakFwd, swr } = extractSensorReadings(snapshot);
-      const txActive = Boolean(snapshot.txActive);
-      const isTest = Boolean(snapshot.txTestMode || snapshot.txPosture === 'tx-test');
-      const atuTuning = Boolean(snapshot.atuTuning);
+      const isDemo = this._isDemoMode(snapshot);
+      const txActive = !isDemo && Boolean(snapshot.txActive);
+      const isTest = !isDemo && Boolean(snapshot.txTestMode || snapshot.txPosture === 'tx-test');
+      const atuTuning = !isDemo && Boolean(snapshot.atuTuning);
 
       // (a) TX & Split
       if (this._refs.txCardPttBtn) {
         const pttBtn = this._refs.txCardPttBtn;
-        const posture = snapshot.txPosture || 'rx-only';
-        const pttEnabled = posture !== 'rx-only' && !snapshot.txInhibit;
+        const posture = isDemo ? 'rx-only' : (snapshot.txPosture || 'rx-only');
+        const pttEnabled = !isDemo && posture !== 'rx-only' && !snapshot.txInhibit;
         pttBtn.disabled = !pttEnabled;
-        const held = Boolean(this.isPttHeld() || snapshot.pttHeld);
+        const held = !isDemo && Boolean(this.isPttHeld() || snapshot.pttHeld);
         const cfg = typeof this.getTxAudioConfig === 'function' ? this.getTxAudioConfig() : {};
         const pttInfo = describePttMicState(snapshot, cfg, this.audio, isTest);
         pttBtn.classList.toggle('is-held', held);
         pttBtn.classList.toggle('is-tx', txActive);
         pttBtn.dataset.txTest = isTest ? 'true' : 'false';
         pttBtn.dataset.micState = pttInfo.micState;
-        pttBtn.dataset.micWarn = pttInfo.micWarn ? 'true' : 'false';
+        pttBtn.dataset.micWarn = !isDemo && pttInfo.micWarn ? 'true' : 'false';
         pttBtn.setAttribute('aria-pressed', (held || txActive) ? 'true' : 'false');
         pttBtn.textContent = txActive ? pttInfo.txLabel : pttInfo.idleLabel;
-        pttBtn.title = `Hold to transmit (release to return to receive)${pttInfo.titleDetail}`;
+        pttBtn.title = isDemo
+          ? 'Demo mode is receive-only (microphone unused)'
+          : `Hold to transmit (release to return to receive)${pttInfo.titleDetail}`;
       }
       if (this._refs.txTestToggleBtn) {
+        this._refs.txTestToggleBtn.disabled = isDemo;
         this._refs.txTestToggleBtn.classList.toggle('is-active', isTest);
         this._refs.txTestToggleBtn.setAttribute('aria-pressed', isTest ? 'true' : 'false');
         this._refs.txTestToggleBtn.textContent = 'TEST';
@@ -4091,18 +4105,21 @@
       const secureOk = this._isMicSecureContext();
       if (this._refs.txAudioSource) {
         const sel = this._refs.txAudioSource;
+        sel.disabled = isDemo;
         const micOpt = sel.querySelector('option[value="mic"]');
         if (micOpt) {
-          micOpt.disabled = !secureOk;
-          micOpt.textContent = secureOk ? 'Microphone (Live)' : 'Microphone (Requires localhost / HTTPS)';
+          micOpt.disabled = isDemo || !secureOk;
+          micOpt.textContent = isDemo
+            ? 'Microphone (Disabled in Demo)'
+            : (secureOk ? 'Microphone (Live)' : 'Microphone (Requires localhost / HTTPS)');
         }
         const activeSrc = cfg.source === 'mic' && !secureOk ? 'two-tone' : (cfg.source || 'two-tone');
         if (document.activeElement !== sel && sel.value !== activeSrc) {
           sel.value = activeSrc;
         }
-        if (this._refs.txMicSecNote) this._refs.txMicSecNote.hidden = secureOk;
-        if (this._refs.txMicExtras) this._refs.txMicExtras.hidden = !(activeSrc === 'mic' && secureOk);
-        if (this._refs.txWavExtras) this._refs.txWavExtras.hidden = activeSrc !== 'wav';
+        if (this._refs.txMicSecNote) this._refs.txMicSecNote.hidden = isDemo || secureOk;
+        if (this._refs.txMicExtras) this._refs.txMicExtras.hidden = isDemo || !(activeSrc === 'mic' && secureOk);
+        if (this._refs.txWavExtras) this._refs.txWavExtras.hidden = isDemo || activeSrc !== 'wav';
         if (this._refs.txVpSwitch) this._refs.txVpSwitch.sync(Boolean(cfg.voiceProcessing));
         if (this._refs.txWavNameEl && cfg.wavName) {
           this._refs.txWavNameEl.textContent = cfg.wavName;

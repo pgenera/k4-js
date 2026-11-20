@@ -2043,7 +2043,7 @@
           const stream = await md.getUserMedia({ audio: audioConstraints, video: false });
           if (reqGen !== this._micReqGen || this._destroyed) {
             this._stopMediaStreamTracks(stream);
-            return this.getMicStatus();
+            return Object.assign(this.getMicStatus(), { stale: true, permissionGranted: true });
           }
           this._standbyMicStream = stream;
           const tracks = typeof stream.getAudioTracks === 'function' ? stream.getAudioTracks() : [];

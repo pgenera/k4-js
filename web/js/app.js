@@ -56,6 +56,7 @@
       this._pttPointerId = null;
       this._pttKeyHeld = false;
       this._pttHeldUi = false;
+      this._pttRequestGen = 0;
       this._lastSensorTickMs = 0;
       this._uiPerf =
         typeof window !== 'undefined'
@@ -681,8 +682,13 @@
           const active = Boolean(ev && ev.active);
           if (active) {
             this._startTxAudioIfVoiceMode();
-          } else if (typeof this.audio.stopTxCapture === 'function') {
-            this.audio.stopTxCapture();
+          } else {
+            if (typeof this.audio.stopTxCapture === 'function') {
+              this.audio.stopTxCapture();
+            }
+            if (typeof this.audio.releaseMicStandby === 'function') {
+              this.audio.releaseMicStandby();
+            }
           }
           if (this.pwa) this.pwa.notifyActivityChanged();
           this._render();
@@ -1583,7 +1589,20 @@
       this.toast('Disconnected from radio', 'info');
     }
 
+    _isDemoMode(snap) {
+      const s = snap || this._getSnapshot();
+      const wsUrl =
+        (s && s.connection && s.connection.wsUrl) ||
+        (this._lastConnectOpts && this._lastConnectOpts.wsUrl) ||
+        '';
+      return Boolean(
+        (this.client && typeof this.client.isDemoMode === 'function' && this.client.isDemoMode()) ||
+        String(wsUrl).startsWith('demo://')
+      );
+    }
+
     _resetTxSafety() {
+      this._pttRequestGen += 1;
       this._pttPointerId = null;
       this._pttKeyHeld = false;
       this._pttHeldUi = false;
@@ -1601,7 +1620,9 @@
 
     _startTxAudioIfVoiceMode() {
       if (!this.audio || typeof this.audio.startTxCapture !== 'function') return;
-      if (!this._isVoiceOrAfDataMode(this._getSnapshot())) return;
+      const snap = this._getSnapshot();
+      if (this._isDemoMode(snap)) return;
+      if (!this._isVoiceOrAfDataMode(snap)) return;
       const cfg = this._txAudioConfig;
       const secOk = typeof this.audio.isMicSecureContextAvailable === 'function'
         ? this.audio.isMicSecureContextAvailable()
@@ -1616,65 +1637,39 @@
       });
     }
 
-    _syncTxMicStandby(postureOverride, forceRetry = false) {
+    _syncTxMicStandby() {
       if (!this.audio) return;
       const snap = this._getSnapshot();
       const conn = snap.connection || {};
-      const posture =
-        postureOverride ||
-        snap.txPosture ||
-        (this.client && typeof this.client.getTxPosture === 'function'
-          ? this.client.getTxPosture()
-          : 'tx-armed');
-      const isTest = Boolean(snap.txTestMode) || posture === 'tx-test';
-      const txEnabled =
-        conn.status === 'connected' && (posture === 'tx-armed' || isTest);
-      const needsMic =
-        txEnabled &&
+      const isDemo = this._isDemoMode(snap);
+      const txActive = Boolean(this._pttHeldUi || snap.pttHeld || snap.txActive);
+      const keepMicOpen =
+        !isDemo &&
+        conn.status === 'connected' &&
+        txActive &&
         this._txAudioConfig.source === 'mic' &&
-        (isTest || this._isVoiceOrAfDataMode(snap));
-      const curState =
-        typeof this.audio.getMicStatus === 'function'
-          ? this.audio.getMicStatus().state
-          : 'idle';
-      if (!needsMic) {
-        if (
-          (this.audio._standbyMicStream || curState !== 'idle') &&
-          typeof this.audio.releaseMicStandby === 'function'
-        ) {
+        this._isVoiceOrAfDataMode(snap);
+      if (!keepMicOpen) {
+        const curState =
+          typeof this.audio.getMicStatus === 'function'
+            ? this.audio.getMicStatus().state
+            : 'idle';
+        const shouldRelease =
+          Boolean(this.audio._standbyMicStream) ||
+          curState === 'ready' ||
+          curState === 'requesting' ||
+          curState === 'capturing' ||
+          (isDemo && curState !== 'idle');
+        if (shouldRelease && typeof this.audio.releaseMicStandby === 'function') {
           this.audio.releaseMicStandby();
         }
-        return;
-      }
-      const blockedState =
-        curState === 'denied' ||
-        curState === 'insecure' ||
-        curState === 'unavailable' ||
-        curState === 'error';
-      if (blockedState && !forceRetry) {
-        return;
-      }
-      if (typeof this.audio.ensureMicReady === 'function') {
-        this.audio.ensureMicReady({
-          deviceId: this._txAudioConfig.deviceId || '',
-          voiceProcessing: Boolean(this._txAudioConfig.voiceProcessing),
-        }).then((st) => {
-          if (st && st.state === 'ready' && this.inspector && typeof this.inspector._refreshMicDevices === 'function') {
-            this.inspector._refreshMicDevices();
-          } else if (st && st.state === 'denied') {
-            this.toast('Microphone permission denied — grant browser mic access or select a test tone in TX', 'warn');
-          } else if (st && (st.state === 'unavailable' || st.state === 'error')) {
-            this.toast(`Microphone unavailable: ${st.error || 'No input device'}`, 'warn');
-          }
-          this._render();
-        });
       }
     }
 
     setTxAudioConfig(patch) {
       if (!patch || typeof patch !== 'object') return;
       Object.assign(this._txAudioConfig, patch);
-      this._syncTxMicStandby(undefined, true);
+      this._syncTxMicStandby();
       this._render();
     }
 
@@ -1699,6 +1694,10 @@
 
     toggleTxTest() {
       const snap = this._getSnapshot();
+      if (this._isDemoMode(snap)) {
+        this.toast('Demo mode is receive-only', 'info');
+        return;
+      }
       const posture = (this.client && typeof this.client.getTxPosture === 'function')
         ? this.client.getTxPosture()
         : (snap.txPosture || 'tx-armed');
@@ -1707,7 +1706,7 @@
       if (this.client && typeof this.client.setTxTest === 'function') {
         this.client.setTxTest(next);
       }
-      this._syncTxMicStandby(next ? 'tx-test' : 'tx-armed', next);
+      this._syncTxMicStandby();
       this.toast(
         next ? 'TX Test ON — RF output inhibited' : 'TX Test OFF — TX Ready',
         'info'
@@ -1717,6 +1716,8 @@
 
     _beginHoldPtt() {
       const snap = this._getSnapshot();
+      if (this._isDemoMode(snap)) return;
+      if (!snap.connection || snap.connection.status !== 'connected') return;
       const posture = snap.txPosture || (this.client && typeof this.client.getTxPosture === 'function' ? this.client.getTxPosture() : 'tx-armed');
       if (posture === 'rx-only' || snap.txInhibit) return;
       if (
@@ -1737,32 +1738,61 @@
           st.state !== 'capturing' &&
           typeof this.audio.ensureMicReady === 'function'
         ) {
-          if (st.state === 'denied' || st.state === 'unavailable' || st.state === 'error') {
-            this._syncTxMicStandby(posture, true);
-            if (this.inspector && typeof this.inspector.openTab === 'function') {
-              this.inspector.openTab('tx');
-            }
-            this.toast('Microphone unavailable — grant mic permission or pick a TX audio source', 'warn');
-          } else {
-            this.audio.ensureMicReady({
-              deviceId: this._txAudioConfig.deviceId || '',
-              voiceProcessing: Boolean(this._txAudioConfig.voiceProcessing),
-            }).then((res) => {
-              if (res && res.state === 'ready') {
+          this._pttHeldUi = true;
+          const pttGen = ++this._pttRequestGen;
+          this._render();
+          this.audio.ensureMicReady({
+            deviceId: this._txAudioConfig.deviceId || '',
+            voiceProcessing: Boolean(this._txAudioConfig.voiceProcessing),
+          }).then((res) => {
+            const stillHeld = pttGen === this._pttRequestGen && this._pttHeldUi;
+            if (!stillHeld) {
+              if (this.audio && typeof this.audio.releaseMicStandby === 'function') {
+                this.audio.releaseMicStandby();
+              }
+              if (res && (res.state === 'ready' || res.permissionGranted)) {
                 if (this.inspector && typeof this.inspector._refreshMicDevices === 'function') {
                   this.inspector._refreshMicDevices();
                 }
-                this.toast('Microphone ready — hold PTT to transmit', 'info');
-              } else if (res && (res.state === 'denied' || res.state === 'unavailable' || res.state === 'error')) {
-                if (this.inspector && typeof this.inspector.openTab === 'function') {
-                  this.inspector.openTab('tx');
-                }
-                this.toast('Microphone unavailable — grant mic permission or pick a TX audio source', 'warn');
+                this.toast('Microphone permission granted — hold PTT to transmit', 'info');
               }
               this._render();
-            });
-          }
-          this._render();
+              return;
+            }
+            const latest = this._getSnapshot();
+            const latestPosture =
+              latest.txPosture ||
+              (this.client && typeof this.client.getTxPosture === 'function' ? this.client.getTxPosture() : 'tx-armed');
+            if (
+              this._isDemoMode(latest) ||
+              latestPosture === 'rx-only' ||
+              latest.txInhibit ||
+              (latest.connection && latest.connection.status !== 'connected')
+            ) {
+              this._pttHeldUi = false;
+              if (this.audio && typeof this.audio.releaseMicStandby === 'function') {
+                this.audio.releaseMicStandby();
+              }
+              this._render();
+              return;
+            }
+            if (res && (res.state === 'ready' || res.state === 'capturing')) {
+              if (this.inspector && typeof this.inspector._refreshMicDevices === 'function') {
+                this.inspector._refreshMicDevices();
+              }
+              if (this.pwa) this.pwa.notifyActivityChanged();
+              if (this.client && typeof this.client.startPtt === 'function') {
+                this.client.startPtt({ maxSeconds: 180 });
+              }
+            } else {
+              this._pttHeldUi = false;
+              if (this.inspector && typeof this.inspector.openTab === 'function') {
+                this.inspector.openTab('tx');
+              }
+              this.toast('Microphone unavailable — grant mic permission or pick a TX audio source', 'warn');
+            }
+            this._render();
+          });
           return;
         }
       }
@@ -1777,11 +1807,15 @@
     _endHoldPtt() {
       const snap = this._getSnapshot();
       const wasActive = Boolean(this._pttHeldUi || this._pttKeyHeld || snap.pttHeld || snap.txActive);
+      this._pttRequestGen += 1;
       this._pttPointerId = null;
       this._pttKeyHeld = false;
       this._pttHeldUi = false;
       if (this.audio && typeof this.audio.stopTxCapture === 'function') {
         this.audio.stopTxCapture();
+      }
+      if (this.audio && typeof this.audio.releaseMicStandby === 'function') {
+        this.audio.releaseMicStandby();
       }
       if (wasActive && this.client && typeof this.client.stopPtt === 'function') {
         this.client.stopPtt();
@@ -1791,6 +1825,7 @@
     }
 
     panicAbortTx(reason = 'escape') {
+      this._pttRequestGen += 1;
       this._pttPointerId = null;
       this._pttKeyHeld = false;
       this._pttHeldUi = false;
@@ -2650,31 +2685,40 @@
       this._syncAudioToggleUi(snap, aDiag);
 
       // Direct TX Controls (TEST, Mic status, Hold-to-Talk PTT)
-      const posture = snap.txPosture || (this.client && typeof this.client.getTxPosture === 'function' ? this.client.getTxPosture() : 'tx-armed');
-      const isTest = Boolean(snap.txTestMode || posture === 'tx-test');
-      const transmitting = Boolean(snap.txActive || snap.atuTuning);
+      const isDemo = this._isDemoMode(snap);
+      const posture = isDemo
+        ? 'rx-only'
+        : (snap.txPosture || (this.client && typeof this.client.getTxPosture === 'function' ? this.client.getTxPosture() : 'tx-armed'));
+      const isTest = !isDemo && Boolean(snap.txTestMode || posture === 'tx-test');
+      const transmitting = !isDemo && Boolean(snap.txActive || snap.atuTuning);
       if (this._dom.txPostureBar) {
         this._dom.txPostureBar.dataset.posture = posture;
         this._dom.txPostureBar.dataset.txTest = isTest ? 'true' : 'false';
         this._dom.txPostureBar.dataset.transmitting = transmitting ? 'true' : 'false';
       }
       if (this._dom.txModeTestBtn) {
+        this._dom.txModeTestBtn.disabled = isDemo;
         this._dom.txModeTestBtn.classList.toggle('is-active', isTest);
         this._dom.txModeTestBtn.setAttribute('aria-pressed', isTest ? 'true' : 'false');
+        this._dom.txModeTestBtn.title = isDemo
+          ? 'Demo mode is receive-only'
+          : 'Toggle TX Test mode (TS1 — RF output inhibited)';
       }
 
       if (this._dom.pttBtn) {
-        const pttEnabled = posture !== 'rx-only' && !snap.txInhibit;
+        const pttEnabled = !isDemo && posture !== 'rx-only' && !snap.txInhibit;
         this._dom.pttBtn.disabled = !pttEnabled;
-        const pttActive = Boolean(this._pttHeldUi || snap.pttHeld || snap.txActive);
+        const pttActive = !isDemo && Boolean(this._pttHeldUi || snap.pttHeld || snap.txActive);
         const pttInfo = K4.describePttMicState(snap, this._txAudioConfig, this.audio, isTest);
-        this._dom.pttBtn.classList.toggle('is-held', Boolean(this._pttHeldUi || snap.pttHeld));
-        this._dom.pttBtn.classList.toggle('is-tx', Boolean(snap.txActive));
+        this._dom.pttBtn.classList.toggle('is-held', !isDemo && Boolean(this._pttHeldUi || snap.pttHeld));
+        this._dom.pttBtn.classList.toggle('is-tx', !isDemo && Boolean(snap.txActive));
         this._dom.pttBtn.dataset.micState = pttInfo.micState;
-        this._dom.pttBtn.dataset.micWarn = pttInfo.micWarn ? 'true' : 'false';
+        this._dom.pttBtn.dataset.micWarn = !isDemo && pttInfo.micWarn ? 'true' : 'false';
         this._dom.pttBtn.setAttribute('aria-pressed', pttActive ? 'true' : 'false');
-        this._dom.pttBtn.textContent = snap.txActive ? pttInfo.topTxLabel : pttInfo.idleLabel;
-        this._dom.pttBtn.title = `Hold to transmit (Spacebar when un-focused; releases immediately on keyup or blur)${pttInfo.titleDetail}`;
+        this._dom.pttBtn.textContent = (!isDemo && snap.txActive) ? pttInfo.topTxLabel : pttInfo.idleLabel;
+        this._dom.pttBtn.title = isDemo
+          ? 'Demo mode is receive-only (microphone unused)'
+          : `Hold to transmit (Spacebar when un-focused; releases immediately on keyup or blur)${pttInfo.titleDetail}`;
       }
 
       // Floating Panadapter HUD

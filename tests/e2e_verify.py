@@ -2126,16 +2126,15 @@ def run_http_origin_and_screenshots(
             return snap.txPosture === 'tx-armed' && snap.txTestMode === true &&
                    bar && bar.dataset.txTest === 'true' &&
                    ptt && ptt.disabled === false &&
-                   ptt.dataset.micState === 'ready' && ptt.textContent.trim() === 'PTT' &&
+                   ptt.dataset.micState === 'idle' && ptt.textContent.trim() === 'PTT' &&
                    ind && ind.textContent === '◀ TX Test' && ind.dataset.state === 'test' &&
                    badge && !badge.classList.contains('is-flashing') &&
                    indAnim === 'none' && badgeAnim === 'none' &&
-                   globalThis.k4App.audio._standbyMicStream &&
-                   globalThis.k4App.audio._standbyMicStream.getAudioTracks()[0]?.readyState === 'live';
+                   !globalThis.k4App.audio._standbyMicStream;
             """
         )
         and http_get_json(stats_url)["txTestMode"] is True,
-        "TX TEST (TS1) opens live standby mic stream with PTT micState='ready' and steady TX Test graphics",
+        "TX TEST (TS1) keeps microphone closed while receiving with PTT micState='idle' and steady TX Test graphics",
     )
 
     audio_before = http_get_json(stats_url)["txAudioPacketsIn"]
@@ -2203,12 +2202,11 @@ def run_http_origin_and_screenshots(
             const s = globalThis.k4App.state.getSnapshot();
             const ptt = document.querySelector('[data-testid="ptt-btn"]');
             return s.txActive === false && s.txMeters.fwdWatts === 0 &&
-                   ptt && ptt.dataset.micState === 'ready' &&
-                   globalThis.k4App.audio._standbyMicStream &&
-                   globalThis.k4App.audio._standbyMicStream.getAudioTracks()[0]?.readyState === 'live';
+                   ptt && ptt.dataset.micState === 'idle' &&
+                   !globalThis.k4App.audio._standbyMicStream;
             """
         ),
-        "PTT release drops TX TEST to RX while keeping standby mic stream live (PTT ready)",
+        "PTT release drops TX TEST to RX and immediately closes the microphone stream (PTT idle)",
     )
 
     # K4 Message Memories (M1-M4 + BANK 1/2 + STOP PB0)
@@ -2353,11 +2351,12 @@ def run_http_origin_and_screenshots(
             """
             const ptt = document.querySelector('[data-testid="ptt-btn"]');
             const cardPtt = document.querySelector('[data-testid="tx-card-ptt-btn"]');
-            return ptt && ptt.textContent.trim() === 'PTT' && ptt.dataset.micState === 'ready' &&
+            return ptt && ptt.textContent.trim() === 'PTT' && ptt.dataset.micState === 'idle' &&
+                   !globalThis.k4App.audio._standbyMicStream &&
                    cardPtt && cardPtt.textContent.trim() === 'PTT';
             """
         ),
-        "Switching TX audio source back to mic restores PTT label & warm standby",
+        "Switching TX audio source back to mic restores PTT label without opening mic while receiving",
     )
 
     client.execute_script("globalThis.k4App.client.setMode('A', 'CW');")
@@ -2365,7 +2364,7 @@ def run_http_origin_and_screenshots(
         lambda: client.execute_script(
             "return globalThis.k4App.state.getSnapshot().rxA.mode === 3 && !globalThis.k4App.audio._standbyMicStream;"
         ),
-        "Switching to CW (with TX TEST off) releases standby mic stream",
+        "Switching to CW keeps microphone closed",
     )
     client.execute_script("globalThis.k4App.client.setMode('A', 'USB');")
     wait_until(
@@ -2373,12 +2372,11 @@ def run_http_origin_and_screenshots(
             """
             const s = globalThis.k4App.state.getSnapshot();
             const ptt = document.querySelector('[data-testid="ptt-btn"]');
-            return s.rxA.mode === 2 && ptt && ptt.dataset.micState === 'ready' &&
-                   globalThis.k4App.audio._standbyMicStream &&
-                   globalThis.k4App.audio._standbyMicStream.getAudioTracks()[0]?.readyState === 'live';
+            return s.rxA.mode === 2 && ptt && ptt.dataset.micState === 'idle' &&
+                   !globalThis.k4App.audio._standbyMicStream;
             """
         ),
-        "Switching back to USB automatically reopens warm standby mic stream",
+        "Switching back to USB keeps microphone closed while receiving",
     )
 
     # (c) Item 4: Single ATU TUNE (1st tap TU3 -> converges <= 1.3; 2nd tap within 5s -> TU4 Full Search -> Escape keeps tx-armed)

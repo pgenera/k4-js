@@ -4958,6 +4958,62 @@
     }
   });
 
+  // On-demand microphone release mid-prompt & Demo mode strict receive-only TX/mic lock
+  test('Client locks TX in demo mode and AudioEngine closes mic tracks released during getUserMedia', async () => {
+    const K4 = globalThis.K4;
+
+    // 1. Client demo mode refuses to arm TX or TX Test
+    const state = new K4.RadioState();
+    const gate = new K4.RxOnlyGate('tx-enabled');
+    const client = new K4.Client({ state, gate });
+    try {
+      client._isDemoMode = true;
+      client.setTxPosture('rx-only', { silentCat: true });
+      assertEqual(client.isDemoMode(), true, 'isDemoMode() reports true');
+      const armRes = client.setTxPosture('tx-armed');
+      assertEqual(armRes.blocked, true, 'setTxPosture(tx-armed) blocked in demo mode');
+      assertEqual(client.getTxPosture(), 'rx-only', 'posture remains rx-only');
+      const testRes = client.setTxTest(true);
+      assertEqual(testRes.blocked, true, 'setTxTest(true) blocked in demo mode');
+      assertEqual(client.getTxPosture(), 'rx-only', 'posture remains rx-only after setTxTest');
+      const pttRes = client.startPtt();
+      assertEqual(pttRes.blocked, true, 'startPtt() blocked in demo mode');
+      client.disconnect();
+      assertEqual(client.isDemoMode(), false, 'disconnect() clears demo mode flag');
+    } finally {
+      client.disconnect();
+    }
+
+    // 2. AudioEngine stops tracks immediately if releaseMicStandby() happens while getUserMedia is pending
+    const md = globalThis.navigator && globalThis.navigator.mediaDevices;
+    if (globalThis.isSecureContext && md && typeof md.getUserMedia === 'function') {
+      const origGum = md.getUserMedia;
+      let resolveGum = null;
+      let trackStopped = false;
+      const fakeStream = {
+        getTracks: () => [{ readyState: 'live', stop: () => { trackStopped = true; } }],
+        getAudioTracks: () => [{ readyState: 'live', label: 'Fake Mic', stop: () => { trackStopped = true; } }],
+      };
+      md.getUserMedia = () => new Promise((res) => { resolveGum = res; });
+      const engine = new K4.AudioEngine({ latencyMs: 75 });
+      try {
+        const p = engine.ensureMicReady({ voiceProcessing: false });
+        assertEqual(engine.getMicStatus().state, 'requesting', 'mic enters requesting state');
+        engine.releaseMicStandby();
+        assertEqual(engine.getMicStatus().state, 'idle', 'releaseMicStandby returns mic to idle');
+        resolveGum(fakeStream);
+        const res = await p;
+        assertEqual(trackStopped, true, 'stream tracks stopped immediately when released mid-prompt');
+        assertEqual(res.permissionGranted, true, 'reports permissionGranted when user allowed after release');
+        assertEqual(engine._standbyMicStream, null, 'no standby mic stream retained after release');
+        assertEqual(engine.getMicStatus().state, 'idle', 'mic remains idle after late resolution');
+      } finally {
+        engine.destroy();
+        md.getUserMedia = origGum;
+      }
+    }
+  });
+
   async function runAll() {
     const resultsEl = document.getElementById('results');
     const summaryEl = document.getElementById('summary');

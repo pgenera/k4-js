@@ -114,6 +114,7 @@
       this._pendingSlTier = 2;
       this._lastPingSentPerfMs = null;
       this._manualDisconnect = false;
+      this._isDemoMode = false;
       this._pagehideHandler = null;
       this._metrics = {
         bytesIn: 0,
@@ -536,6 +537,7 @@
       this._framer.reset();
 
       const isDemo = wsUrl.startsWith('demo://');
+      this._isDemoMode = isDemo;
       if (isDemo && typeof this.setTxPosture === 'function') {
         this.setTxPosture('rx-only', { silentCat: true });
       }
@@ -763,6 +765,7 @@
       const ws = this._ws;
       const wsWasOpen = isWsOpen(ws);
       this._isAuthenticated = false;
+      this._isDemoMode = false;
       this._stopTransientTx({ silentCat: !wsWasOpen, emitPttChange: true, sendDisconnectRx: wsWasOpen });
 
       if (ws) {
@@ -1445,6 +1448,9 @@
       if (posture !== 'rx-only' && posture !== 'tx-test' && posture !== 'tx-armed') {
         throw new RangeError(`Unsupported TX posture: ${posture}`);
       }
+      if (this._isDemoMode && posture !== 'rx-only') {
+        return { sent: false, blocked: true, allowed: [], sanitized: '', reason: 'Demo mode is receive-only' };
+      }
       const silentCat = Boolean(opts && opts.silentCat);
       if (posture === 'rx-only') {
         this._disarmToRxOnly({ silentCat, emitPttChange: true });
@@ -1480,6 +1486,10 @@
       return this.sendCat(isTest ? 'TS1;TM1;PO1;' : 'TS0;TM1;PO1;');
     }
 
+    isDemoMode() {
+      return Boolean(this._isDemoMode);
+    }
+
     /**
      * Toggle or set Elecraft K4 TX Test mode (TS1; / TS0;), matching the front-panel [TEST] switch.
      * While 'tx-armed', toggles TS1;/TS0; cleanly without dropping armed status.
@@ -1487,6 +1497,9 @@
      * @param {boolean} enabled
      */
     setTxTest(enabled) {
+      if (this._isDemoMode) {
+        return { sent: false, blocked: true, allowed: [], sanitized: '', reason: 'Demo mode is receive-only' };
+      }
       const on = Boolean(enabled);
       if (this._txPosture === 'rx-only') {
         if (on) {
