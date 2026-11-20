@@ -63,9 +63,47 @@
     },
   };
 
+  // Real K4 (R40.B1) 5-tier 1024-bin hardware sample rates and hysteresis-free #SPN command bounds.
+  // Each tier streams fullSpanHz of FFT bins; commanding radioSpanHz within [minCmdHz, maxCmdHz]
+  // guarantees the K4 enters that exact tier whether zooming in or out.
+  const PAN_TIERS = Object.freeze([
+    Object.freeze({ tierKHz: 24,  fullSpanHz: 24000,  minCmdHz: 6000,   maxCmdHz: 19000 }),
+    Object.freeze({ tierKHz: 48,  fullSpanHz: 48000,  minCmdHz: 20000,  maxCmdHz: 36000 }),
+    Object.freeze({ tierKHz: 96,  fullSpanHz: 96000,  minCmdHz: 37000,  maxCmdHz: 82000 }),
+    Object.freeze({ tierKHz: 192, fullSpanHz: 192000, minCmdHz: 83000,  maxCmdHz: 172000 }),
+    Object.freeze({ tierKHz: 384, fullSpanHz: 384000, minCmdHz: 176000, maxCmdHz: 368000 }),
+  ]);
+
   const SpectrumGeometry = {
     clamp,
     SPAN_LADDER_KHZ,
+    PAN_TIERS,
+
+    /**
+     * Pick the tightest K4 hardware pan tier whose 1024-bin FFT covers neededSpanHz,
+     * returning a hysteresis-free #SPN command value that guarantees the K4 selects that tier.
+     * @param {number} neededSpanHz
+     * @returns {{ tierKHz: number, fullSpanHz: number, radioSpanHz: number }}
+     */
+    selectOptimalPanTier(neededSpanHz) {
+      const span = clamp(Math.ceil(Number(neededSpanHz) || 48000), 6000, 368000);
+      for (let i = 0; i < PAN_TIERS.length; i++) {
+        const t = PAN_TIERS[i];
+        if (span <= t.fullSpanHz || i === PAN_TIERS.length - 1) {
+          return {
+            tierKHz: t.tierKHz,
+            fullSpanHz: t.fullSpanHz,
+            radioSpanHz: clamp(span, t.minCmdHz, t.maxCmdHz),
+          };
+        }
+      }
+      const last = PAN_TIERS[PAN_TIERS.length - 1];
+      return {
+        tierKHz: last.tierKHz,
+        fullSpanHz: last.fullSpanHz,
+        radioSpanHz: clamp(span, last.minCmdHz, last.maxCmdHz),
+      };
+    },
 
     computeCrop(userSpanHz, tierKHz) {
       const safeTierKHz = Number.isFinite(tierKHz) && tierKHz > 0 ? tierKHz : 48;

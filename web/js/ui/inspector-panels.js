@@ -1436,7 +1436,15 @@
           if (this.panadapter && typeof this.panadapter.resetViewport === 'function') {
             this.panadapter.resetViewport(rx, { syncRadioSpan: false });
           }
-          this.client.setDisplay(rx, { panSpanHz: hz });
+          if (this.panadapter && typeof this.panadapter.applyMapZoom === 'function') {
+            const res = this.panadapter.applyMapZoom(rx, {
+              targetSpanHz: hz,
+              anchorFrac: 0.5,
+            });
+            this.client.setDisplay(rx, { panSpanHz: res.radioSpanHz });
+          } else {
+            this.client.setDisplay(rx, { panSpanHz: hz });
+          }
         });
         spanGrid.appendChild(btn);
         this._refs.spanBtns.push({ hz, btn });
@@ -1455,7 +1463,16 @@
           if (this.panadapter && typeof this.panadapter.resetViewport === 'function') {
             this.panadapter.resetViewport(rx, { syncRadioSpan: false });
           }
-          this.client.setDisplay(rx, { panSpanHz: v * 1000 });
+          const targetHz = v * 1000;
+          if (this.panadapter && typeof this.panadapter.applyMapZoom === 'function') {
+            const res = this.panadapter.applyMapZoom(rx, {
+              targetSpanHz: targetHz,
+              anchorFrac: 0.5,
+            });
+            this.client.setDisplay(rx, { panSpanHz: res.radioSpanHz });
+          } else {
+            this.client.setDisplay(rx, { panSpanHz: targetHz });
+          }
         },
       });
       spanCard.appendChild(this._refs.spanSlider.row);

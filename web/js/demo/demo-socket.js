@@ -828,8 +828,46 @@
       }
       if (up.startsWith('#FXT')) {
         const arg = up.slice(4);
-        if (arg === '0' || arg === '1') this._fixedTune = arg === '1';
+        if (arg === '0' || arg === '1') {
+          this._fixedTune = arg === '1';
+          if (!this._fixedTune) {
+            this._panCenterA = this._rxA.freqHz;
+            this._panCenterB = this._rxB.freqHz;
+          }
+        }
         return `#FXT${this._fixedTune ? 1 : 0};`;
+      }
+      if (up.startsWith('FI')) {
+        const isB = up.startsWith('FI$');
+        const arg = up.slice(isB ? 3 : 2);
+        if (arg && this._fixedTune) {
+          const hz = parseFreqDigits(arg);
+          if (hz !== null) {
+            const clamped = clamp(hz, this._bandLowHz, this._bandHighHz);
+            if (isB) this._panCenterB = clamped;
+            else this._panCenterA = clamped;
+          }
+        }
+        const curCenter = isB ? this._panCenterB : this._panCenterA;
+        return `${isB ? 'FI$' : 'FI'}${padInt(curCenter, 11)};`;
+      }
+      if (up.startsWith('FC')) {
+        const isB = up.startsWith('FC$');
+        const arg = up.slice(isB ? 3 : 2);
+        const rx = isB ? this._rxB : this._rxA;
+        if (!arg) {
+          if (isB) this._panCenterB = rx.freqHz;
+          else this._panCenterA = rx.freqHz;
+        } else if (this._fixedTune) {
+          const off = Number(arg);
+          if (Number.isFinite(off)) {
+            const clamped = clamp(Math.round(rx.freqHz + off), this._bandLowHz, this._bandHighHz);
+            if (isB) this._panCenterB = clamped;
+            else this._panCenterA = clamped;
+          }
+        }
+        const curCenter = isB ? this._panCenterB : this._panCenterA;
+        return `${isB ? 'FI$' : 'FI'}${padInt(curCenter, 11)};`;
       }
       if (up.startsWith('#MP')) {
         const isB = up.startsWith('#MP$');

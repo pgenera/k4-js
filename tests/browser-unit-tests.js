@@ -1834,9 +1834,15 @@
       const sentSpan = spanCalls[spanCalls.length - 1].patch.panSpanHz;
       const neededSpan =
         frameAfterWheel.userSpanHz + 2 * Math.abs(frameAfterWheel.panCenterHz - 14074000);
+      const chosenTier = K4.SpectrumGeometry.selectOptimalPanTier(sentSpan);
       assert(
-        sentSpan >= neededSpan - 2,
-        `Requested #SPN (${sentSpan}) covers full offset viewport (>= ${neededSpan})`
+        chosenTier.fullSpanHz >= neededSpan - 2,
+        `Requested #SPN (${sentSpan} -> ${chosenTier.tierKHz}k tier) covers full offset viewport (>= ${neededSpan})`
+      );
+      assertEqual(
+        chosenTier.tierKHz,
+        48,
+        'Zooming in from 48k stays in optimal 48k tier instead of degrading to 96k'
       );
 
       // Verify async K4 #SPN echo preserves custom viewport
@@ -5011,6 +5017,85 @@
         engine.destroy();
         md.getUserMedia = origGum;
       }
+    }
+  });
+
+  // Optimal K4 Pan Tier selection during zoom, off-center recentering, panning, and auto-tightening
+  test('PanadapterView selects tightest K4 pan tier across zoom, off-center recentering, panning, and auto-tighten', () => {
+    const K4 = globalThis.K4;
+
+    // 1. selectOptimalPanTier chooses tightest tier and stays strictly outside K4 hysteresis bands
+    const cases = [
+      [6000,   24,  6000],
+      [12000,  24,  12000],
+      [19500,  24,  19000],
+      [24000,  24,  19000],
+      [25000,  48,  25000],
+      [36500,  48,  36000],
+      [48000,  48,  36000],
+      [72000,  96,  72000],
+      [82500,  96,  82000],
+      [96000,  96,  82000],
+      [144000, 192, 144000],
+      [174000, 192, 172000],
+      [192000, 192, 172000],
+      [193000, 384, 193000],
+      [368000, 384, 368000],
+    ];
+    for (const [needed, wantTier, wantCmd] of cases) {
+      const r = K4.SpectrumGeometry.selectOptimalPanTier(needed);
+      assertEqual(r.tierKHz, wantTier, `selectOptimalPanTier(${needed}).tierKHz`);
+      assertEqual(r.radioSpanHz, wantCmd, `selectOptimalPanTier(${needed}).radioSpanHz`);
+    }
+
+    // 2. Off-center zoom from 192k down to 12k recenters stream to unlock 24k tier instead of staying in 192k
+    const host = document.createElement('div');
+    host.style.width = '800px';
+    host.style.height = '320px';
+    document.body.appendChild(host);
+
+    const state = new K4.RadioState();
+    state.applyParsedCat(K4.CatCodec.parseCommand('FA00014200000;'));
+    state.applyParsedCat(K4.CatCodec.parseCommand('#SPN172000;'));
+    const displayCalls = [];
+    const mockClient = {
+      setDisplay: (rx, patch) => displayCalls.push({ rx, patch }),
+      sendCat: () => {},
+      tune: () => {},
+    };
+    const view = new K4.PanadapterView({ container: host, state, client: mockClient });
+    try {
+      const bins = new Uint8Array(1024).fill(50);
+      view.pushPanPacket({ rx: 'A', centerFreqHz: 14200000, sampleRateKHz: 192, spanHz: 192000, bins });
+
+      // Zoom off-center at u=0.75 (14,248,000 Hz) to 12 kHz span
+      const z1 = view.applyMapZoom('A', { targetSpanHz: 12000, anchorFrac: 0.75, anchorFreqHz: 14248000 });
+      assertEqual(z1.targetTierKHz, 24, 'Off-center zoom to 12k targets 24k tier');
+      assert(z1.radioSpanHz <= 19000, `Off-center zoom commands #SPN <= 19000 (got ${z1.radioSpanHz})`);
+      assert(Number.isFinite(z1.recenterStreamHz), 'Off-center zoom emits recenterStreamHz to unlock 24k tier');
+      assert(Math.abs(z1.panCenterHz - 14245000) <= 2, `panCenterHz keeps 14248000 pinned at u=0.75 (got ${z1.panCenterHz})`);
+
+      // Simulate K4 honoring FI + #SPN and sending 24k tier packet at recenterStreamHz
+      view.pushPanPacket({ rx: 'A', centerFreqHz: z1.recenterStreamHz, sampleRateKHz: 24, spanHz: 24000, bins });
+      assertEqual(view.getVisibleSpanHz('A'), 12000, 'Shifted 24k packet preserves 12k custom zoom');
+
+      // 3. Panning +15 kHz while zoomed at 12k recenters stream to STAY in 24k tier
+      const p1 = view.panViewportByHz('A', 15000);
+      assertEqual(p1.targetTierKHz, 24, 'Zoomed pan stays in 24k tier');
+      assertEqual(p1.radioSpanHz, 12000, 'Zoomed pan keeps #SPN12000');
+      assert(Number.isFinite(p1.recenterStreamHz), 'Zoomed pan recenters stream when crossing 24k edge');
+
+      // 4. Auto-tighten in pushPanPacket drops coarse 96k packet down to 24k tier
+      displayCalls.length = 0;
+      view._panes.A.pendingStreamCenterUntil = 0;
+      view._panes.A.pendingStreamCenterHz = null;
+      view._panes.A.lastAutoTightenMs = 0;
+      view.pushPanPacket({ rx: 'A', centerFreqHz: p1.panCenterHz, sampleRateKHz: 96, spanHz: 96000, bins });
+      assert(displayCalls.length >= 1, 'Auto-tighten sends narrower #SPN when incoming tier is coarser than needed');
+      assert(displayCalls[displayCalls.length - 1].patch.panSpanHz <= 19000, 'Auto-tighten commands 24k tier');
+    } finally {
+      view.destroy();
+      host.remove();
     }
   });
 

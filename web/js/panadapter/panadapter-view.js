@@ -243,6 +243,7 @@
         streamSpanHz: null,
         pendingStreamCenterHz: null,
         pendingStreamCenterUntil: 0,
+        lastAutoTightenMs: 0,
         customCenterHz: null,
         customSpanHz: null,
         recentRadioSpans: [],
@@ -394,6 +395,17 @@
       return (rxSnap && Number.isFinite(rxSnap.freqHz) && rxSnap.freqHz) || 14074000;
     }
 
+    _selectOptimalTier(neededSpanHz) {
+      if (
+        K4.SpectrumGeometry &&
+        typeof K4.SpectrumGeometry.selectOptimalPanTier === 'function'
+      ) {
+        return K4.SpectrumGeometry.selectOptimalPanTier(neededSpanHz);
+      }
+      const clamped = clamp(Math.ceil(Number(neededSpanHz) || 48000), 6000, 368000);
+      return { tierKHz: 48, fullSpanHz: 48000, radioSpanHz: clamped };
+    }
+
     _resolvePaneViewport(rxKey, rxSnap) {
       const pane = this._panes[rxKey];
       const streamCenterHz = this._resolveStreamCenterHz(rxKey, rxSnap);
@@ -408,15 +420,9 @@
         6000,
         368000
       );
-      const maxOffsetHz = Math.max(0, (368000 - userSpanHz) * 0.5);
       let panCenterHz = streamCenterHz;
-      if (Number.isFinite(pane.customCenterHz) && maxOffsetHz > 0) {
-        const offsetHz = clamp(
-          pane.customCenterHz - streamCenterHz,
-          -maxOffsetHz,
-          maxOffsetHz
-        );
-        panCenterHz = Math.round(streamCenterHz + offsetHz);
+      if (Number.isFinite(pane.customCenterHz)) {
+        panCenterHz = clamp(Math.round(pane.customCenterHz), 100000, 54000000);
       }
       const vfoFreqHz =
         (rxSnap && Number.isFinite(rxSnap.freqHz) && rxSnap.freqHz) ||
@@ -459,6 +465,8 @@
       const rxSnap = (key === 'B' ? snap.rxB : snap.rxA) || {};
       const pane = this._panes[key];
       const cur = this._resolvePaneViewport(key, rxSnap);
+      const nowMs =
+        typeof performance !== 'undefined' ? performance.now() : Date.now();
 
       const u = clamp(Number.isFinite(anchorFrac) ? anchorFrac : 0.5, 0, 1);
       const fAnchor = Number.isFinite(anchorFreqHz)
@@ -471,22 +479,44 @@
       const nextSpanHz = clamp(Math.round(rawNextSpan), 6000, 368000);
 
       const rawCenterHz = fAnchor - (u - 0.5) * nextSpanHz;
-      const maxOffsetHz = Math.max(0, (368000 - nextSpanHz) * 0.5);
-      const clampedOffsetHz = clamp(
-        rawCenterHz - cur.streamCenterHz,
-        -maxOffsetHz,
-        maxOffsetHz
-      );
-      const nextCenterHz = Math.round(cur.streamCenterHz + clampedOffsetHz);
+      const nextCenterHz = clamp(Math.round(rawCenterHz), 100000, 54000000);
 
-      pane.customCenterHz = Math.abs(clampedOffsetHz) < 25 ? null : nextCenterHz;
+      const refStreamCenterHz =
+        pane.pendingStreamCenterUntil > nowMs &&
+        Number.isFinite(pane.pendingStreamCenterHz)
+          ? pane.pendingStreamCenterHz
+          : cur.streamCenterHz;
+
+      const idealTier = this._selectOptimalTier(nextSpanHz);
+      const unshiftedNeededHz = Math.ceil(
+        nextSpanHz + 2 * Math.abs(nextCenterHz - refStreamCenterHz)
+      );
+      const unshiftedTier = this._selectOptimalTier(unshiftedNeededHz);
+
+      let recenterStreamHz = null;
+      let chosenTier = unshiftedTier;
+      if (
+        unshiftedTier.tierKHz > idealTier.tierKHz ||
+        unshiftedNeededHz > 368000
+      ) {
+        recenterStreamHz = nextCenterHz;
+        pane.pendingStreamCenterHz = nextCenterHz;
+        pane.pendingStreamCenterUntil = nowMs + 800;
+        chosenTier = idealTier;
+      }
+
+      pane.customCenterHz =
+        Math.abs(nextCenterHz - cur.streamCenterHz) < 25 &&
+        recenterStreamHz === null
+          ? null
+          : nextCenterHz;
       pane.customSpanHz = nextSpanHz;
       const effectiveCenterHz =
         pane.customCenterHz === null ? cur.streamCenterHz : nextCenterHz;
-      const radioSpanHz = this._recordRadioSpan(
-        pane,
-        Math.ceil(nextSpanHz + 2 * Math.abs(effectiveCenterHz - cur.streamCenterHz))
-      );
+      const radioSpanHz = this._recordRadioSpan(pane, chosenTier.radioSpanHz);
+      const vfoFreqHz =
+        (rxSnap && Number.isFinite(rxSnap.freqHz) && rxSnap.freqHz) ||
+        cur.streamCenterHz;
 
       this._scheduleRender();
       if (this._onViewportChange) {
@@ -498,7 +528,11 @@
         userSpanHz: nextSpanHz,
         streamCenterHz: cur.streamCenterHz,
         radioSpanHz,
-        isOffset: Math.abs(effectiveCenterHz - cur.streamCenterHz) >= 50,
+        targetTierKHz: chosenTier.tierKHz,
+        recenterStreamHz,
+        isOffset:
+          Math.abs(effectiveCenterHz - cur.streamCenterHz) >= 50 ||
+          Math.abs(effectiveCenterHz - vfoFreqHz) >= 50,
       };
     }
 
@@ -508,43 +542,50 @@
       const rxSnap = (key === 'B' ? snap.rxB : snap.rxA) || {};
       const pane = this._panes[key];
       const cur = this._resolvePaneViewport(key, rxSnap);
+      const nowMs =
+        typeof performance !== 'undefined' ? performance.now() : Date.now();
 
-      const rawCenterHz =
-        cur.panCenterHz + (Number.isFinite(deltaHz) ? deltaHz : 0);
-      const maxOffsetHz = Math.max(0, (368000 - cur.userSpanHz) * 0.5);
-      const rawOffsetHz = rawCenterHz - cur.streamCenterHz;
+      const nextCenterHz = clamp(
+        Math.round(cur.panCenterHz + (Number.isFinite(deltaHz) ? deltaHz : 0)),
+        100000,
+        54000000
+      );
+      const refStreamCenterHz =
+        pane.pendingStreamCenterUntil > nowMs &&
+        Number.isFinite(pane.pendingStreamCenterHz)
+          ? pane.pendingStreamCenterHz
+          : cur.streamCenterHz;
+
+      const idealTier = this._selectOptimalTier(cur.userSpanHz);
+      const unshiftedNeededHz = Math.ceil(
+        cur.userSpanHz + 2 * Math.abs(nextCenterHz - refStreamCenterHz)
+      );
+      const unshiftedTier = this._selectOptimalTier(unshiftedNeededHz);
+
       let recenterStreamHz = null;
-      let nextStreamCenterHz = cur.streamCenterHz;
-      let effectiveCenterHz;
-
-      if (Math.abs(rawOffsetHz) > maxOffsetHz) {
-        const clampedAbs = clamp(Math.round(rawCenterHz), 100000, 54000000);
-        nextStreamCenterHz = clampedAbs;
-        pane.streamCenterHz = clampedAbs;
-        pane.customCenterHz = null;
-        pane.pendingStreamCenterHz = clampedAbs;
-        pane.pendingStreamCenterUntil =
-          (typeof performance !== 'undefined' ? performance.now() : Date.now()) + 500;
-        effectiveCenterHz = clampedAbs;
-        recenterStreamHz = clampedAbs;
-      } else {
-        const clampedOffsetHz = clamp(rawOffsetHz, -maxOffsetHz, maxOffsetHz);
-        const nextCenterHz = Math.round(cur.streamCenterHz + clampedOffsetHz);
-        pane.customCenterHz = Math.abs(clampedOffsetHz) < 25 ? null : nextCenterHz;
-        effectiveCenterHz =
-          pane.customCenterHz === null ? cur.streamCenterHz : nextCenterHz;
+      let chosenTier = unshiftedTier;
+      if (
+        unshiftedTier.tierKHz > idealTier.tierKHz ||
+        unshiftedNeededHz > 368000
+      ) {
+        recenterStreamHz = nextCenterHz;
+        pane.pendingStreamCenterHz = nextCenterHz;
+        pane.pendingStreamCenterUntil = nowMs + 800;
+        chosenTier = idealTier;
       }
 
+      pane.customCenterHz =
+        Math.abs(nextCenterHz - cur.streamCenterHz) < 25 &&
+        recenterStreamHz === null
+          ? null
+          : nextCenterHz;
       pane.customSpanHz = cur.userSpanHz;
-      const radioSpanHz = this._recordRadioSpan(
-        pane,
-        Math.ceil(
-          cur.userSpanHz + 2 * Math.abs(effectiveCenterHz - nextStreamCenterHz)
-        )
-      );
+      const effectiveCenterHz =
+        pane.customCenterHz === null ? cur.streamCenterHz : nextCenterHz;
+      const radioSpanHz = this._recordRadioSpan(pane, chosenTier.radioSpanHz);
       const vfoFreqHz =
         (rxSnap && Number.isFinite(rxSnap.freqHz) && rxSnap.freqHz) ||
-        nextStreamCenterHz;
+        cur.streamCenterHz;
 
       this._scheduleRender();
       if (this._onViewportChange) {
@@ -554,11 +595,12 @@
         rx: key,
         panCenterHz: effectiveCenterHz,
         userSpanHz: cur.userSpanHz,
-        streamCenterHz: nextStreamCenterHz,
+        streamCenterHz: cur.streamCenterHz,
         radioSpanHz,
+        targetTierKHz: chosenTier.tierKHz,
         recenterStreamHz,
         isOffset:
-          Math.abs(effectiveCenterHz - nextStreamCenterHz) >= 50 ||
+          Math.abs(effectiveCenterHz - cur.streamCenterHz) >= 50 ||
           Math.abs(effectiveCenterHz - vfoFreqHz) >= 50,
       };
     }
@@ -566,7 +608,7 @@
     resetViewport(rx, { syncRadioSpan = true } = {}) {
       const key = rx === 'B' ? 'B' : 'A';
       const pane = this._panes[key];
-      const prevSpanHz = this.getVisibleSpanHz(key);
+      const prevSpanHz = clamp(Math.round(this.getVisibleSpanHz(key)), 6000, 368000);
       pane.customCenterHz = null;
       pane.customSpanHz = null;
       pane.streamCenterHz = null;
@@ -583,7 +625,12 @@
         this._autoFixedTuneFromDrag = false;
         const displayPatch = {};
         if (syncRadioSpan) {
-          displayPatch.panSpanHz = clamp(Math.round(prevSpanHz), 6000, 368000);
+          const optimal = this._selectOptimalTier(prevSpanHz);
+          displayPatch.panSpanHz = optimal.radioSpanHz;
+          if (Math.abs(optimal.radioSpanHz - prevSpanHz) > 500) {
+            pane.customSpanHz = prevSpanHz;
+            this._recordRadioSpan(pane, optimal.radioSpanHz);
+          }
         }
         if (shouldClearFixedTune) {
           displayPatch.fixedTune = false;
@@ -810,11 +857,11 @@
 
       pane.lastTierKHz = tierKHz;
       pane.lastCenterHz = centerHz;
+      pane.streamCenterHz = centerHz;
+      pane.panCenterHz = centerHz;
       if (!awaitingStreamShift) {
         pane.pendingStreamCenterUntil = 0;
         pane.pendingStreamCenterHz = null;
-        pane.streamCenterHz = centerHz;
-        pane.panCenterHz = centerHz;
       }
       pane.tierKHz = tierKHz;
       pane.streamSpanHz = streamSpanHz;
@@ -826,6 +873,24 @@
         pane.customCenterHz = null;
         pane.customSpanHz = null;
         pane.recentRadioSpans.length = 0;
+      }
+      if (
+        !awaitingStreamShift &&
+        pane.customSpanHz !== null &&
+        this._client &&
+        typeof this._client.setDisplay === 'function' &&
+        nowMs - pane.lastAutoTightenMs >= 600
+      ) {
+        const vp = this._resolvePaneViewport(rx, rxSnap);
+        const neededHz = Math.ceil(
+          vp.userSpanHz + 2 * Math.abs(vp.panCenterHz - centerHz)
+        );
+        const optimal = this._selectOptimalTier(neededHz);
+        if (tierKHz > optimal.tierKHz) {
+          pane.lastAutoTightenMs = nowMs;
+          const cmdSpan = this._recordRadioSpan(pane, optimal.radioSpanHz);
+          this._client.setDisplay(rx, { panSpanHz: cmdSpan });
+        }
       }
       if (Number.isFinite(pkt.noiseFloorDbm)) {
         pane.noiseFloorDbm = pkt.noiseFloorDbm;

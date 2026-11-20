@@ -2194,6 +2194,14 @@
           targetSpanHz,
           anchorFrac: 0.5,
         });
+        if (
+          res &&
+          Number.isFinite(res.recenterStreamHz) &&
+          this.panadapter._interaction &&
+          typeof this.panadapter._interaction._sendIfCenterThrottled === 'function'
+        ) {
+          this.panadapter._interaction._sendIfCenterThrottled(dispRx, res.recenterStreamHz, true);
+        }
         this.client.setDisplay(dispRx, { panSpanHz: res.radioSpanHz });
       } else {
         this.client.setDisplay(dispRx, { panSpanHz: targetSpanHz });

@@ -647,6 +647,13 @@
       }
     }
 
+    _flushPendingIfCenter() {
+      if (this._pendingIfCenter) {
+        const p = this._pendingIfCenter;
+        this._sendIfCenterThrottled(p.rx, p.freqHz, true);
+      }
+    }
+
     cancelPendingIfCenter() {
       if (this._ifCenterFlushTimer) {
         clearTimeout(this._ifCenterFlushTimer);
@@ -740,6 +747,7 @@
     _clearPointerState() {
       this._touches.clear();
       if (this._dragMode === 'pinch') {
+        this._flushPendingIfCenter();
         this._flushPendingSpan();
       }
       this._resetDragState();
@@ -751,6 +759,7 @@
         if (this._touches.has(e.pointerId)) {
           this._touches.delete(e.pointerId);
           if (this._dragMode === 'pinch' && this._touches.size < 2) {
+            this._flushPendingIfCenter();
             this._flushPendingSpan();
           }
           if (this._touches.size === 0) {
@@ -870,14 +879,16 @@
       const deltaHz = -(dxStep / plotW) * curSpan;
       const res = this.view.panViewportByHz(this._dragRx, deltaHz);
       if (res) {
-        this._sendSpanThrottled(this._dragRx, res.radioSpanHz, Boolean(isFinal));
         if (Number.isFinite(res.recenterStreamHz)) {
           this._sendIfCenterThrottled(
             this._dragRx,
             res.recenterStreamHz,
             Boolean(isFinal)
           );
+        } else if (isFinal) {
+          this._flushPendingIfCenter();
         }
+        this._sendSpanThrottled(this._dragRx, res.radioSpanHz, Boolean(isFinal));
       }
     }
 
@@ -1066,6 +1077,9 @@
               anchorFrac: uMid,
               anchorFreqHz: this._pinchAnchorRfHz,
             });
+            if (res && Number.isFinite(res.recenterStreamHz)) {
+              this._sendIfCenterThrottled(this._pinchRx, res.recenterStreamHz, firstEvent);
+            }
             this._sendSpanThrottled(this._pinchRx, res.radioSpanHz, firstEvent);
           } else {
             const nextSpan = Math.round(targetSpanHz);
@@ -1197,6 +1211,7 @@
           // ignore
         }
         if (this._dragMode === 'pinch' && this._touches.size < 2) {
+          this._flushPendingIfCenter();
           this._flushPendingSpan();
         }
         if (this._touches.size === 0) {
@@ -1341,6 +1356,9 @@
         const spanRx = hit.paneRx === 'B' ? 'B' : 'A';
         if (this.view && typeof this.view.applyMapZoom === 'function') {
           const res = this.view.applyMapZoom(spanRx, { factor, anchorFrac: u });
+          if (res && Number.isFinite(res.recenterStreamHz)) {
+            this._sendIfCenterThrottled(spanRx, res.recenterStreamHz);
+          }
           this._sendSpanThrottled(spanRx, res.radioSpanHz);
         } else {
           const nextSpan = clamp(
@@ -1472,6 +1490,9 @@
         anchorFreqHz: this._gestureAnchorRfHz,
       });
       if (res) {
+        if (Number.isFinite(res.recenterStreamHz)) {
+          this._sendIfCenterThrottled(this._gestureRx, res.recenterStreamHz);
+        }
         this._sendSpanThrottled(this._gestureRx, res.radioSpanHz);
       }
     }
@@ -1480,6 +1501,7 @@
       if (this._destroyed || (!this._inSafariGesture && this._isInsideMiniPan(e))) return;
       if (typeof e.preventDefault === 'function') e.preventDefault();
       this._inSafariGesture = false;
+      this._flushPendingIfCenter();
       this._flushPendingSpan();
     }
 
