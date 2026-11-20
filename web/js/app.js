@@ -77,7 +77,7 @@
       this._txAudioConfig = {
         source: hasSecureMic ? 'mic' : 'two-tone',
         deviceId: '',
-        voiceProcessing: false,
+        voiceProcessing: true,
         wavName: '',
       };
 

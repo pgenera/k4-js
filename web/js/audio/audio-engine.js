@@ -1983,7 +1983,7 @@
       };
     }
 
-    async ensureMicReady({ deviceId = '', voiceProcessing = false } = {}) {
+    async ensureMicReady({ deviceId = '', voiceProcessing = true } = {}) {
       if (this._destroyed) {
         return this.getMicStatus();
       }
@@ -2122,7 +2122,7 @@
      * @param {Object} [opts]
      * @returns {Promise<{ active: boolean, source: string, sampleRate: number, frameSamplesPerCh: number }>}
      */
-    async startTxCapture({ source = 'two-tone', deviceId = '', voiceProcessing = false } = {}) {
+    async startTxCapture({ source = 'two-tone', deviceId = '', voiceProcessing = true } = {}) {
       if (this._destroyed) {
         throw new Error('AudioEngine has been destroyed');
       }

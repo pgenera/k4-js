@@ -394,7 +394,7 @@
       this._localTxAudio = {
         source: hasSecureMic ? 'mic' : 'two-tone',
         deviceId: '',
-        voiceProcessing: false,
+        voiceProcessing: true,
         wavName: '',
       };
       this._micDevices = [];
