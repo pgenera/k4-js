@@ -3815,6 +3815,7 @@
   height: 104px;
   border-radius: var(--radius-xs);
   border: 1px solid var(--border-hairline);
+  cursor: crosshair;
 }
 
 .k4-sensor-tile[data-level="warn"] {

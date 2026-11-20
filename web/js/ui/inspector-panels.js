@@ -401,6 +401,8 @@
       this._msgBank = 1;
       this._selectedSensorKey = null;
       this._sensorWindowSec = 180;
+      this._sensorGraphHover = null;
+      this._sensorGraphHoverReadout = null;
       this._statusModeIdx = 0;
 
       this._buildDrawerShell();
@@ -3110,6 +3112,8 @@
       graphCloseBtn.title = 'Close sensor graph';
       graphCloseBtn.addEventListener('click', () => {
         this._selectedSensorKey = null;
+        this._sensorGraphHover = null;
+        this._sensorGraphHoverReadout = null;
         this.update(this._snap());
       });
       graphControls.appendChild(win60);
@@ -3127,6 +3131,24 @@
       graphCanvas.dataset.testid = 'sensor-graph-canvas';
       graphCanvas.width = 280;
       graphCanvas.height = 104;
+      const onGraphPointerMove = (e) => {
+        const rect = graphCanvas.getBoundingClientRect();
+        if (!rect || rect.width <= 0 || rect.height <= 0) return;
+        this._sensorGraphHover = {
+          x: e.clientX - rect.left,
+          y: e.clientY - rect.top,
+        };
+        this._renderSensorGraph();
+      };
+      const onGraphPointerLeave = () => {
+        if (!this._sensorGraphHover) return;
+        this._sensorGraphHover = null;
+        this._sensorGraphHoverReadout = null;
+        this._renderSensorGraph();
+      };
+      graphCanvas.addEventListener('pointermove', onGraphPointerMove);
+      graphCanvas.addEventListener('pointerleave', onGraphPointerLeave);
+      graphCanvas.addEventListener('pointercancel', onGraphPointerLeave);
       graphPanel.appendChild(graphCanvas);
 
       sensorsCard.appendChild(graphPanel);
@@ -4481,6 +4503,115 @@
       ctx.beginPath();
       ctx.arc(xOf(last.ts), yOf(last.value), 3, 0, Math.PI * 2);
       ctx.fill();
+
+      // Interactive hover vertical crosshair & value readout pill
+      this._sensorGraphHoverReadout = null;
+      const hover = this._sensorGraphHover;
+      if (hover && hover.x >= padL - 6 && hover.x <= cssW - padR + 6 && hover.y >= 0 && hover.y <= cssH) {
+        const clampedHx = clamp(hover.x, padL, cssW - padR);
+        const spanMs = Math.max(1000, nowTs - startTs);
+        const cursorTs = startTs + ((clampedHx - padL) / plotW) * spanMs;
+
+        let sampleTs = points[0].ts;
+        let sampleVal = points[0].value;
+        if (points.length === 1 || cursorTs <= points[0].ts) {
+          sampleTs = points[0].ts;
+          sampleVal = points[0].value;
+        } else if (cursorTs >= last.ts) {
+          sampleTs = last.ts;
+          sampleVal = last.value;
+        } else {
+          for (let i = 0; i < points.length - 1; i++) {
+            const p0 = points[i];
+            const p1 = points[i + 1];
+            if (cursorTs >= p0.ts && cursorTs <= p1.ts) {
+              const dt = p1.ts - p0.ts;
+              const t = dt > 0 ? (cursorTs - p0.ts) / dt : 0;
+              sampleTs = cursorTs;
+              sampleVal = p0.value + t * (p1.value - p0.value);
+              break;
+            }
+          }
+        }
+
+        const lineX = xOf(sampleTs);
+        const ptY = yOf(sampleVal);
+        const ageSec = Math.max(0, (nowTs - sampleTs) / 1000);
+        const ageText = ageSec < 0.5 ? 'now' : `-${Math.round(ageSec)}s`;
+        const readoutText = `${sampleVal.toFixed(meta.decimals)} ${meta.unit} · ${ageText}`;
+        this._sensorGraphHoverReadout = {
+          value: sampleVal,
+          ts: sampleTs,
+          ageSec,
+          text: readoutText,
+        };
+
+        // Dashed vertical crosshair line (matching waterfall crosshair style)
+        ctx.save();
+        ctx.setLineDash([4, 4]);
+        ctx.strokeStyle = 'rgba(241, 245, 249, 0.42)';
+        ctx.lineWidth = 1;
+        const crispX = Math.round(lineX) + 0.5;
+        ctx.beginPath();
+        ctx.moveTo(crispX, padT);
+        ctx.lineTo(crispX, padT + plotH);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        // Highlighted sample dot on the curve
+        ctx.fillStyle = meta.color;
+        ctx.strokeStyle = '#F1F5F9';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.arc(lineX, ptY, 3.8, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+
+        // Floating readout pill
+        ctx.font = '10.5px ui-monospace, SFMono-Regular, monospace';
+        const textW = ctx.measureText(readoutText).width;
+        const boxW = Math.ceil(textW) + 22;
+        const boxH = 20;
+        let bx = lineX + 8;
+        if (bx + boxW > cssW - padR - 2) {
+          bx = lineX - boxW - 8;
+        }
+        bx = clamp(bx, padL + 2, cssW - padR - boxW - 2);
+        let by = ptY - boxH - 6;
+        if (by < padT + 1) {
+          by = ptY + 8;
+        }
+        by = clamp(by, padT + 1, padT + plotH - boxH - 1);
+
+        const r = 5;
+        ctx.beginPath();
+        ctx.moveTo(bx + r, by);
+        ctx.lineTo(bx + boxW - r, by);
+        ctx.quadraticCurveTo(bx + boxW, by, bx + boxW, by + r);
+        ctx.lineTo(bx + boxW, by + boxH - r);
+        ctx.quadraticCurveTo(bx + boxW, by + boxH, bx + boxW - r, by + boxH);
+        ctx.lineTo(bx + r, by + boxH);
+        ctx.quadraticCurveTo(bx, by + boxH, bx, by + boxH - r);
+        ctx.lineTo(bx, by + r);
+        ctx.quadraticCurveTo(bx, by, bx + r, by);
+        ctx.closePath();
+        ctx.fillStyle = 'rgba(10, 14, 22, 0.92)';
+        ctx.fill();
+        ctx.strokeStyle = 'rgba(148, 163, 184, 0.34)';
+        ctx.lineWidth = 1;
+        ctx.stroke();
+
+        ctx.fillStyle = meta.color;
+        ctx.beginPath();
+        ctx.arc(bx + 8, by + boxH / 2, 2.8, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.fillStyle = '#F1F5F9';
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(readoutText, bx + 15, by + boxH / 2 + 0.5);
+        ctx.restore();
+      }
       ctx.restore();
     }
   }

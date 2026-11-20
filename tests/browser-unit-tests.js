@@ -5149,6 +5149,62 @@
     }
   });
 
+  // 60. Sensor history graph hover crosshair & value readout
+  test('Sensor history graph renders hover crosshair readout on pointermove and clears on pointerleave', () => {
+    const K4 = globalThis.K4;
+    const now = Date.now();
+    const state = {
+      getSnapshot: () => new K4.RadioState().getSnapshot(),
+      getSensorHistory: () => ({
+        points: [
+          { ts: now - 60000, value: 13.0 },
+          { ts: now, value: 14.0 },
+        ],
+        min: 13.0,
+        max: 14.0,
+        current: 14.0,
+      }),
+      subscribe: () => () => {},
+    };
+    const drawer = document.createElement('div');
+    drawer.style.width = '340px';
+    const mobNav = document.createElement('div');
+    const mobSheet = document.createElement('div');
+    document.body.appendChild(drawer);
+    document.body.appendChild(mobNav);
+    document.body.appendChild(mobSheet);
+    const client = { sendCat: () => {}, setDisplay: () => {} };
+    const panel = new K4.InspectorPanels({ drawerEl: drawer, mobileNavEl: mobNav, mobileSheetEl: mobSheet, client, state });
+    try {
+      panel.openTab('tx');
+      panel._sensorWindowSec = 60;
+      panel._selectedSensorKey = 'vs';
+      panel._renderSensorGraph();
+      const canvas = panel._refs.sensorGraphCanvas;
+      const rect = canvas.getBoundingClientRect();
+      // Midpoint of plot area: padL=36, padR=8 -> center of [36, width-8]
+      const cssW = Math.max(220, canvas.clientWidth || 264);
+      const midX = 36 + (cssW - 36 - 8) * 0.5;
+      canvas.dispatchEvent(new PointerEvent('pointermove', {
+        clientX: rect.left + midX,
+        clientY: rect.top + 52,
+        bubbles: true,
+      }));
+      assert(panel._sensorGraphHoverReadout !== null, 'hover readout populated on pointermove');
+      assertApprox(panel._sensorGraphHoverReadout.value, 13.5, 0.08, 'midpoint interpolates to ~13.5 V');
+      assert(panel._sensorGraphHoverReadout.text.includes('V · -'), `readout formats value and age, got ${panel._sensorGraphHoverReadout.text}`);
+
+      canvas.dispatchEvent(new PointerEvent('pointerleave', { bubbles: true }));
+      assertEqual(panel._sensorGraphHover, null, 'pointerleave clears hover state');
+      assertEqual(panel._sensorGraphHoverReadout, null, 'pointerleave clears hover readout');
+    } finally {
+      panel.destroy();
+      drawer.remove();
+      mobNav.remove();
+      mobSheet.remove();
+    }
+  });
+
   async function runAll() {
     const resultsEl = document.getElementById('results');
     const summaryEl = document.getElementById('summary');
