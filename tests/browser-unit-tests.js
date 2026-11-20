@@ -4858,6 +4858,106 @@
     }
   });
 
+  // MediaSession progress-bar S-meter modulation (10-minute virtual track, S0..S9+40 dBm)
+  test('AudioEngine modulates MediaSession position state from active VFO S-meter and respects Settings toggle', async () => {
+    const K4 = globalThis.K4;
+
+    // 1. Mapping math: S0 (-127 dBm) -> 0s, S9 (-73 dBm) -> 344.7s, S9+40 (-33 dBm) -> 600s
+    assertEqual(K4.AudioEngine.MEDIA_SMETER_DURATION_SEC, 600, 'virtual track duration is 600 s');
+    assertEqual(K4.AudioEngine.sMeterDbmToMediaPosition(-127), 0, 'S0 (-127 dBm) maps to 0 s');
+    assertEqual(K4.AudioEngine.sMeterDbmToMediaPosition(-150), 0, 'below S0 clamps to 0 s');
+    assertEqual(K4.AudioEngine.sMeterDbmToMediaPosition(-73), 344.7, 'S9 (-73 dBm) maps to 344.7 s');
+    assertEqual(K4.AudioEngine.sMeterDbmToMediaPosition(-33), 600, 'S9+40 (-33 dBm) maps to 600 s');
+    assertEqual(K4.AudioEngine.sMeterDbmToMediaPosition(0), 600, 'above S9+40 clamps to 600 s');
+
+    // 2. ClientPrefs default, toggle, and SettingsPanel switch UI
+    const prevPref = K4.ClientPrefs.get('mediaSessionSmeter');
+    const modal = document.createElement('div');
+    modal.hidden = true;
+    document.body.appendChild(modal);
+    let panel = null;
+    try {
+      K4.ClientPrefs.reset();
+      assertEqual(K4.ClientPrefs.get('mediaSessionSmeter'), true, 'mediaSessionSmeter defaults to true');
+      panel = new K4.SettingsPanel({ modal, prefs: K4.ClientPrefs });
+      const toggleBtn = modal.querySelector('[data-testid="pref-media-smeter"]');
+      assert(Boolean(toggleBtn), 'SettingsPanel renders pref-media-smeter switch');
+      assertEqual(toggleBtn.getAttribute('aria-checked'), 'true', 'switch starts ON');
+      toggleBtn.click();
+      assertEqual(K4.ClientPrefs.get('mediaSessionSmeter'), false, 'clicking switch disables mediaSessionSmeter');
+      assertEqual(toggleBtn.getAttribute('aria-checked'), 'false', 'switch reflects OFF');
+      toggleBtn.click();
+      assertEqual(K4.ClientPrefs.get('mediaSessionSmeter'), true, 'clicking again re-enables mediaSessionSmeter');
+    } finally {
+      if (panel) panel.destroy();
+      if (modal.parentNode) modal.parentNode.removeChild(modal);
+      K4.ClientPrefs.set('mediaSessionSmeter', prevPref);
+    }
+
+    // 3. AudioEngine MediaSession setPositionState lifecycle, VFO routing, throttling, and clear
+    const ms = globalThis.navigator && globalThis.navigator.mediaSession;
+    if (ms && typeof ms.setPositionState === 'function') {
+      const origSetPos = ms.setPositionState;
+      const calls = [];
+      ms.setPositionState = function wrappedSetPositionState(arg) {
+        calls.push(arg === undefined ? null : (arg ? { ...arg } : null));
+        return origSetPos.apply(this, arguments);
+      };
+
+      const state = new K4.RadioState();
+      state.updateRx('A', { sMeterDbm: -73 }, 'rxA.sMeterDbm');
+      state.updateRx('B', { sMeterDbm: -53 }, 'rxB.sMeterDbm');
+      const audio = new K4.AudioEngine({ state, muted: false, mediaSmeterEnabled: true, targetRx: 'A' });
+
+      try {
+        const res = await audio.start();
+        if (res && res.started) {
+          audio.setMuted(false);
+          assert(calls.length >= 1, 'start+unmute pushes initial MediaSession position state');
+          const initCall = calls[calls.length - 1];
+          assertEqual(initCall.duration, 600, 'duration is 600 s');
+          assertEqual(initCall.playbackRate, 1, 'playbackRate is 1');
+          assertEqual(initCall.position, 344.7, 'initial position matches VFO A S9 (-73 dBm)');
+
+          // Target VFO B falls back to A while Sub-RX is off
+          audio.setMediaSmeterTargetRx('B');
+          assertEqual(calls[calls.length - 1].position, 344.7, 'target B falls back to A when Sub-RX off');
+
+          // Enabling Sub-RX routes VFO B S-meter (-53 dBm -> 472.3 s)
+          state.update({ subRxEnabled: true }, 'subRxEnabled');
+          audio.updateMediaSmeter(null, true);
+          assertEqual(calls[calls.length - 1].position, 472.3, 'target B uses rxB.sMeterDbm when Sub-RX on');
+
+          // Rapid burst within throttle window settles via trailing flush
+          const countBeforeBurst = calls.length;
+          state.updateRx('B', { sMeterDbm: -115 }, 'rxB.sMeterDbm');
+          state.updateRx('B', { sMeterDbm: -33 }, 'rxB.sMeterDbm');
+          assertEqual(calls.length, countBeforeBurst, 'rapid S-meter burst is throttled inside 100ms window');
+          await new Promise((r) => setTimeout(r, 140));
+          assertEqual(calls[calls.length - 1].position, 600, 'trailing flush delivers final S9+40 (600 s)');
+
+          // Disabling clears MediaSession position state and ignores further S-meter updates
+          audio.setMediaSmeterEnabled(false);
+          assertEqual(calls[calls.length - 1], null, 'disabling clears MediaSession position state');
+          const countWhenOff = calls.length;
+          state.updateRx('B', { sMeterDbm: -97 }, 'rxB.sMeterDbm');
+          assertEqual(calls.length, countWhenOff, 'no position updates while disabled');
+
+          // Re-enabling immediately pushes current S-meter (-97 dBm -> 191.5 s)
+          audio.setMediaSmeterEnabled(true);
+          assertEqual(calls[calls.length - 1].position, 191.5, 're-enabling immediately pushes active S-meter');
+
+          // Stopping clears position state
+          audio.stop();
+          assertEqual(calls[calls.length - 1], null, 'stop() clears MediaSession position state');
+        }
+      } finally {
+        audio.destroy();
+        ms.setPositionState = origSetPos;
+      }
+    }
+  });
+
   async function runAll() {
     const resultsEl = document.getElementById('results');
     const summaryEl = document.getElementById('summary');

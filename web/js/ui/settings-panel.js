@@ -20,6 +20,7 @@
     mouseQsyMode: 'lr',
     arrowUpDownMode: 'coarse',
     keyboardShortcuts: true,
+    mediaSessionSmeter: true,
     fnMacros: DEFAULT_FN_MACROS,
   });
 
@@ -28,6 +29,7 @@
     mouseQsyMode: 'prefs.mouseQsyMode',
     arrowUpDownMode: 'prefs.arrowUpDownMode',
     keyboardShortcuts: 'prefs.keyboardShortcuts',
+    mediaSessionSmeter: 'prefs.mediaSessionSmeter',
     fnMacros: 'prefs.fnMacros',
   });
 
@@ -116,6 +118,8 @@
         return value === 'step' || value === 'band' ? value : 'coarse';
       case 'keyboardShortcuts':
         return value === undefined || value === null ? DEFAULTS.keyboardShortcuts : Boolean(value);
+      case 'mediaSessionSmeter':
+        return value === undefined || value === null ? DEFAULTS.mediaSessionSmeter : Boolean(value);
       case 'fnMacros':
         return normalizeMacros(value);
       default:
@@ -140,6 +144,7 @@
       mouseQsyMode: normalizePref('mouseQsyMode', legacyMouse),
       arrowUpDownMode: normalizePref('arrowUpDownMode', storageGet(STORAGE_KEYS.arrowUpDownMode, DEFAULTS.arrowUpDownMode)),
       keyboardShortcuts: normalizePref('keyboardShortcuts', storageGet(STORAGE_KEYS.keyboardShortcuts, DEFAULTS.keyboardShortcuts)),
+      mediaSessionSmeter: normalizePref('mediaSessionSmeter', storageGet(STORAGE_KEYS.mediaSessionSmeter, DEFAULTS.mediaSessionSmeter)),
       fnMacros: normalizePref('fnMacros', storageGet(STORAGE_KEYS.fnMacros, DEFAULT_FN_MACROS)),
     };
   }
@@ -193,6 +198,7 @@
         mouseQsyMode: cache.mouseQsyMode,
         arrowUpDownMode: cache.arrowUpDownMode,
         keyboardShortcuts: cache.keyboardShortcuts,
+        mediaSessionSmeter: cache.mediaSessionSmeter,
         fnMacros: { ...cache.fnMacros },
       };
     },
@@ -237,6 +243,7 @@
       this.set('mouseQsyMode', DEFAULTS.mouseQsyMode);
       this.set('arrowUpDownMode', DEFAULTS.arrowUpDownMode);
       this.set('keyboardShortcuts', DEFAULTS.keyboardShortcuts);
+      this.set('mediaSessionSmeter', DEFAULTS.mediaSessionSmeter);
       this.set('fnMacros', DEFAULT_FN_MACROS);
       return this.getAll();
     },
@@ -772,6 +779,15 @@
       this._kbdEnabledBtn = kbdRow.btn;
       tuningSec.appendChild(kbdRow.row);
 
+      const mediaSmeterRow = this._buildSwitchRow({
+        title: 'OS media bar S-meter',
+        desc: 'Modulate the browser MediaSession progress bar (10-minute virtual track) to reflect the active VFO S-meter (S0–S9+40 dB) on OS widgets and MPRIS hardware displays.',
+        testId: 'pref-media-smeter',
+        onToggle: () => this.prefs.set('mediaSessionSmeter', !this.prefs.get('mediaSessionSmeter')),
+      });
+      this._mediaSmeterBtn = mediaSmeterRow.btn;
+      tuningSec.appendChild(mediaSmeterRow.row);
+
       body.appendChild(tuningSec);
 
       // 2. Programmable F1-F8 Macros
@@ -899,6 +915,9 @@
       }
       if (this._kbdEnabledBtn) {
         syncSwitchBtn(this._kbdEnabledBtn, this.prefs.get('keyboardShortcuts'));
+      }
+      if (this._mediaSmeterBtn) {
+        syncSwitchBtn(this._mediaSmeterBtn, this.prefs.get('mediaSessionSmeter'));
       }
       const macros = this.prefs.get('fnMacros') || {};
       const activeEl = typeof document !== 'undefined' ? document.activeElement : null;

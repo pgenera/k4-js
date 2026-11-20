@@ -19,6 +19,16 @@
   const TX_VALID_SOURCES = new Set(['two-tone', 'tone-1k', 'wav', 'mic']);
   const TX_WORKLET_LOADED_CTXS = typeof WeakSet === 'function' ? new WeakSet() : null;
   const TWO_PI = 2 * Math.PI;
+  // OS MediaSession progress-bar S-meter modulation (S0 = -127 dBm .. S9+40 = -33 dBm).
+  // A 10-minute (600 s) virtual track duration ensures 1-pixel movements on external MPRIS
+  // progress bars exceed seek thresholds (~1.5 s) while local 1x clock advance between
+  // updates stays imperceptible (< 0.1%).
+  const MEDIA_SMETER_DURATION_SEC = 600;
+  const MEDIA_SMETER_MIN_DBM = -127;
+  const MEDIA_SMETER_SPAN_DBM = 94;
+  const MEDIA_SMETER_THROTTLE_MS = 100;
+  const MEDIA_SMETER_REPIN_MS = 1000;
+  const MEDIA_SMETER_MIN_DELTA_SEC = 0.5;
 
   const VALID_MIX_MODES = new Set([
     'A.B', 'AB.AB', 'A.-A', 'A.AB', 'AB.B', 'AB.A', 'B.AB', 'B.B', 'B.A', 'A.A',
@@ -297,6 +307,12 @@
     return null;
   }
 
+  function sMeterDbmToMediaPosition(dBm) {
+    if (typeof dBm !== 'number' || !Number.isFinite(dBm)) return 0;
+    const frac = clamp((dBm - MEDIA_SMETER_MIN_DBM) / MEDIA_SMETER_SPAN_DBM, 0, 1);
+    return Math.round(frac * MEDIA_SMETER_DURATION_SEC * 10) / 10;
+  }
+
   function resolveFreqDisplay(val) {
     if (val === null || val === undefined) return '';
     if (typeof val === 'object') {
@@ -410,6 +426,13 @@
       this._lastMetaDataB = null;
       this._lastMetaSubRx = null;
       this._lastMetaRadioId = null;
+      this._mediaSmeterEnabled = opts.mediaSmeterEnabled !== undefined ? Boolean(opts.mediaSmeterEnabled) : true;
+      this._mediaSmeterTargetRx = opts.targetRx === 'B' ? 'B' : 'A';
+      this._mediaSmeterLastDbm = null;
+      this._mediaSmeterLastPos = null;
+      this._mediaSmeterLastSentMs = 0;
+      this._mediaSmeterRepinTimer = null;
+      this._mediaSmeterTrailingTimer = null;
 
       // Performance telemetry counters
       this._perf = {
@@ -417,6 +440,8 @@
         afFftSkips: 0,
         mediaMetaUpdates: 0,
         mediaMetaSkips: 0,
+        mediaPosUpdates: 0,
+        mediaPosSkips: 0,
       };
 
       if (this.state) {
@@ -696,6 +721,12 @@
           this._lastMetaRadioId = rid;
           this.updateMediaMetadata(snap);
         }
+        if (this._mediaSmeterEnabled && !this._muted) {
+          const activeDbm = this._resolveActiveSmeterDbm(snap);
+          if (activeDbm !== null && (activeDbm !== this._mediaSmeterLastDbm || this._mediaSmeterLastPos === null)) {
+            this.updateMediaSmeter(snap, false);
+          }
+        }
       }
 
       if (changed) {
@@ -967,6 +998,8 @@
     }
 
     _teardownMediaSession() {
+      this._clearMediaPositionState();
+      this._mediaSmeterLastDbm = null;
       if (this._keepAliveAudio) {
         const el = this._keepAliveAudio;
         this._keepAliveAudio = null;
@@ -1021,6 +1054,7 @@
     _syncMediaSessionPlayback() {
       const ms = getMediaSession();
       if (!this._started) {
+        this._clearMediaPositionState();
         if (this._keepAliveAudio && typeof this._keepAliveAudio.pause === 'function') {
           try { this._keepAliveAudio.pause(); } catch (_) {}
         }
@@ -1030,6 +1064,7 @@
         return;
       }
       if (this._muted) {
+        this._stopMediaSmeterTimers();
         if (this._keepAliveAudio && typeof this._keepAliveAudio.pause === 'function') {
           try { this._keepAliveAudio.pause(); } catch (_) {}
         }
@@ -1040,11 +1075,25 @@
         if (this._keepAliveAudio && typeof this._keepAliveAudio.play === 'function') {
           try {
             const p = this._keepAliveAudio.play();
-            if (p && typeof p.catch === 'function') p.catch(() => {});
+            if (p && typeof p.then === 'function') {
+              p.then(() => {
+                if (this._started && !this._muted && !this._destroyed && this._mediaSmeterEnabled) {
+                  this.updateMediaSmeter(null, true);
+                }
+              }).catch(() => {});
+            } else if (p && typeof p.catch === 'function') {
+              p.catch(() => {});
+            }
           } catch (_) {}
         }
         if (ms) {
           try { ms.playbackState = 'playing'; } catch (_) {}
+        }
+        if (this._mediaSmeterEnabled) {
+          this.updateMediaSmeter(null, true);
+          this._syncMediaSmeterTimer();
+        } else {
+          this._stopMediaSmeterTimers();
         }
       }
     }
@@ -1143,6 +1192,180 @@
       try {
         ms.metadata = new globalThis.MediaMetadata({ title, artist, album });
       } catch (_) {}
+      return true;
+    }
+
+    _resolveActiveSmeterDbm(src) {
+      if (typeof src === 'number' && Number.isFinite(src)) return src;
+      if (!src || typeof src !== 'object') return null;
+      if (typeof src.sMeterDbm === 'number' && Number.isFinite(src.sMeterDbm)) {
+        return src.sMeterDbm;
+      }
+      const subOn = src.subRx !== undefined ? Boolean(src.subRx) : Boolean(src.subRxEnabled);
+      if (
+        this._mediaSmeterTargetRx === 'B' &&
+        subOn &&
+        src.rxB &&
+        typeof src.rxB.sMeterDbm === 'number' &&
+        Number.isFinite(src.rxB.sMeterDbm)
+      ) {
+        return src.rxB.sMeterDbm;
+      }
+      if (src.rxA && typeof src.rxA.sMeterDbm === 'number' && Number.isFinite(src.rxA.sMeterDbm)) {
+        return src.rxA.sMeterDbm;
+      }
+      return null;
+    }
+
+    _stopMediaSmeterTimers() {
+      if (this._mediaSmeterRepinTimer) {
+        clearInterval(this._mediaSmeterRepinTimer);
+        this._mediaSmeterRepinTimer = null;
+      }
+      if (this._mediaSmeterTrailingTimer) {
+        clearTimeout(this._mediaSmeterTrailingTimer);
+        this._mediaSmeterTrailingTimer = null;
+      }
+    }
+
+    _syncMediaSmeterTimer() {
+      const ms = getMediaSession();
+      const shouldRun = Boolean(
+        this._started &&
+        !this._muted &&
+        !this._destroyed &&
+        this._mediaSmeterEnabled &&
+        ms &&
+        typeof ms.setPositionState === 'function'
+      );
+      if (!shouldRun) {
+        this._stopMediaSmeterTimers();
+        return;
+      }
+      if (!this._mediaSmeterRepinTimer) {
+        this._mediaSmeterRepinTimer = setInterval(() => {
+          this.updateMediaSmeter(null, false);
+        }, MEDIA_SMETER_REPIN_MS);
+      }
+    }
+
+    _clearMediaPositionState() {
+      this._stopMediaSmeterTimers();
+      this._mediaSmeterLastPos = null;
+      this._mediaSmeterLastSentMs = 0;
+      const ms = getMediaSession();
+      if (ms && typeof ms.setPositionState === 'function') {
+        try {
+          ms.setPositionState();
+        } catch (_) {
+          try {
+            ms.setPositionState(null);
+          } catch (__) {}
+        }
+      }
+    }
+
+    /**
+     * Enable or disable modulating OS MediaSession position state as an RF S-meter.
+     * @param {boolean} enabled
+     */
+    setMediaSmeterEnabled(enabled) {
+      const next = Boolean(enabled);
+      if (this._mediaSmeterEnabled === next) return;
+      this._mediaSmeterEnabled = next;
+      if (!next) {
+        this._clearMediaPositionState();
+      } else if (this._started && !this._muted && !this._destroyed) {
+        this.updateMediaSmeter(null, true);
+        this._syncMediaSmeterTimer();
+      }
+    }
+
+    isMediaSmeterEnabled() {
+      return this._mediaSmeterEnabled;
+    }
+
+    /**
+     * Select which VFO ('A' or 'B') drives the MediaSession S-meter (falls back to A when Sub-RX is off).
+     * @param {'A'|'B'} rx
+     */
+    setMediaSmeterTargetRx(rx) {
+      const next = rx === 'B' ? 'B' : 'A';
+      if (this._mediaSmeterTargetRx === next) return;
+      this._mediaSmeterTargetRx = next;
+      if (this._started && !this._muted && !this._destroyed && this._mediaSmeterEnabled) {
+        this.updateMediaSmeter(null, true);
+      }
+    }
+
+    /**
+     * Modulate OS MediaSession position state (0..600 s) from the active VFO S-meter (S0..S9+40 dB).
+     * Throttled to 10 Hz with trailing flush and 1 s drift re-pinning against 1x playbackRate advance.
+     * @param {Object|number|null} [info]
+     * @param {boolean} [force=false]
+     * @returns {boolean} True when setPositionState was invoked.
+     */
+    updateMediaSmeter(info, force = false) {
+      if (!this._mediaSmeterEnabled || !this._started || this._muted || this._destroyed) {
+        return false;
+      }
+      const ms = getMediaSession();
+      if (!ms || typeof ms.setPositionState !== 'function') return false;
+
+      const src = info !== undefined && info !== null
+        ? info
+        : (this.state ? this._readSnapshot(this.state) : null);
+      let dBm = this._resolveActiveSmeterDbm(src);
+      if (dBm === null) {
+        if (this._mediaSmeterLastDbm !== null) {
+          dBm = this._mediaSmeterLastDbm;
+        } else {
+          return false;
+        }
+      }
+      this._mediaSmeterLastDbm = dBm;
+
+      const pos = sMeterDbmToMediaPosition(dBm);
+      const now = nowMs();
+      const elapsed = this._mediaSmeterLastPos === null ? Infinity : (now - this._mediaSmeterLastSentMs);
+      const delta = this._mediaSmeterLastPos === null ? Infinity : Math.abs(pos - this._mediaSmeterLastPos);
+
+      if (!force) {
+        if (elapsed < MEDIA_SMETER_THROTTLE_MS) {
+          this._perf.mediaPosSkips += 1;
+          if (delta >= MEDIA_SMETER_MIN_DELTA_SEC && !this._mediaSmeterTrailingTimer) {
+            const delay = Math.max(1, Math.ceil(MEDIA_SMETER_THROTTLE_MS - elapsed));
+            this._mediaSmeterTrailingTimer = setTimeout(() => {
+              this._mediaSmeterTrailingTimer = null;
+              this.updateMediaSmeter(null, false);
+            }, delay);
+          }
+          return false;
+        }
+        if (delta < MEDIA_SMETER_MIN_DELTA_SEC && elapsed < MEDIA_SMETER_REPIN_MS) {
+          this._perf.mediaPosSkips += 1;
+          return false;
+        }
+      }
+
+      if (this._mediaSmeterTrailingTimer) {
+        clearTimeout(this._mediaSmeterTrailingTimer);
+        this._mediaSmeterTrailingTimer = null;
+      }
+
+      try {
+        ms.setPositionState({
+          duration: MEDIA_SMETER_DURATION_SEC,
+          playbackRate: 1,
+          position: pos,
+        });
+      } catch (_) {
+        return false;
+      }
+
+      this._mediaSmeterLastPos = pos;
+      this._mediaSmeterLastSentMs = now;
+      this._perf.mediaPosUpdates += 1;
       return true;
     }
 
@@ -2661,6 +2884,9 @@
       }
     }
   }
+
+  AudioEngine.MEDIA_SMETER_DURATION_SEC = MEDIA_SMETER_DURATION_SEC;
+  AudioEngine.sMeterDbmToMediaPosition = sMeterDbmToMediaPosition;
 
   K4.AudioEngine = AudioEngine;
   K4.SL_TARGET_MS = SL_TARGET_MS;

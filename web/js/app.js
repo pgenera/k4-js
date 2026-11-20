@@ -83,7 +83,11 @@
       this.state = new K4.RadioState();
       this.gate = new K4.RxOnlyGate('tx-enabled');
       this.client = new K4.Client({ state: this.state, gate: this.gate });
-      this.audio = new K4.AudioEngine({ state: this.state });
+      this.audio = new K4.AudioEngine({
+        state: this.state,
+        mediaSmeterEnabled: prefs ? prefs.get('mediaSessionSmeter') : true,
+        targetRx: this._targetRx,
+      });
 
       this._dom = {
         topBar: document.getElementById('top-bar'),
@@ -558,6 +562,10 @@
             const next = val === 'pane' ? 'pane' : 'lr';
             if (this._mouseQsyMode !== next) {
               this.setMouseQsyMode(next);
+            }
+          } else if (key === 'mediaSessionSmeter') {
+            if (this.audio && typeof this.audio.setMediaSmeterEnabled === 'function') {
+              this.audio.setMediaSmeterEnabled(Boolean(val));
             }
           }
         });
@@ -1812,6 +1820,9 @@
       }
       if (this.panadapter && this.panadapter.setTargetRx) {
         this.panadapter.setTargetRx(next);
+      }
+      if (this.audio && typeof this.audio.setMediaSmeterTargetRx === 'function') {
+        this.audio.setMediaSmeterTargetRx(next);
       }
       if (clearRit && this.panadapter && this.panadapter.setWheelRitMode) {
         this.panadapter.setWheelRitMode(false);
