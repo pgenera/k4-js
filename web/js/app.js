@@ -2453,6 +2453,7 @@
       if (status !== 'connected' || conn.rttMs === null || conn.rttMs === undefined) {
         this._dom.connBtn.dataset.hasLatency = 'false';
         this._dom.connRtt.textContent = '';
+        this._dom.connRtt.title = '';
         this._dom.connBtn.title = 'K4 Connection & Settings';
         return;
       }
@@ -2472,14 +2473,29 @@
       const e2eTxNum = Number.isFinite(brk.e2eTxMs) ? Math.round(brk.e2eTxMs) : null;
 
       this._dom.connBtn.dataset.hasLatency = 'true';
-      this._dom.connRtt.textContent = audioActive && e2eRxNum !== null ? `E2E ${e2eRxNum}ms` : `RTT ${rttNum}ms`;
+      this._dom.connRtt.textContent = audioActive && e2eRxNum !== null ? `${e2eRxNum}ms` : `RTT ${rttNum}ms`;
 
       const halfRtt = Number.isFinite(brk.rxNetHalfRttMs) ? Math.round(brk.rxNetHalfRttMs) : Math.round(rttNum / 2);
       const frame = Number.isFinite(brk.rxFrameMs) ? Math.round(brk.rxFrameMs) : 20;
       const jitter = Number.isFinite(brk.rxJitterMs) ? Math.round(brk.rxJitterMs) : 0;
       const outMs = Number.isFinite(brk.rxAudioOutMs) ? Math.round(brk.rxAudioOutMs) : 0;
-      const rxTotal = e2eRxNum !== null ? e2eRxNum : rttNum;
-      this._dom.connBtn.title = `Connected · Net ½RTT ${halfRtt}ms · Frame ${frame}ms · Jitter ${jitter}ms · Out ${outMs}ms · RX E2E ${rxTotal}ms${e2eTxNum !== null ? ` · TX E2E ${e2eTxNum}ms` : ''} (click for settings)`;
+      const tooltip = audioActive && e2eRxNum !== null
+        ? [
+            `Estimated RX audio delay: ${e2eRxNum} ms (radio -> speakers)`,
+            `• Network one-way (½ RTT): ${halfRtt} ms (ping RTT: ${rttNum} ms)`,
+            `• Audio packet framing: ${frame} ms`,
+            `• Browser jitter buffer: ${jitter} ms`,
+            `• Web Audio output: ${outMs} ms`,
+            ...(e2eTxNum !== null ? [`Estimated TX audio delay: ${e2eTxNum} ms (mic -> radio)`] : []),
+            'Click for connection settings',
+          ].join('\n')
+        : [
+            `Network round-trip latency (RTT): ${rttNum} ms (CAT ping to radio)`,
+            'Unmute audio to show total estimated RX audio delay (network + framing + jitter buffer + output).',
+            'Click for connection settings',
+          ].join('\n');
+      this._dom.connRtt.title = tooltip;
+      this._dom.connBtn.title = tooltip;
     }
 
     _syncTopRfStatus(snap) {

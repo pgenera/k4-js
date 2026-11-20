@@ -1760,6 +1760,7 @@ def run_http_origin_and_screenshots(
             const d = globalThis.k4App.audio.getDiagnostics();
             const s = globalThis.k4App.state.getSnapshot();
             const rtt = document.querySelector('#conn-btn .k4-conn-rtt');
+            const connBtn = document.getElementById('conn-btn');
             const e2e = document.querySelector('[data-testid="diag-e2eLatency"]');
             const btn = document.getElementById('audio-toggle');
             const lbl = document.querySelector('#audio-toggle .k4-audio-label');
@@ -1767,10 +1768,12 @@ def run_http_origin_and_screenshots(
             const hasCodecJargon = /(PCM|Opus|12k|48k)/i.test(txt);
             return d.started && !d.muted && s.encodeMode === 1 && lbl && lbl.textContent === 'Audio' && !hasCodecJargon &&
                    btn && /PCM 12k/i.test(btn.title || '') &&
-                   rtt && rtt.textContent.startsWith('E2E ') && e2e && e2e.textContent.startsWith('RX ') && e2e.textContent.includes('ms');
+                   rtt && /^\\d+ms$/.test(rtt.textContent.trim()) &&
+                   connBtn && (connBtn.title || '').includes('Estimated RX audio delay') &&
+                   e2e && e2e.textContent.startsWith('RX ') && e2e.textContent.includes('ms');
             """
         ),
-        "Live audio defaults to EM1, shows clean 'Audio' label without PCM/Opus/12k/48k, and shows E2E XXms",
+        "Live audio defaults to EM1, shows clean 'Audio' label without PCM/Opus/12k/48k, and shows XXms with tooltip",
         timeout=10.0,
     )
     if client.execute_script("return Boolean(K4.OpusPacketDecoder && K4.OpusPacketDecoder.isSupported());"):

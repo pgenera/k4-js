@@ -1905,7 +1905,7 @@
         ['frames', 'Frames'],
         ['panTier', 'Pan Tier'],
         ['rtt', 'RTT'],
-        ['e2eLatency', 'E2E Latency'],
+        ['e2eLatency', 'Audio Latency'],
         ['sink', 'Audio Sink'],
         ['bufferMs', 'Jitter Buf'],
         ['packets', 'Audio Pkts'],
@@ -3843,6 +3843,20 @@
             }
           }
           this._refs.diag.e2eLatency.textContent = latText;
+          const latTip = lb && lb.e2eRxMs != null
+            ? [
+                `Estimated RX audio delay: ${lb.e2eRxMs} ms (radio -> speakers)`,
+                `• ½: one-way network delay (½ RTT = ${lb.rxNetHalfRttMs ?? 0} ms)`,
+                `• ${lb.rxFrameMs ?? 20}: audio packet framing (${lb.rxFrameMs ?? 20} ms)`,
+                `• J: browser jitter buffer (${lb.rxJitterMs ?? 0} ms)`,
+                `• O: Web Audio output latency (${lb.rxAudioOutMs ?? 0} ms)`,
+                ...(lb.e2eTxMs != null ? [`Estimated TX audio delay: ${lb.e2eTxMs} ms (mic -> radio)`] : []),
+              ].join('\n')
+            : 'Estimated one-way RX/TX audio delay (½ RTT + packet framing + jitter buffer + Web Audio output).';
+          this._refs.diag.e2eLatency.title = latTip;
+          if (this._refs.diag.e2eLatency.parentNode) {
+            this._refs.diag.e2eLatency.parentNode.title = latTip;
+          }
         }
         this._refs.diag.sink.textContent = aDiag.sinkType || 'none';
         this._refs.diag.bufferMs.textContent = aDiag.started ? `${Math.round(aDiag.bufferMs || 0)} / ${aDiag.targetMs || 75} ms` : 'stopped';
