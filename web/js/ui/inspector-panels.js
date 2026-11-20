@@ -60,7 +60,7 @@
     { key: 'pt', label: 'PA Heatsink', stripLabel: 'PA TEMP', unit: '°C', warnMax: 60, critMax: 75, color: '#F97316', decimals: 1 },
     { key: 'lt', label: 'LPA / Driver', unit: '°C', warnMax: 60, critMax: 75, color: '#FB923C', decimals: 1 },
     { key: 'tf', label: 'Front Panel', unit: '°C', warnMax: 55, critMax: 70, color: '#A78BFA', decimals: 1 },
-    { key: 'sys', label: 'CPU / DAP / DUC', unit: '°C', warnMax: 70, critMax: 85, color: '#34D399', decimals: 1 },
+    { key: 'sys', label: 'CPU / DAP', unit: '°C', warnMax: 70, critMax: 85, color: '#34D399', decimals: 1 },
     { key: 'fwd', label: 'RF Forward Power', unit: 'W', minFloor: 0, color: '#22D3EE', decimals: 1 },
     { key: 'swr', label: 'Antenna SWR', stripLabel: 'SWR', unit: ':1', warnMax: 1.5, critMax: 2.5, minFloor: 1.0, color: '#F43F5E', decimals: 2 },
   ];
@@ -3055,7 +3055,8 @@
         tile.setAttribute('aria-pressed', 'false');
         tile.title = `Click to open ${lbl} history graph`;
         const top = el('div', 'k4-sensor-tile-head');
-        top.appendChild(el('span', 'k4-sensor-tile-lbl', lbl));
+        const lblEl = el('span', 'k4-sensor-tile-lbl', lbl);
+        top.appendChild(lblEl);
         tile.appendChild(top);
         const val = el('span', 'k4-sensor-tile-val', '—');
         tile.appendChild(val);
@@ -3064,7 +3065,7 @@
           this.update(this._snap());
         });
         sensorGrid.appendChild(tile);
-        return { tile, val };
+        return { tile, val, lbl: lblEl };
       };
       this._refs.sensors = {
         vs: makeSensorTile('vs', 'Supply Voltage'),
@@ -3072,7 +3073,7 @@
         pt: makeSensorTile('pt', 'PA Heatsink'),
         lt: makeSensorTile('lt', 'LPA / Driver'),
         tf: makeSensorTile('tf', 'Front Panel'),
-        sys: makeSensorTile('sys', 'CPU / DAP / DUC'),
+        sys: makeSensorTile('sys', 'CPU / DAP'),
         fwd: makeSensorTile('fwd', 'RF Forward Power'),
         swr: makeSensorTile('swr', 'Antenna SWR'),
       };
@@ -4287,11 +4288,13 @@
         if (tel.cpuTempC != null) sysParts.push(`C:${Number(tel.cpuTempC).toFixed(0)}°`);
         if (tel.dapTempC != null) sysParts.push(`D:${Number(tel.dapTempC).toFixed(0)}°`);
         if (tel.ducTempC != null) sysParts.push(`U:${Number(tel.ducTempC).toFixed(0)}°`);
+        const sysLabel = tel.ducTempC != null ? 'CPU / DAP / DUC' : 'CPU / DAP';
+        if (s.sys.lbl) s.sys.lbl.textContent = sysLabel;
         s.sys.val.textContent = sysParts.length ? sysParts.join(' ') : '—';
         s.sys.tile.dataset.level = sensorTempLevel(tel.cpuTempC != null ? Number(tel.cpuTempC) : null);
         s.sys.tile.title = tel.ducDrive != null
-          ? `CPU / DAP / DUC temperatures · DUC drive: ${Number(tel.ducDrive).toFixed(0)}`
-          : 'CPU / DAP / DUC temperatures';
+          ? `${sysLabel} temperatures · DUC drive: ${Number(tel.ducDrive).toFixed(0)} · Click for CPU temp graph`
+          : `${sysLabel} temperatures · Click for CPU temp graph`;
 
         if (s.fwd) {
           const activeTxOrTune = txActive || atuTuning;
