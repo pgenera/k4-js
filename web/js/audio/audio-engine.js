@@ -16,6 +16,9 @@
   const TX_CHUNK_MS = 20;
   const TX_CHANNELS = 2; // Interleaved stereo S16LE matching K4 EM1 4-byte frame format
   const TX_S16_SCALE = 32768.0 / 32.0; // K4 1/32 wire convention (1024 counts = 1.0)
+  const TX_DB_FLOOR = -60;
+  const TX_PEAK_HOLD_MS = 350;
+  const TX_PEAK_DECAY_DB_PER_SEC = 18;
   const TX_VALID_SOURCES = new Set(['two-tone', 'tone-1k', 'wav', 'mic']);
   const TX_WORKLET_LOADED_CTXS = typeof WeakSet === 'function' ? new WeakSet() : null;
   const TWO_PI = 2 * Math.PI;
@@ -534,6 +537,11 @@
       this._txActive = false;
       this._txSource = null;
       this._txInputLevel = 0;
+      this._txInputDb = null;
+      this._txPeakDb = null;
+      this._txPeakHoldDb = null;
+      this._txPeakHoldAtMs = 0;
+      this._txPeakLastDecayMs = 0;
       this._txPacketsOut = 0;
       this._txSessionPackets = 0;
       this._txSeq = 0;
@@ -1844,6 +1852,9 @@
         txActive: this._txActive,
         txSource: this._txSource,
         txInputLevel: clamp(this._txInputLevel, 0, 1),
+        txInputDb: this._txInputDb,
+        txPeakDb: this._txPeakDb,
+        txPeakHoldDb: this._txPeakHoldDb,
         txPacketsOut: this._txPacketsOut,
         isSecureContext: Boolean(globalThis.isSecureContext),
         micState: this._micState,
@@ -2135,6 +2146,11 @@
       const gen = ++this._txSessionGen;
       this._txSessionPackets = 0;
       this._txInputLevel = 0;
+      this._txInputDb = null;
+      this._txPeakDb = null;
+      this._txPeakHoldDb = null;
+      this._txPeakHoldAtMs = 0;
+      this._txPeakLastDecayMs = 0;
       this._txFrameIdx = 0;
 
       if (resolvedSource === 'mic') {
@@ -2319,6 +2335,11 @@
       this._txActive = false;
       this._txSource = null;
       this._txInputLevel = 0;
+      this._txInputDb = null;
+      this._txPeakDb = null;
+      this._txPeakHoldDb = null;
+      this._txPeakHoldAtMs = 0;
+      this._txPeakLastDecayMs = 0;
       this._txFrameIdx = 0;
       this._txSessionPackets = 0;
       this._micState = this._isStandbyMicLive()
@@ -2559,6 +2580,32 @@
         this._txInputLevel = this._txInputLevel * (1 - alpha) + rawLevel * alpha;
       }
 
+      const instRmsDb = rms > 1e-6 ? clamp(20 * Math.log10(rms), TX_DB_FLOOR, 0) : TX_DB_FLOOR;
+      const instPeakDb = peak > 1e-6 ? clamp(20 * Math.log10(peak), TX_DB_FLOOR, 0) : TX_DB_FLOOR;
+      if (this._txInputDb === null) {
+        this._txInputDb = instRmsDb;
+      } else {
+        const dbAlpha = instRmsDb > this._txInputDb ? 0.65 : 0.25;
+        this._txInputDb = this._txInputDb * (1 - dbAlpha) + instRmsDb * dbAlpha;
+      }
+      this._txPeakDb = instPeakDb;
+
+      const now = nowMs();
+      if (this._txPeakHoldDb === null || instPeakDb >= this._txPeakHoldDb) {
+        this._txPeakHoldDb = instPeakDb;
+        this._txPeakHoldAtMs = now;
+        this._txPeakLastDecayMs = now;
+      } else if (now - this._txPeakHoldAtMs >= TX_PEAK_HOLD_MS) {
+        const decayStart = Math.max(this._txPeakLastDecayMs, this._txPeakHoldAtMs + TX_PEAK_HOLD_MS);
+        const decayDt = Math.max(0, (now - decayStart) / 1000);
+        if (decayDt > 0) {
+          this._txPeakHoldDb = Math.max(instPeakDb, this._txPeakHoldDb - decayDt * TX_PEAK_DECAY_DB_PER_SEC);
+        }
+        this._txPeakLastDecayMs = now;
+      } else {
+        this._txPeakLastDecayMs = now;
+      }
+
       const seq = this._txSeq & 0xff;
       this._txSeq = (this._txSeq + 1) & 0xff;
 
@@ -2588,6 +2635,9 @@
           channels: TX_CHANNELS,
           source: this._txSource,
           inputLevel: this._txInputLevel,
+          inputDb: this._txInputDb,
+          peakDb: this._txPeakDb,
+          peakHoldDb: this._txPeakHoldDb,
           rms,
           peak,
         };

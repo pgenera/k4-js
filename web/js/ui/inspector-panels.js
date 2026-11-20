@@ -2825,20 +2825,35 @@
       this._refs.txWavExtras = wavExtras;
       this._refs.txWavNameEl = wavNameEl;
 
-      // Live TX input VU meter
+      // Live TX input VU meter (K4-style logarithmic -48..0 dBFS bar with sweet spot & peak hold)
       const vuWrap = el('div', 'k4-tx-vu-wrap');
       const vuHead = el('div', 'k4-slider-head');
-      vuHead.appendChild(el('span', 'k4-slider-label', 'TX Audio Input Level'));
-      const vuVal = el('span', 'k4-slider-val', '0% · 0 pkts');
+      vuHead.appendChild(el('span', 'k4-slider-label', 'TX Audio Level'));
+      const vuVal = el('span', 'k4-slider-val', '— dB · 0 pkts');
+      vuVal.dataset.testid = 'tx-vu-val';
       vuHead.appendChild(vuVal);
       const vuTrack = el('div', 'k4-tx-vu-track');
+      vuTrack.title = 'Client-side TX audio level (-48 to 0 dBFS; highlighted band = nominal -18 to -6 dBFS voice drive)';
+      const vuSweet = el('div', 'k4-tx-vu-sweet');
+      vuTrack.appendChild(vuSweet);
       const vuFill = el('div', 'k4-tx-vu-fill');
       vuTrack.appendChild(vuFill);
+      const vuPeak = el('div', 'k4-tx-vu-peak');
+      vuPeak.hidden = true;
+      vuTrack.appendChild(vuPeak);
+      const vuTicks = el('div', 'k4-tx-vu-ticks');
+      const vuTickLabels = ['-48', '-36', '-24', '-12', '0 dB'];
+      for (let i = 0; i < vuTickLabels.length; i++) {
+        const sp = el('span', i >= 3 ? 'k4-tx-vu-tick-hi' : null, vuTickLabels[i]);
+        vuTicks.appendChild(sp);
+      }
       vuWrap.appendChild(vuHead);
       vuWrap.appendChild(vuTrack);
+      vuWrap.appendChild(vuTicks);
       pwrCard.appendChild(vuWrap);
       this._refs.txVuVal = vuVal;
       this._refs.txVuFill = vuFill;
+      this._refs.txVuPeak = vuPeak;
 
       pane.appendChild(pwrCard);
 
@@ -3212,6 +3227,10 @@
       if (this._afScopeTimer) {
         clearInterval(this._afScopeTimer);
         this._afScopeTimer = null;
+      }
+      if (this._txVuTimer) {
+        clearInterval(this._txVuTimer);
+        this._txVuTimer = null;
       }
       if (this._atuCueTimer) {
         clearTimeout(this._atuCueTimer);
@@ -3950,6 +3969,74 @@
       this._strip.swr.pill.classList.toggle('is-selected', this._selectedSensorKey === 'swr');
     }
 
+    _syncTxVuLoop(txActive) {
+      const shouldRun = Boolean(
+        txActive &&
+        this.audio &&
+        typeof this.audio.getDiagnostics === 'function' &&
+        this._getVisibleTabId() === 'tx'
+      );
+      if (!shouldRun) {
+        if (this._txVuTimer) {
+          clearInterval(this._txVuTimer);
+          this._txVuTimer = null;
+        }
+        return;
+      }
+      if (!this._txVuTimer) {
+        this._txVuTimer = setInterval(() => {
+          if (this._getVisibleTabId() !== 'tx' || !this.audio || typeof this.audio.getDiagnostics !== 'function') {
+            this._syncTxVuLoop(false);
+            return;
+          }
+          const diag = this.audio.getDiagnostics();
+          this._updateTxVu(diag);
+          if (!diag || !diag.txActive) {
+            this._syncTxVuLoop(false);
+          }
+        }, 50);
+      }
+    }
+
+    _updateTxVu(aDiag) {
+      if (!this._refs.txVuFill || !this._refs.txVuVal) return;
+      const diag = aDiag || {};
+      const pkts = Number(diag.txPacketsOut) || 0;
+      const active = Boolean(diag.txActive);
+      const dbToPct = (db) => Math.max(0, Math.min(100, ((db + 48) / 48) * 100));
+
+      const rawDb = Number.isFinite(diag.txInputDb)
+        ? diag.txInputDb
+        : (active && Number(diag.txInputLevel) > 1e-6
+          ? Math.max(-60, Math.min(0, 20 * Math.log10(Number(diag.txInputLevel))))
+          : null);
+      const peakHoldDb = Number.isFinite(diag.txPeakHoldDb) ? diag.txPeakHoldDb : rawDb;
+
+      if (!active || rawDb === null) {
+        this._refs.txVuFill.style.width = '0%';
+        this._refs.txVuFill.dataset.zone = 'idle';
+        if (this._refs.txVuPeak) this._refs.txVuPeak.hidden = true;
+        this._refs.txVuVal.textContent = `— dB · ${pkts} pkts`;
+        return;
+      }
+
+      const fillPct = dbToPct(rawDb);
+      const peakPct = peakHoldDb !== null ? dbToPct(peakHoldDb) : fillPct;
+      const zone = peakHoldDb !== null && peakHoldDb >= -3
+        ? 'hot'
+        : (rawDb >= -18 || (peakHoldDb !== null && peakHoldDb >= -18) ? 'nominal' : 'low');
+
+      this._refs.txVuFill.style.width = `${fillPct.toFixed(1)}%`;
+      this._refs.txVuFill.dataset.zone = zone;
+      if (this._refs.txVuPeak) {
+        this._refs.txVuPeak.hidden = peakPct <= 0.5;
+        this._refs.txVuPeak.style.left = `${peakPct.toFixed(1)}%`;
+      }
+      const rmsLabel = rawDb <= -59.5 ? '-∞' : `${Math.round(rawDb)}`;
+      const pkLabel = peakHoldDb !== null && peakHoldDb > -59.5 ? ` (pk ${Math.round(peakHoldDb)})` : '';
+      this._refs.txVuVal.textContent = `${rmsLabel} dB${pkLabel} · ${pkts} pkts`;
+    }
+
     _updateTxTab(snapshot, aDiag) {
       this._updateTxAndSensors(snapshot, aDiag);
     }
@@ -4156,12 +4243,8 @@
           this._refs.txWavNameEl.textContent = cfg.wavName;
         }
       }
-      if (this._refs.txVuFill && this._refs.txVuVal) {
-        const level = Math.max(0, Math.min(1, Number(aDiag.txInputLevel) || 0));
-        const pkts = Number(aDiag.txPacketsOut) || 0;
-        this._refs.txVuFill.style.width = `${Math.round(level * 100)}%`;
-        this._refs.txVuVal.textContent = `${Math.round(level * 100)}% · ${pkts} pkts`;
-      }
+      this._updateTxVu(aDiag);
+      this._syncTxVuLoop(Boolean(aDiag && aDiag.txActive));
 
       // (d) CW / DATA Keyer
       if (this._refs.tbVal && this._refs.tbFill) {

@@ -5099,6 +5099,56 @@
     }
   });
 
+  // Client-side K4-style dBFS TX audio meter + peak hold
+  test('AudioEngine & InspectorPanels render logarithmic dBFS TX audio meter with peak hold', async () => {
+    const K4 = globalThis.K4;
+    const engine = new K4.AudioEngine({ latencyMs: 75 });
+    const metas = [];
+    engine.setTxPacketHandler((_pkt, meta) => metas.push(meta));
+    try {
+      await engine.startTxCapture({ source: 'tone-1k' });
+      const d = engine.getDiagnostics();
+      assert(Number.isFinite(d.txInputDb) && d.txInputDb > -10 && d.txInputDb <= 0, `tone-1k txInputDb near -4.4 dBFS (got ${d.txInputDb})`);
+      assert(Number.isFinite(d.txPeakHoldDb) && d.txPeakHoldDb >= d.txInputDb, `txPeakHoldDb >= txInputDb (${d.txPeakHoldDb} >= ${d.txInputDb})`);
+      assert(metas.length >= 1 && Number.isFinite(metas[0].peakHoldDb), 'txPacketHandler meta includes peakHoldDb');
+      engine.stopTxCapture();
+      const stopped = engine.getDiagnostics();
+      assertEqual(stopped.txInputDb, null, 'stopTxCapture clears txInputDb');
+      assertEqual(stopped.txPeakHoldDb, null, 'stopTxCapture clears txPeakHoldDb');
+    } finally {
+      engine.destroy();
+    }
+
+    // Verify InspectorPanels._updateTxVu maps -24 dBFS to 50% width and -12 dBFS peak to 75%
+    const drawer = document.createElement('div');
+    const mobNav = document.createElement('div');
+    const mobSheet = document.createElement('div');
+    document.body.appendChild(drawer);
+    document.body.appendChild(mobNav);
+    document.body.appendChild(mobSheet);
+    const state = new K4.RadioState();
+    const client = { sendCat: () => {}, setDisplay: () => {} };
+    const panel = new K4.InspectorPanels({ drawerEl: drawer, mobileNavEl: mobNav, mobileSheetEl: mobSheet, client, state });
+    try {
+      panel._updateTxVu({ txActive: true, txInputDb: -24, txPeakHoldDb: -12, txPacketsOut: 17 });
+      assertEqual(panel._refs.txVuFill.style.width, '50%', '-24 dBFS fills 50% of -48..0 dBFS meter');
+      assertEqual(panel._refs.txVuFill.dataset.zone, 'nominal', 'peak -12 dBFS enters nominal sweet-spot zone');
+      assertEqual(panel._refs.txVuPeak.hidden, false, 'peak-hold hairline is visible');
+      assertEqual(panel._refs.txVuPeak.style.left, '75%', '-12 dBFS peak-hold sits at 75%');
+      assertEqual(panel._refs.txVuVal.textContent, '-24 dB (pk -12) · 17 pkts', 'dB + peak readout formatted cleanly');
+
+      panel._updateTxVu({ txActive: false, txInputDb: null, txPeakHoldDb: null, txPacketsOut: 17 });
+      assertEqual(panel._refs.txVuFill.style.width, '0%', 'idle clears bar width');
+      assertEqual(panel._refs.txVuPeak.hidden, true, 'idle hides peak-hold hairline');
+      assertEqual(panel._refs.txVuVal.textContent, '— dB · 17 pkts', 'idle shows — dB readout');
+    } finally {
+      panel.destroy();
+      drawer.remove();
+      mobNav.remove();
+      mobSheet.remove();
+    }
+  });
+
   async function runAll() {
     const resultsEl = document.getElementById('results');
     const summaryEl = document.getElementById('summary');
