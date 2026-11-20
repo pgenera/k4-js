@@ -4287,9 +4287,11 @@
         if (tel.cpuTempC != null) sysParts.push(`C:${Number(tel.cpuTempC).toFixed(0)}°`);
         if (tel.dapTempC != null) sysParts.push(`D:${Number(tel.dapTempC).toFixed(0)}°`);
         if (tel.ducTempC != null) sysParts.push(`U:${Number(tel.ducTempC).toFixed(0)}°`);
-        if (tel.ducDrive != null) sysParts.push(`DV:${Number(tel.ducDrive).toFixed(0)}`);
         s.sys.val.textContent = sysParts.length ? sysParts.join(' ') : '—';
         s.sys.tile.dataset.level = sensorTempLevel(tel.cpuTempC != null ? Number(tel.cpuTempC) : null);
+        s.sys.tile.title = tel.ducDrive != null
+          ? `CPU / DAP / DUC temperatures · DUC drive: ${Number(tel.ducDrive).toFixed(0)}`
+          : 'CPU / DAP / DUC temperatures';
 
         if (s.fwd) {
           const activeTxOrTune = txActive || atuTuning;

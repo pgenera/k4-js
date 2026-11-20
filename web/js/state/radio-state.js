@@ -1084,7 +1084,7 @@
             if (Number.isFinite(f.PA)) { t.paAmps = f.PA; changed = true; }
           } else if (parsed.module === 'DA') {
             if (Number.isFinite(f.T)) { t.dapTempC = f.T; changed = true; }
-          } else if (parsed.module === 'DU' || parsed.module === 'D0') {
+          } else if (parsed.module === 'DU') {
             if (Number.isFinite(f.T)) { t.ducTempC = f.T; changed = true; }
             if (Number.isFinite(f.DV)) { t.ducDrive = f.DV; changed = true; }
           }

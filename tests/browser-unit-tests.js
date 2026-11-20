@@ -2317,7 +2317,7 @@
     assertApprox(snap.telemetry.ducTempC, 36.8, 1e-6, 'ducTempC');
     assertApprox(snap.telemetry.ducDrive, 58.0, 1e-6, 'ducDrive');
     state.applyParsedCat(parseCommand('SID0V12:12.6,ID:0,DV:0.0;'));
-    assertApprox(state.getSnapshot().telemetry.ducDrive, 0.0, 1e-6, 'ducDrive clears on SID0');
+    assertApprox(state.getSnapshot().telemetry.ducDrive, 58.0, 1e-6, 'SID0 does not clobber SIDU ducDrive');
 
     // ATU tune capture: TU3 -> non-zero SWR -> TU0 captures atuMatchedSwr
     state.applyParsedCat(parseCommand('RX;'));
