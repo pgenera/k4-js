@@ -121,6 +121,8 @@
 
       this._miniPanRafId = 0;
       this._miniPanDirtyRx = { A: false, B: false };
+      this._panRafId = 0;
+      this._panRenderPendingCount = false;
 
       this._renderer = K4.createPanRenderer(container, {
         renderer,
@@ -710,6 +712,23 @@
       }
     }
 
+    _schedulePanRender(countFrame) {
+      if (this._destroyed) return;
+      if (countFrame) this._panRenderPendingCount = true;
+      if (this._panRafId) return;
+      const flush = () => {
+        this._panRafId = 0;
+        const count = this._panRenderPendingCount;
+        this._panRenderPendingCount = false;
+        this._renderNow(count);
+      };
+      if (typeof globalThis.requestAnimationFrame === 'function') {
+        this._panRafId = globalThis.requestAnimationFrame(flush);
+      } else {
+        flush();
+      }
+    }
+
     _renderNow(countFrame) {
       if (this._destroyed) return;
       this._miniPanDirtyRx.A = false;
@@ -718,9 +737,15 @@
         globalThis.cancelAnimationFrame(this._miniPanRafId);
         this._miniPanRafId = 0;
       }
+      if (this._panRafId && typeof globalThis.cancelAnimationFrame === 'function') {
+        globalThis.cancelAnimationFrame(this._panRafId);
+        this._panRafId = 0;
+      }
+      const pendingCount = this._panRenderPendingCount;
+      this._panRenderPendingCount = false;
       const frameState = this.getFrameState();
       this._renderer.render(frameState);
-      if (countFrame) {
+      if (countFrame || pendingCount) {
         this._framesRendered++;
         this._container.dataset.frames = String(this._framesRendered);
       }
@@ -920,7 +945,7 @@
       );
 
       pane.binSeq = (pane.binSeq + 1) | 0;
-      this._renderNow(true);
+      this._schedulePanRender(true);
     }
 
     pushMiniPanPacket(pkt) {
@@ -1188,6 +1213,10 @@
       if (this._interaction) {
         this._interaction.destroy();
         this._interaction = null;
+      }
+      if (this._panRafId && typeof globalThis.cancelAnimationFrame === 'function') {
+        globalThis.cancelAnimationFrame(this._panRafId);
+        this._panRafId = 0;
       }
       if (this._renderer) {
         this._renderer.destroy();

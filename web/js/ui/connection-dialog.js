@@ -140,10 +140,10 @@
       this.emSelect.className = 'k4-select';
       const opusSupported = Boolean(K4.OpusPacketDecoder && K4.OpusPacketDecoder.isSupported && K4.OpusPacketDecoder.isSupported());
       const emOptions = [
-        { val: 'auto', text: 'Auto (PCM S16LE · Lowest CPU)' },
+        { val: 'auto', text: opusSupported ? 'Auto (Opus · Low Bandwidth)' : 'Auto (PCM S16LE)' },
         { val: '1', text: 'PCM S16LE (12 kHz)' },
         { val: '0', text: 'PCM 24-bit (12 kHz)' },
-        { val: '3', text: opusSupported ? 'Opus Stereo (Low Bandwidth)' : 'Opus (unsupported)' },
+        { val: '3', text: opusSupported ? 'Opus Stereo (High Bitrate)' : 'Opus (unsupported)' },
       ];
       for (let i = 0; i < emOptions.length; i++) {
         const opt = document.createElement('option');

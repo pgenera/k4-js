@@ -112,6 +112,8 @@
       this._bootstrapSent = false;
       this._pendingEmMode = 1;
       this._pendingSlTier = 2;
+      this._userAdjustedSl = false;
+      this._highRttStreak = 0;
       this._lastPingSentPerfMs = null;
       this._manualDisconnect = false;
       this._isDemoMode = false;
@@ -426,15 +428,17 @@
       if (encodeMode === 0 || encodeMode === '0' || encodeMode === 1 || encodeMode === '1') {
         return Number(encodeMode);
       }
+      const opusSupported = Boolean(
+        K4.OpusPacketDecoder &&
+        typeof K4.OpusPacketDecoder.isSupported === 'function' &&
+        K4.OpusPacketDecoder.isSupported()
+      );
       if (encodeMode === 2 || encodeMode === '2' || encodeMode === 3 || encodeMode === '3') {
-        const opusSupported =
-          !K4.OpusPacketDecoder ||
-          typeof K4.OpusPacketDecoder.isSupported !== 'function' ||
-          Boolean(K4.OpusPacketDecoder.isSupported());
         return opusSupported ? Number(encodeMode) : 1;
       }
-      // Default ('auto' or omitted/unrecognized) uses EM1 (12 kHz S16LE PCM) for lowest CPU and universal origin compatibility.
-      return 1;
+      // Default ('auto' or omitted/unrecognized) prefers EM2 (Opus ~64 kbps) when WebCodecs AudioDecoder
+      // is available (~6x lower bandwidth than EM1 PCM for 5G/WAN), falling back cleanly to EM1 (12 kHz PCM).
+      return opusSupported ? 2 : 1;
     }
 
     _handleFrame(payload) {
@@ -474,6 +478,20 @@
                     const rttMs = Math.max(0, Math.round(nowMs() - this._lastPingSentPerfMs));
                     this.state.updateConnection({ rttMs }, 'connection.rttMs');
                     this._emitConnection();
+                    if (!this._userAdjustedSl && !this._isDemoMode) {
+                      if (rttMs >= 45) {
+                        this._highRttStreak += 1;
+                        if (this._highRttStreak >= 2) {
+                          const desiredSl = rttMs >= 100 ? 5 : 4;
+                          const curSl = this.state.getSnapshot().streamingLatency;
+                          if (Number.isFinite(curSl) && curSl < desiredSl) {
+                            this.setLatencyTier(desiredSl, { auto: true });
+                          }
+                        }
+                      } else {
+                        this._highRttStreak = 0;
+                      }
+                    }
                   }
                 } else if (parsed.kind === 'radioError') {
                   this.emit('error', {
@@ -533,6 +551,8 @@
 
       const gen = ++this._connGen;
       this._manualDisconnect = false;
+      this._userAdjustedSl = false;
+      this._highRttStreak = 0;
       this._lastPingSentPerfMs = null;
       this._framer.reset();
 
@@ -1162,8 +1182,11 @@
      * Self-applies to RadioState immediately since K4 never echoes SL.
      * @param {number} sl
      */
-    setLatencyTier(sl) {
+    setLatencyTier(sl, opts = {}) {
       const tier = Math.round(clamp(Number(sl), 0, 7));
+      if (!opts || !opts.auto) {
+        this._userAdjustedSl = true;
+      }
       this.state.update({ streamingLatency: tier }, 'streamingLatency');
       return this.sendCat(K4.CatCodec.builders.streamingLatency(tier));
     }

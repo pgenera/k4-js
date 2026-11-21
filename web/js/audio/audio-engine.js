@@ -919,6 +919,10 @@
         Math.round(0.5 * this._dstSampleRate),
         targetSamples * 4
       );
+      const rebufferSamples = Math.max(
+        Math.round(0.03 * this._dstSampleRate),
+        Math.round(targetSamples * 0.65)
+      );
       this._workletNode.port.postMessage({
         type: 'config',
         gainA: this._gainA,
@@ -929,6 +933,7 @@
         mixMode: this._mixMode,
         maxBufferSamples,
         trimToSamples: Math.max(targetSamples, Math.round(0.05 * this._dstSampleRate)),
+        rebufferSamples,
       });
     }
 
@@ -1603,10 +1608,10 @@
       const baseRatio = srcRate / this._dstSampleRate;
       let ratio = baseRatio;
       if (this._started) {
-        if (bufferMs < 0.5 * targetMs) {
-          ratio = baseRatio * (1.0 - DRIFT_NUDGE);
+        if (bufferMs < 0.6 * targetMs) {
+          ratio = baseRatio * (1.0 - DRIFT_NUDGE * 3);
         } else if (bufferMs > 2.0 * targetMs) {
-          ratio = baseRatio * (1.0 + DRIFT_NUDGE);
+          ratio = baseRatio * (1.0 + DRIFT_NUDGE * 2);
         }
       }
 

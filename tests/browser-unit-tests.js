@@ -562,9 +562,9 @@
       try {
         Object.defineProperty(globalThis, 'AudioDecoder', { value: function MockAudioDecoder() {}, configurable: true, writable: true });
         assertEqual(K4.OpusPacketDecoder.isSupported(), true, 'OpusPacketDecoder.isSupported true when AudioDecoder present');
-        assertEqual(emClient._resolveEncodeMode('auto'), 1, 'Client._resolveEncodeMode(auto) defaults to EM1 when Opus supported');
-        assertEqual(emClient._resolveEncodeMode(undefined), 1, 'Client._resolveEncodeMode(undefined) defaults to EM1');
-        assertEqual(emClient._resolveEncodeMode('bogus'), 1, 'Client._resolveEncodeMode(bogus) falls back to EM1');
+        assertEqual(emClient._resolveEncodeMode('auto'), 2, 'Client._resolveEncodeMode(auto) prefers EM2 Opus when supported');
+        assertEqual(emClient._resolveEncodeMode(undefined), 2, 'Client._resolveEncodeMode(undefined) prefers EM2 Opus when supported');
+        assertEqual(emClient._resolveEncodeMode('bogus'), 2, 'Client._resolveEncodeMode(bogus) prefers EM2 Opus when supported');
         assertEqual(emClient._resolveEncodeMode(0), 0, 'Client._resolveEncodeMode(0) keeps EM0');
         assertEqual(emClient._resolveEncodeMode('1'), 1, 'Client._resolveEncodeMode("1") keeps EM1');
         assertEqual(emClient._resolveEncodeMode(3), 3, 'Client._resolveEncodeMode(3) keeps EM3 when Opus supported');
@@ -5203,6 +5203,60 @@
       mobNav.remove();
       mobSheet.remove();
     }
+  });
+
+  // 61. 5G/WAN resilience: rAF pan burst coalescing, worklet re-buffer gate, WAN SL auto-adaptation
+  test('5G/WAN resilience: rAF pan burst coalescing, worklet rebuffer gate, and high-RTT SL adaptation', async () => {
+    const K4 = globalThis.K4;
+
+    // 1. PanadapterView coalesces a burst of 4 pan packets into 1 render on rAF
+    const state = new K4.RadioState();
+    const container = document.createElement('div');
+    container.style.width = '400px';
+    container.style.height = '220px';
+    document.body.appendChild(container);
+    const view = new K4.PanadapterView({ container, state, renderer: '2d' });
+    try {
+      const bins = new Uint8Array(1024).fill(60);
+      const beforeFrames = view._framesRendered;
+      for (let i = 0; i < 4; i++) {
+        view.pushPanPacket({ rx: 'A', centerFreqHz: 14074000, sampleRateKHz: 48, bins });
+      }
+      assertEqual(view._framesRendered, beforeFrames, '4 burst packets do not render synchronously inside ws.onmessage');
+      await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      assertEqual(view._framesRendered, beforeFrames + 1, '4 burst packets coalesce into 1 rAF render');
+    } finally {
+      view.destroy();
+      container.remove();
+    }
+
+    // 2. AudioWorklet source contains rebuffer gate & fade-in logic
+    assert(K4.WORKLET_PROCESSOR_SOURCE.includes('this.rebuffering = true;'), 'worklet starts in rebuffering state');
+    assert(K4.WORKLET_PROCESSOR_SOURCE.includes('this.rebufferSamples'), 'worklet supports configurable rebufferSamples');
+
+    // 3. K4.Client auto-bumps SL on 2 consecutive high-RTT PONGs unless user manually adjusted SL
+    const st2 = new K4.RadioState();
+    const cl = new K4.Client({ state: st2 });
+    const sent = [];
+    cl.sendCat = (cmd) => { sent.push(cmd); return true; };
+    const pongPayload = K4.PacketFramer.encodeCatPacket('PONG;').subarray(8, 8 + 8);
+    cl._bootstrapSent = true;
+    cl._lastPingSentPerfMs = performance.now() - 60;
+    cl._handleFrame(pongPayload);
+    assertEqual(st2.getSnapshot().streamingLatency, 2, 'single high-RTT pong does not bump SL yet');
+    cl._lastPingSentPerfMs = performance.now() - 65;
+    cl._handleFrame(pongPayload);
+    assertEqual(st2.getSnapshot().streamingLatency, 4, '2 consecutive >=45ms pongs auto-bump SL2 -> SL4');
+    assert(sent.some((c) => c === 'SL4;'), 'sent SL4; CAT command on WAN RTT');
+
+    // Manual override disables further auto-bumps
+    cl.setLatencyTier(2);
+    assertEqual(st2.getSnapshot().streamingLatency, 2, 'manual SL2 applied');
+    cl._lastPingSentPerfMs = performance.now() - 140;
+    cl._handleFrame(pongPayload);
+    cl._lastPingSentPerfMs = performance.now() - 140;
+    cl._handleFrame(pongPayload);
+    assertEqual(st2.getSnapshot().streamingLatency, 2, 'manual SL override prevents auto-bump');
   });
 
   async function runAll() {

@@ -2584,7 +2584,7 @@ void main() {
 
     resize() {
       if (this._destroyed) return false;
-      const dpr = Math.min(3, Math.max(1, globalThis.devicePixelRatio || 1));
+      const dpr = Math.min(2, Math.max(1, globalThis.devicePixelRatio || 1));
       const cssW = Math.max(
         0,
         Math.floor(this.surface.clientWidth || this.container.clientWidth || 0)
