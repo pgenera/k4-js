@@ -678,14 +678,15 @@ func (r *Radio) updatePhysicsLocked(tSec float64) (volts, supplyAmps, paAmps flo
 			supplyAmps = 3.20 + 0.03*math.Sin(tSec*1.3)
 			paAmps = 0.80
 		} else {
-			supplyAmps = 3.20 + (fwdWatts/100.0)*15.30
-			paAmps = 0.80 + (fwdWatts/100.0)*15.30
+			supplyAmps = 3.20 + 0.03*math.Sin(tSec*1.3)
+			paAmps = 0.80 + (fwdWatts/100.0)*15.00
 		}
 	} else {
 		supplyAmps = 1.66 + 0.04*math.Cos(tSec*0.7)
 		paAmps = 0.0
 	}
-	sag := math.Max(0.0, supplyAmps-1.66) * (0.75 / 16.84)
+	totalAmps := supplyAmps + paAmps
+	sag := math.Max(0.0, totalAmps-1.66) * (0.75 / 17.34)
 	volts = 13.80 - sag + 0.01*math.Sin(tSec*0.4)
 
 	if dt > 0 {

@@ -90,7 +90,9 @@
     const s = snapshot || {};
     const tel = s.telemetry || {};
     const tm = s.txMeters || {};
-    const isAmps = tel.supplyAmps != null ? Number(tel.supplyAmps) : null;
+    const isAmps = tel.totalAmps != null
+      ? Number(tel.totalAmps)
+      : (tel.supplyAmps != null ? Number(tel.supplyAmps) : null);
     const fwdWatts = Number(tm.fwdWatts) || 0;
     return {
       tel,
@@ -3922,9 +3924,10 @@
         this._refs.diag.packets.textContent = String(aDiag.packetsIn ?? 0);
         this._refs.diag.underruns.textContent = `${aDiag.underruns ?? 0} / ${aDiag.seqGaps ?? 0}`;
         const tel = snapshot.telemetry || {};
+        const diagAmps = tel.totalAmps != null ? tel.totalAmps : tel.supplyAmps;
         this._refs.diag.supply.textContent =
           tel.supplyVolts != null
-            ? `${tel.supplyVolts.toFixed(1)} V${tel.supplyAmps != null ? ` · ${tel.supplyAmps.toFixed(2)} A` : ''}`
+            ? `${tel.supplyVolts.toFixed(1)} V${diagAmps != null ? ` · ${diagAmps.toFixed(2)} A` : ''}`
             : '—';
         const cpuParts = [];
         if (tel.cpuTempC != null) cpuParts.push(`CPU ${tel.cpuTempC.toFixed(1)}°C`);
@@ -4289,11 +4292,17 @@
         s.vs.val.textContent = vs != null ? `${vs.toFixed(2)} V (ΔV ${sag.toFixed(2)} V)` : '—';
         s.vs.tile.dataset.level = sensorVoltLevel(vs);
 
-        const paA = tel.paAmps != null ? ` · PA ${Number(tel.paAmps).toFixed(1)}A` : '';
+        const paVal = tel.paAmps != null ? Number(tel.paAmps) : null;
+        const paA = paVal != null && paVal > 0.05 ? ` · PA ${paVal.toFixed(1)}A` : '';
         s.is.val.textContent = isAmps != null
           ? `${isAmps.toFixed(1)} A (pk ${(peakIs ?? isAmps).toFixed(1)} A)${paA}`
           : '—';
         s.is.tile.dataset.level = isAmps != null && isAmps > 21 ? 'warn' : 'ok';
+        if (isAmps != null && tel.supplyAmps != null && paVal != null) {
+          s.is.tile.title = `Total: ${isAmps.toFixed(1)} A (Radio ${Number(tel.supplyAmps).toFixed(1)} A + PA ${paVal.toFixed(1)} A) · Click for current graph`;
+        } else {
+          s.is.tile.title = 'Click to open Current / Peak history graph';
+        }
 
         const isConnected = Boolean(snapshot.connection && snapshot.connection.status === 'connected');
         const paIdleLabel = isConnected ? 'Idle (on TX)' : '—';

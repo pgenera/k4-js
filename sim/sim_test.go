@@ -1162,8 +1162,8 @@ func TestElectricalAndThermalPhysics(t *testing.T) {
 	txPt, _ := parseSiField(txSi, "SIRF", "PT")
 	txLt, _ := parseSiField(txSi, "SIRF", "LT")
 	txPa, _ := parseSiField(txSi, "SIRF", "PA")
-	if txIs < 17.5 || txPa < 15.0 || txVs >= rxVs-0.55 {
-		t.Fatalf("100W electrical sag mismatch: IS=%.2f PA=%.2f VS=%.2f (rxVS=%.2f)", txIs, txPa, txVs, rxVs)
+	if txIs+txPa < 17.5 || txPa < 15.0 || txVs >= rxVs-0.55 {
+		t.Fatalf("100W electrical sag mismatch: IS=%.2f PA=%.2f total=%.2f VS=%.2f (rxVS=%.2f)", txIs, txPa, txIs+txPa, txVs, rxVs)
 	}
 	if txPt <= rxPt+15.0 || txLt <= rxLt+5.0 {
 		t.Fatalf("expected PA/LPA thermal rise in 100W TX: PT %.1f->%.1f, LT %.1f->%.1f", rxPt, txPt, rxLt, txLt)

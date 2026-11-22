@@ -2299,21 +2299,24 @@
     assertApprox(snap.telemetry.txVoltDrop, 0, 1e-6, 'idle txVoltDrop = 0');
 
     state.applyParsedCat(parseCommand('TX;'));
-    state.applyParsedCat(parseCommand('SIFPVS:13.15,IS:18.40,TF:27.5;'));
-    state.applyParsedCat(parseCommand('SIFPVS:13.25,IS:12.00,TF:27.8;'));
+    state.applyParsedCat(parseCommand('SIFPVS:13.15,IS:3.00,TF:27.5;'));
+    state.applyParsedCat(parseCommand('SIRFV8:8.0,V5:5.0,V27:27.1,LT:31.2,LM:0,PA:16.00,PM:0,PT:48.5;'));
+    state.applyParsedCat(parseCommand('SIFPVS:13.25,IS:2.80,TF:27.8;'));
     snap = state.getSnapshot();
     assertApprox(snap.telemetry.rxBaselineVolts, 13.80, 1e-6, 'baseline preserved during TX');
     assertApprox(snap.telemetry.txVoltDrop, 0.55, 1e-6, 'txVoltDrop = baseline - supplyVolts');
-    assertApprox(snap.telemetry.peakSupplyAmps, 18.40, 1e-6, 'peakSupplyAmps retains max');
+    assertApprox(snap.telemetry.supplyAmps, 2.80, 1e-6, 'supplyAmps tracks SIFP IS');
+    assertApprox(snap.telemetry.paAmps, 16.00, 1e-6, 'paAmps tracks SIRF PA');
+    assertApprox(snap.telemetry.totalAmps, 18.80, 1e-6, 'totalAmps sums SIFP IS + SIRF PA');
+    assertApprox(snap.telemetry.peakSupplyAmps, 19.00, 1e-6, 'peakSupplyAmps retains max IS + PA (19.0 A)');
     assertApprox(snap.telemetry.fpTempC, 27.8, 1e-6, 'fpTempC updated');
+    assertApprox(state.getSensorHistory('is', 60).current, 18.80, 1e-6, 'current sensor history records totalAmps (IS + PA)');
 
     // SIRF & SIDU/SID0 sensors
-    state.applyParsedCat(parseCommand('SIRFV8:8.0,V5:5.0,V27:27.1,LT:31.2,LM:0,PA:12.50,PM:0,PT:48.5;'));
     state.applyParsedCat(parseCommand('SIDUV5:5.0,V3:3.3,T:36.8,DV:58.0;'));
     snap = state.getSnapshot();
     assertApprox(snap.telemetry.paTempC, 48.5, 1e-6, 'paTempC');
     assertApprox(snap.telemetry.lpaTempC, 31.2, 1e-6, 'lpaTempC');
-    assertApprox(snap.telemetry.paAmps, 12.5, 1e-6, 'paAmps');
     assertApprox(snap.telemetry.ducTempC, 36.8, 1e-6, 'ducTempC');
     assertApprox(snap.telemetry.ducDrive, 58.0, 1e-6, 'ducDrive');
     state.applyParsedCat(parseCommand('SID0V12:12.6,ID:0,DV:0.0;'));
@@ -2321,6 +2324,9 @@
 
     // ATU tune capture: TU3 -> non-zero SWR -> TU0 captures atuMatchedSwr
     state.applyParsedCat(parseCommand('RX;'));
+    assertApprox(state.getSnapshot().telemetry.paAmps, 0, 1e-6, 'RX clears live paAmps to 0');
+    assertApprox(state.getSnapshot().telemetry.totalAmps, 2.80, 1e-6, 'RX drops totalAmps back to IS');
+    assertApprox(state.getSnapshot().telemetry.peakSupplyAmps, 19.00, 1e-6, 'RX preserves peakSupplyAmps');
     state.applyParsedCat(parseCommand('FA00014200000;'));
     state.applyParsedCat(parseCommand('TU3;'));
     assertEqual(state.getSnapshot().atuTuning, true, 'atuTuning active on TU3');

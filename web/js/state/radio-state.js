@@ -150,6 +150,7 @@
     return {
       supplyVolts: null,
       supplyAmps: null,
+      totalAmps: null,
       peakSupplyAmps: null,
       rxBaselineVolts: null,
       txVoltDrop: null,
@@ -528,17 +529,32 @@
       m.swr = 0;
       m.active = false;
       m.updatedAt = Date.now();
-      this._state.telemetry.txVoltDrop = this._state.telemetry.rxBaselineVolts !== null ? 0 : null;
+      const tel = this._state.telemetry;
+      tel.txVoltDrop = tel.rxBaselineVolts !== null ? 0 : null;
+      if (Number.isFinite(tel.paAmps) && tel.paAmps > 0) {
+        tel.paAmps = 0;
+        tel.totalAmps = this._computeTotalAmps(tel);
+      }
+    }
+
+    _computeTotalAmps(t) {
+      const hasIs = Number.isFinite(t.supplyAmps);
+      const hasPa = Number.isFinite(t.paAmps);
+      if (!hasIs && !hasPa) return null;
+      return (hasIs ? t.supplyAmps : 0) + (hasPa && t.paAmps > 0 ? t.paAmps : 0);
     }
 
     _sampleSensorsNow(ts = Date.now()) {
       const t = this._state.telemetry || {};
       const m = this._state.txMeters || {};
       const txOrTune = Boolean(this._state.txActive || this._state.atuTuning);
+      const totalA = Number.isFinite(t.totalAmps)
+        ? t.totalAmps
+        : (Number.isFinite(t.supplyAmps) ? t.supplyAmps : null);
       return {
         ts,
         vs: Number.isFinite(t.supplyVolts) ? t.supplyVolts : null,
-        is: Number.isFinite(t.supplyAmps) ? t.supplyAmps : null,
+        is: totalA,
         pt: Number.isFinite(t.paTempC) ? t.paTempC : null,
         lt: Number.isFinite(t.lpaTempC) ? t.lpaTempC : null,
         tf: Number.isFinite(t.fpTempC) ? t.fpTempC : null,
@@ -1064,10 +1080,11 @@
             }
             if (Number.isFinite(f.IS)) {
               t.supplyAmps = f.IS;
-              if (activeTxOrTune) {
+              t.totalAmps = this._computeTotalAmps(t);
+              if (activeTxOrTune && Number.isFinite(t.totalAmps)) {
                 t.peakSupplyAmps = Number.isFinite(t.peakSupplyAmps)
-                  ? Math.max(t.peakSupplyAmps, f.IS)
-                  : f.IS;
+                  ? Math.max(t.peakSupplyAmps, t.totalAmps)
+                  : t.totalAmps;
               }
               changed = true;
             }
@@ -1081,7 +1098,19 @@
           } else if (parsed.module === 'RF') {
             if (Number.isFinite(f.PT)) { t.paTempC = f.PT; changed = true; }
             if (Number.isFinite(f.LT)) { t.lpaTempC = f.LT; changed = true; }
-            if (Number.isFinite(f.PA)) { t.paAmps = f.PA; changed = true; }
+            const paVal = Number.isFinite(f.PA)
+              ? f.PA
+              : (Number.isFinite(f.IA) ? f.IA : (Number.isFinite(f.IP) ? f.IP : null));
+            if (paVal !== null) {
+              t.paAmps = paVal;
+              t.totalAmps = this._computeTotalAmps(t);
+              if (activeTxOrTune && Number.isFinite(t.totalAmps)) {
+                t.peakSupplyAmps = Number.isFinite(t.peakSupplyAmps)
+                  ? Math.max(t.peakSupplyAmps, t.totalAmps)
+                  : t.totalAmps;
+              }
+              changed = true;
+            }
           } else if (parsed.module === 'DA') {
             if (Number.isFinite(f.T)) { t.dapTempC = f.T; changed = true; }
           } else if (parsed.module === 'DU') {
