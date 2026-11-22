@@ -58,6 +58,11 @@
       this._pttHeldUi = false;
       this._pttRequestGen = 0;
       this._lastSensorTickMs = 0;
+      this._reconnectTimer = null;
+      this._reconnectAttempt = 0;
+      this._autoReconnecting = false;
+      this._hadAuthenticatedSession = false;
+      this._manualDisconnect = false;
       this._uiPerf =
         typeof window !== 'undefined'
           ? (window.__k4UiPerf = window.__k4UiPerf || {
@@ -638,7 +643,11 @@
         if (!msg) {
           msg = 'Radio / transport error';
         }
-        this.toast(msg, 'error');
+        const isSuppressedReconnectErr =
+          this._autoReconnecting && err && typeof err === 'object' && err.source === 'transport';
+        if (!isSuppressedReconnectErr) {
+          this.toast(msg, 'error');
+        }
         this._scheduleRender();
       });
 
@@ -655,10 +664,25 @@
         if (connMetaChanged || (this.connectionDialog && typeof this.connectionDialog.isOpen === 'function' && this.connectionDialog.isOpen())) {
           this.connectionDialog.syncConnectionState(conn);
         }
-        if (this._pendingConnectClose && conn && conn.status === 'connected' && conn.authStatus === 'authenticated') {
-          this._pendingConnectClose = false;
-          this.connectionDialog.close();
-          this.toast('Connected to K4 Receiver', 'success');
+        if (conn && conn.status === 'connected' && conn.authStatus === 'authenticated') {
+          const wasReconnecting = this._autoReconnecting;
+          this._hadAuthenticatedSession = true;
+          this._manualDisconnect = false;
+          this._clearAutoReconnect();
+          if (this._pendingConnectClose || wasReconnecting) {
+            this._pendingConnectClose = false;
+            this.connectionDialog.close();
+            this.toast(wasReconnecting ? 'Reconnected to K4 Receiver' : 'Connected to K4 Receiver', 'success');
+          }
+        } else if (conn && conn.authStatus === 'rejected') {
+          this._hadAuthenticatedSession = false;
+          this._clearAutoReconnect();
+        } else if (
+          (nextStatus === 'error' || nextStatus === 'disconnected') &&
+          this._canAutoReconnect(conn) &&
+          !this._reconnectTimer
+        ) {
+          this._scheduleAutoReconnect(false);
         }
         if (connMetaChanged) {
           this._syncTxMicStandby();
@@ -1217,8 +1241,17 @@
         if (document.hidden && (this._pttKeyHeld || this._pttHeldUi || this._getSnapshot().txActive)) {
           this._endHoldPtt();
         }
+        if (!document.hidden && this._autoReconnecting && this._canAutoReconnect()) {
+          this._scheduleAutoReconnect(true);
+        }
         if (this.inspector && typeof this.inspector._syncAfScopeLoop === 'function') {
           this.inspector._syncAfScopeLoop();
+        }
+      });
+
+      window.addEventListener('online', () => {
+        if (this._autoReconnecting && this._canAutoReconnect()) {
+          this._scheduleAutoReconnect(true);
         }
       });
 
@@ -1555,11 +1588,83 @@
       }
     }
 
-    async connect(opts) {
+    _clearAutoReconnect() {
+      if (this._reconnectTimer !== null) {
+        clearTimeout(this._reconnectTimer);
+        this._reconnectTimer = null;
+      }
+      this._reconnectAttempt = 0;
+      this._autoReconnecting = false;
+    }
+
+    _canAutoReconnect(conn) {
+      if (!this._hadAuthenticatedSession || this._manualDisconnect || !this._lastConnectOpts) {
+        return false;
+      }
+      if (this._isDemoMode()) return false;
+      if (conn && conn.authStatus === 'rejected') return false;
+      return true;
+    }
+
+    _scheduleAutoReconnect(immediate = false) {
+      if (!this._canAutoReconnect()) return;
+      if (this._reconnectTimer !== null) {
+        clearTimeout(this._reconnectTimer);
+        this._reconnectTimer = null;
+      }
+      const firstDrop = !this._autoReconnecting;
+      this._autoReconnecting = true;
+      if (firstDrop) {
+        this.toast('Connection lost — reconnecting…', 'info');
+        this._render(['connection']);
+      }
+      if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+        return;
+      }
+      const backoffTableMs = [1500, 3000, 6000, 12000, 20000, 30000];
+      const baseMs = immediate
+        ? 150
+        : backoffTableMs[Math.min(this._reconnectAttempt, backoffTableMs.length - 1)];
+      const jitterMs = immediate ? 0 : Math.round(baseMs * (Math.random() * 0.3 - 0.15));
+      const delayMs = Math.max(100, baseMs + jitterMs);
+      if (!immediate) {
+        this._reconnectAttempt += 1;
+      }
+      this._reconnectTimer = setTimeout(() => {
+        this._reconnectTimer = null;
+        void this._runAutoReconnect();
+      }, delayMs);
+    }
+
+    async _runAutoReconnect() {
+      if (!this._canAutoReconnect()) {
+        this._clearAutoReconnect();
+        return;
+      }
+      const snap = this._getSnapshot();
+      const status = snap && snap.connection && snap.connection.status;
+      if (status === 'connected' || status === 'connecting' || status === 'authenticating') {
+        return;
+      }
+      try {
+        await this.connect(this._lastConnectOpts, { isAutoReconnect: true });
+      } catch (_) {
+        if (this._canAutoReconnect()) {
+          this._scheduleAutoReconnect(false);
+        }
+      }
+    }
+
+    async connect(opts, meta = null) {
+      const isAuto = Boolean(meta && meta.isAutoReconnect);
+      if (!isAuto) {
+        this._manualDisconnect = false;
+        this._clearAutoReconnect();
+      }
       const finalOpts = Object.assign({}, this.connectionDialog.getOptions(), opts || {});
       this._lastConnectOpts = Object.assign({}, finalOpts);
       this._resetTxSafety();
-      this._pendingConnectClose = true;
+      this._pendingConnectClose = !isAuto;
       try {
         await this.client.connect(finalOpts);
         // If authenticated synchronously or already connected, ensure dialog closes cleanly
@@ -1580,6 +1685,9 @@
     }
 
     disconnect() {
+      this._manualDisconnect = true;
+      this._hadAuthenticatedSession = false;
+      this._clearAutoReconnect();
       this._pendingConnectClose = false;
       this._lastConnectOpts = null;
       this._resetTxSafety();
@@ -2420,7 +2528,7 @@
       const conn = (snap && snap.connection) || {};
       const status = conn.status || 'disconnected';
       const dlgOpen = Boolean(this._dom.connDialog && this._dom.connDialog.dataset.open === 'true');
-      this._disconnectedCard.hidden = !(status === 'disconnected' && !dlgOpen);
+      this._disconnectedCard.hidden = !(status === 'disconnected' && !dlgOpen && !this._autoReconnecting);
     }
 
     _syncPwaWakeLock(aDiag) {
@@ -2624,6 +2732,8 @@
       let statusLabel = 'Disconnected';
       if (status === 'connected') {
         statusLabel = conn.radioId ? `${conn.radioId} · ${extractHostLabel(conn.wsUrl)}` : extractHostLabel(conn.wsUrl);
+      } else if (this._autoReconnecting) {
+        statusLabel = 'Reconnecting…';
       } else if (status === 'connecting') {
         statusLabel = 'Connecting...';
       } else if (status === 'authenticating') {
