@@ -840,6 +840,12 @@
       // 3. App & Updates (PWA)
       const pwaSec = el('section', 'k4-settings-section');
       pwaSec.appendChild(el('h3', 'k4-settings-section-title', 'App & Updates'));
+      const buildText =
+        typeof K4.formatBuildLabel === 'function' ? K4.formatBuildLabel() : 'dev';
+      this._buildInfoEl = el('div', 'k4-settings-desc', `Build: ${buildText}`);
+      this._buildInfoEl.dataset.testid = 'app-build-info';
+      this._buildInfoEl.style.fontFamily = 'var(--font-mono)';
+      pwaSec.appendChild(this._buildInfoEl);
       this._pwaStatusEl = el('div', 'k4-settings-desc', 'Checking offline & update status...');
       this._pwaStatusEl.dataset.testid = 'pwa-status-text';
       pwaSec.appendChild(this._pwaStatusEl);

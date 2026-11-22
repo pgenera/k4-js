@@ -23,6 +23,12 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+      - name: Stamp build info
+        run: |
+          COMMIT="$(git rev-parse --short HEAD)"
+          BUILT_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          sed -i "s/commit: '[^']*'/commit: '${COMMIT}'/" web/js/util/build-info.js
+          sed -i "s/builtAt: '[^']*'/builtAt: '${BUILT_AT}'/" web/js/util/build-info.js
       - name: Setup Pages
         uses: actions/configure-pages@v5
       - name: Upload web/ artifact

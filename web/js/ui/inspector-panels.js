@@ -1934,6 +1934,7 @@
         ['supply', 'DC Supply'],
         ['cpuTemp', 'CPU / FP Temp'],
         ['paTemp', 'PA / LPA Temp'],
+        ['build', 'App Build'],
       ];
       this._refs.diag = {};
       for (let i = 0; i < diagFields.length; i++) {
@@ -3937,6 +3938,10 @@
         if (tel.paTempC != null) paParts.push(`PA ${tel.paTempC.toFixed(1)}°C`);
         if (tel.lpaTempC != null) paParts.push(`LPA ${tel.lpaTempC.toFixed(1)}°C`);
         this._refs.diag.paTemp.textContent = paParts.length ? paParts.join(' · ') : '—';
+        if (this._refs.diag.build) {
+          this._refs.diag.build.textContent =
+            typeof K4.formatBuildLabel === 'function' ? K4.formatBuildLabel() : 'dev';
+        }
       }
 
       this._syncAfScopeLoop();

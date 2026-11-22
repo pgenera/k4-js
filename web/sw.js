@@ -10,6 +10,7 @@ const UPDATE_WATCH_ASSETS = [
   './css/layout.css',
   './css/components.css',
   './js/util/events.js',
+  './js/util/build-info.js',
   './js/util/storage.js',
   './js/util/pwa.js',
   './js/protocol/sha384.js',
