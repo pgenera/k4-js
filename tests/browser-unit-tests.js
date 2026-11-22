@@ -5257,6 +5257,14 @@
     cl._lastPingSentPerfMs = performance.now() - 140;
     cl._handleFrame(pongPayload);
     assertEqual(st2.getSnapshot().streamingLatency, 2, 'manual SL override prevents auto-bump');
+
+    // 4. _sendPingIfDue sends keepalive PING when >=1000ms elapsed (background tab setInterval fallback)
+    cl._ws = { readyState: 1 };
+    sent.length = 0;
+    cl._lastPingSentPerfMs = performance.now() - 1200;
+    assertEqual(cl._sendPingIfDue(cl._connGen, 1000), true, '_sendPingIfDue sends PING when overdue');
+    assert(sent.length === 1 && sent[0].startsWith('PING'), `sent PING command, got ${sent[0]}`);
+    assertEqual(cl._sendPingIfDue(cl._connGen, 1000), false, '_sendPingIfDue throttles within 1000ms');
   });
 
   async function runAll() {

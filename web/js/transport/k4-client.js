@@ -383,14 +383,23 @@
       this._syncTbPolling();
 
       this._pingTimer = setInterval(() => {
-        if (gen !== this._connGen || !isWsOpen(this._ws)) {
-          return;
-        }
-        this._lastPingSentPerfMs = nowMs();
-        this.sendCat(K4.CatCodec.builders.ping(Math.floor(Date.now() / 1000)));
+        this._sendPingIfDue(gen, 950);
       }, 1000);
 
       this._attachPagehide();
+    }
+
+    _sendPingIfDue(gen, minIntervalMs = 1000) {
+      if (gen !== this._connGen || !isWsOpen(this._ws) || !this._bootstrapSent) {
+        return false;
+      }
+      const now = nowMs();
+      if (this._lastPingSentPerfMs !== null && now - this._lastPingSentPerfMs < minIntervalMs) {
+        return false;
+      }
+      this._lastPingSentPerfMs = now;
+      this.sendCat(K4.CatCodec.builders.ping(Math.floor(Date.now() / 1000)));
+      return true;
     }
 
     _attachPagehide() {
@@ -478,7 +487,8 @@
                     const rttMs = Math.max(0, Math.round(nowMs() - this._lastPingSentPerfMs));
                     this.state.updateConnection({ rttMs }, 'connection.rttMs');
                     this._emitConnection();
-                    if (!this._userAdjustedSl && !this._isDemoMode) {
+                    const isHidden = typeof document !== 'undefined' && Boolean(document.hidden);
+                    if (!this._userAdjustedSl && !this._isDemoMode && !isHidden) {
                       if (rttMs >= 45) {
                         this._highRttStreak += 1;
                         if (this._highRttStreak >= 2) {
@@ -674,12 +684,14 @@
               this._metrics.wsMessages++;
               this._metrics.bytesIn += data.byteLength;
               this._framer.push(new Uint8Array(data));
+              this._sendPingIfDue(gen, 1000);
             } else if (data && typeof data.arrayBuffer === 'function') {
               data.arrayBuffer().then((buf) => {
                 if (gen !== this._connGen) return;
                 this._metrics.wsMessages++;
                 this._metrics.bytesIn += buf.byteLength;
                 this._framer.push(new Uint8Array(buf));
+                this._sendPingIfDue(gen, 1000);
               });
             }
           };
