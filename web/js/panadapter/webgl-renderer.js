@@ -1471,10 +1471,33 @@ void main() {
           ctx.restore();
         }
         ctx.restore();
+
+        // 3b. Draggable Spectrum / Waterfall Divider Border
+        const dividerHot = Boolean(hover && hover.dividerRx === paneRx);
+        const divY = Math.round(wfRect.y) + 0.5;
+        ctx.save();
+        ctx.strokeStyle = dividerHot
+          ? 'rgba(56, 189, 248, 0.85)'
+          : 'rgba(148, 163, 184, 0.22)';
+        ctx.lineWidth = dividerHot ? 2 : 1;
+        ctx.beginPath();
+        ctx.moveTo(wfRect.x, divY);
+        ctx.lineTo(wfRect.x + wfRect.w, divY);
+        ctx.stroke();
+        if (dividerHot) {
+          const handleW = 36;
+          const handleH = 4;
+          const hx0 = Math.round(wfRect.x + (wfRect.w - handleW) * 0.5);
+          const hy0 = Math.round(wfRect.y - handleH * 0.5);
+          drawRoundedPill(ctx, hx0, hy0, handleW, handleH, 2);
+          ctx.fillStyle = 'rgba(56, 189, 248, 0.95)';
+          ctx.fill();
+        }
+        ctx.restore();
       }
 
       // 4. Interactive Hover Crosshair & Readout Pill
-      if (hover && hover.active && hover.paneRx === paneRx) {
+      if (hover && hover.active && hover.paneRx === paneRx && !hover.dividerRx) {
         const hx = clamp(hover.xPx, paneRect.x, paneRect.x + paneRect.w);
         const hy = clamp(hover.yPx, paneRect.y, paneRect.y + paneRect.h);
 
@@ -1689,8 +1712,11 @@ void main() {
         Math.round(hover.yPx || 0),
         hover.edgeHint ? (hover.edgeHint.rx || '') + ':' + (hover.edgeHint.edge || '') : '',
         hover.vfoPillRx || '',
+        hover.dividerRx || '',
         hPane ? hPane.binSeq || 0 : 0,
       ].join(',');
+    } else if (hover && hover.dividerRx) {
+      hoverPart = 'div:' + hover.dividerRx;
     } else if (hover && hover.vfoPillRx) {
       hoverPart = 'pill:' + hover.vfoPillRx;
     }

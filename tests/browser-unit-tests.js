@@ -5273,6 +5273,64 @@
     assertEqual(cl._sendPingIfDue(cl._connGen, 1000), false, '_sendPingIfDue throttles within 1000ms');
   });
 
+  // 62. Draggable spectrum / waterfall divider resize
+  test('Dragging spectrum/waterfall border resizes waterfallHeightPct without QSY', () => {
+    const K4 = globalThis.K4;
+    const host = document.createElement('div');
+    host.style.width = '800px';
+    host.style.height = '422px';
+    document.body.appendChild(host);
+
+    const state = new K4.RadioState();
+    state.update({ waterfallHeightPct: 60 }, 'waterfallHeightPct');
+    const displayCalls = [];
+    const tuneCalls = [];
+    const client = {
+      setDisplay: (p) => displayCalls.push(p),
+      tuneVfo: (rx, hz) => tuneCalls.push({ rx, hz }),
+    };
+
+    const view = new K4.PanadapterView({ container: host, state, client, renderer: '2d' });
+    try {
+      view._renderNow(false);
+      const surface = host.querySelector('.k4-pan-surface');
+      const rect = surface.getBoundingClientRect();
+      const layout = view._renderer.getLayouts()[0];
+      const divY = layout.wfRect.y;
+      const midX = rect.left + layout.wfRect.x + layout.wfRect.w * 0.5;
+
+      // Hover over border -> ns-resize cursor
+      surface.dispatchEvent(new PointerEvent('pointermove', {
+        bubbles: true, pointerId: 1, pointerType: 'mouse',
+        clientX: midX, clientY: rect.top + divY,
+      }));
+      assertEqual(surface.style.cursor, 'ns-resize', 'hovering spectrum/waterfall border shows ns-resize cursor');
+
+      // Drag border upward -> larger waterfallHeightPct
+      surface.dispatchEvent(new PointerEvent('pointerdown', {
+        bubbles: true, button: 0, pointerId: 1, pointerType: 'mouse',
+        clientX: midX, clientY: rect.top + divY,
+      }));
+      const targetYUp = layout.specRect.y + Math.round((layout.paneRect.h - layout.axisRect.h) * 0.25);
+      surface.dispatchEvent(new PointerEvent('pointermove', {
+        bubbles: true, pointerId: 1, pointerType: 'mouse',
+        clientX: midX, clientY: rect.top + targetYUp,
+      }));
+      surface.dispatchEvent(new PointerEvent('pointerup', {
+        bubbles: true, button: 0, pointerId: 1, pointerType: 'mouse',
+        clientX: midX, clientY: rect.top + targetYUp,
+      }));
+
+      const pct = state.getSnapshot().waterfallHeightPct;
+      assert(pct >= 72 && pct <= 78, `dragging divider up sets waterfallHeightPct ~75% (got ${pct})`);
+      assert(displayCalls.some((c) => c.waterfallHeightPct === pct), 'setDisplay called with new waterfallHeightPct');
+      assertEqual(tuneCalls.length, 0, 'releasing divider drag does not trigger QSY');
+    } finally {
+      view.destroy();
+      host.remove();
+    }
+  });
+
   async function runAll() {
     const resultsEl = document.getElementById('results');
     const summaryEl = document.getElementById('summary');

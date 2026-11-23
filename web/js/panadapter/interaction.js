@@ -12,6 +12,8 @@
   const VFO_DRAG_THRESHOLD_TOUCH_PX = 4;
   const VFO_DRAG_THRESHOLD_MOUSE_PX = 3;
   const EDGE_HIT_PX = 6;
+  const DIVIDER_HIT_MOUSE_PX = 6;
+  const DIVIDER_HIT_TOUCH_PX = 12;
   const THROTTLE_MS = 50; // max 20 Hz
 
   function clamp(v, min, max) {
@@ -40,7 +42,7 @@
       this.client = client;
 
       this._destroyed = false;
-      this._dragMode = null; // 'pan' | 'axis-pan' | 'edge' | 'pinch' | 'vfo' | null
+      this._dragMode = null; // 'pan' | 'axis-pan' | 'edge' | 'pinch' | 'vfo' | 'wf-split' | null
       this._activePointerId = null;
       this._startX = 0;
       this._startY = 0;
@@ -54,6 +56,8 @@
       this._lockedPillAbsorbed = false;
       this._dragHit = null;
       this._edgeInfo = null;
+      this._wfSplitLayout = null;
+      this._lastWfSplitSendMs = -1e9;
 
       this._touches = new Map();
       this._wasPinched = false;
@@ -725,6 +729,49 @@
       this._sendVfoTuneThrottled(this._dragVfoRx, targetHz, Boolean(isFinal));
     }
 
+    _findDividerHit(xPx, yPx, isTouch) {
+      if (!this.renderer || typeof this.renderer.getLayouts !== 'function') return null;
+      const layouts = this.renderer.getLayouts();
+      if (!layouts || layouts.length === 0) return null;
+      const tol = isTouch ? DIVIDER_HIT_TOUCH_PX : DIVIDER_HIT_MOUSE_PX;
+      for (let i = 0; i < layouts.length; i++) {
+        const l = layouts[i];
+        if (!l || !l.wfRect || l.wfRect.h <= 0) continue;
+        if (xPx < l.paneRect.x || xPx > l.paneRect.x + l.paneRect.w) continue;
+        if (Math.abs(yPx - l.wfRect.y) <= tol) {
+          return { layout: l, dividerY: l.wfRect.y, rx: l.rx };
+        }
+      }
+      return null;
+    }
+
+    _applyWfSplitDrag(yPx, isFinal) {
+      const l = this._wfSplitLayout;
+      if (!l || !l.paneRect || !l.axisRect || !l.specRect) return;
+      const availH = Math.max(40, l.paneRect.h - l.axisRect.h);
+      const bottomY = l.specRect.y + availH;
+      const newWfH = bottomY - yPx;
+      const pct = Math.round(clamp((newWfH / availH) * 100, 15, 85));
+      if (this.state && typeof this.state.update === 'function') {
+        const cur = this.state.getSnapshot().waterfallHeightPct;
+        if (cur !== pct) {
+          this.state.update({ waterfallHeightPct: pct }, 'waterfallHeightPct');
+        }
+      }
+      if (this.view && typeof this.view._renderNow === 'function') {
+        this.view._renderNow(false);
+      }
+      const now = performance.now();
+      if (
+        this.client &&
+        typeof this.client.setDisplay === 'function' &&
+        (isFinal || now - this._lastWfSplitSendMs >= 100)
+      ) {
+        this._lastWfSplitSendMs = now;
+        this.client.setDisplay({ waterfallHeightPct: pct });
+      }
+    }
+
     _resetDragState() {
       const hadVfoDrag = this._dragMode === 'vfo';
       this._cancelPendingVfoTune();
@@ -735,6 +782,7 @@
       this._activePointerId = null;
       this._dragExceeded = false;
       this._edgeInfo = null;
+      this._wfSplitLayout = null;
       this._dragHit = null;
       if (this.surface && this.surface.style) {
         this.surface.style.cursor = 'crosshair';
@@ -948,6 +996,22 @@
             this._beginVfoDrag(e, xPx, yPx, pillHit, hit);
             return;
           }
+          const divHit = this._findDividerHit(xPx, yPx, true);
+          if (divHit) {
+            this._wasPinched = false;
+            this._lockedPillAbsorbed = false;
+            this._dragMode = 'wf-split';
+            this._dragExceeded = true;
+            this._startX = xPx;
+            this._startY = yPx;
+            this._wfSplitLayout = divHit.layout;
+            this._dragRx = divHit.rx;
+            this._dragHit = hit;
+            if (this.view && typeof this.view.setHoverState === 'function') {
+              this.view.setHoverState({ active: false, dividerRx: divHit.rx });
+            }
+            return;
+          }
           this._wasPinched = false;
           this._lockedPillAbsorbed = false;
           this._dragMode = 'pan';
@@ -983,6 +1047,28 @@
       const pillHit = this._findVfoPillHit(xPx, yPx, false);
       if (pillHit) {
         this._beginVfoDrag(e, xPx, yPx, pillHit, hit);
+        return;
+      }
+
+      const divHit = this._findDividerHit(xPx, yPx, false);
+      if (divHit) {
+        this._dragMode = 'wf-split';
+        this._activePointerId = e.pointerId;
+        this._startX = xPx;
+        this._startY = yPx;
+        this._wfSplitLayout = divHit.layout;
+        this._dragRx = divHit.rx;
+        this._dragHit = hit;
+        this._dragExceeded = true;
+        this.surface.style.cursor = 'ns-resize';
+        if (this.view && typeof this.view.setHoverState === 'function') {
+          this.view.setHoverState({ active: true, xPx, yPx, paneRx: divHit.rx, dividerRx: divHit.rx });
+        }
+        try {
+          this.surface.setPointerCapture(e.pointerId);
+        } catch (_err) {
+          // ignore
+        }
         return;
       }
 
@@ -1095,7 +1181,9 @@
           !this._wasPinched &&
           !this._lockedPillAbsorbed
         ) {
-          if (this._dragMode === 'vfo') {
+          if (this._dragMode === 'wf-split') {
+            this._applyWfSplitDrag(yPx, false);
+          } else if (this._dragMode === 'vfo') {
             if (
               !this._dragExceeded &&
               Math.hypot(xPx - this._startX, yPx - this._startY) >
@@ -1125,12 +1213,23 @@
         return;
       }
 
+      if (this._dragMode === 'wf-split' && e.pointerId === this._activePointerId) {
+        this.surface.style.cursor = 'ns-resize';
+        this._applyWfSplitDrag(yPx, false);
+        if (this.view && typeof this.view.setHoverState === 'function') {
+          this.view.setHoverState({ active: true, xPx, yPx, paneRx: this._dragRx, dividerRx: this._dragRx });
+        }
+        return;
+      }
+
       const hit = this._hitTest(xPx, yPx);
       const vfoHit = this._dragMode
         ? null
         : this._findVfoPillHit(xPx, yPx, false);
+      const divHit =
+        this._dragMode || vfoHit ? null : this._findDividerHit(xPx, yPx, false);
       const edgeHint =
-        this._dragMode || vfoHit ? null : this._findHoveredEdge(xPx, yPx, hit);
+        this._dragMode || vfoHit || divHit ? null : this._findHoveredEdge(xPx, yPx, hit);
       if (hit) {
         this.view.setHoverState({
           active: true,
@@ -1139,6 +1238,7 @@
           paneRx: hit.paneRx,
           edgeHint,
           vfoPillRx: vfoHit ? vfoHit.rx : null,
+          dividerRx: divHit ? divHit.rx : null,
         });
       }
 
@@ -1183,6 +1283,8 @@
 
       this.surface.style.cursor = vfoHit
         ? 'grab'
+        : divHit
+        ? 'ns-resize'
         : edgeHint
         ? 'ew-resize'
         : hit && hit.inAxis
@@ -1220,7 +1322,12 @@
             !this._wasPinched &&
             !this._lockedPillAbsorbed
           ) {
-            if (this._dragMode === 'vfo') {
+            if (this._dragMode === 'wf-split') {
+              this._applyWfSplitDrag(yPx, true);
+              if (this.view && typeof this.view.setHoverState === 'function') {
+                this.view.setHoverState(null);
+              }
+            } else if (this._dragMode === 'vfo') {
               if (this._dragExceeded) {
                 this._applyVfoDrag(xPx, Boolean(e.altKey), true);
               } else if (this._dragVfoRx) {
@@ -1246,7 +1353,11 @@
         return;
       }
 
-      if (this._dragMode === 'vfo') {
+      if (this._dragMode === 'wf-split') {
+        if (e.type === 'pointerup') {
+          this._applyWfSplitDrag(yPx, true);
+        }
+      } else if (this._dragMode === 'vfo') {
         if (e.type === 'pointerup') {
           if (this._dragExceeded) {
             this._applyVfoDrag(xPx, Boolean(e.altKey), true);
@@ -1296,7 +1407,8 @@
       }
       if (!this._destroyed && e.type === 'pointerup' && this.surface && this.surface.style) {
         const vfoHit = this._findVfoPillHit(xPx, yPx, false);
-        this.surface.style.cursor = vfoHit ? 'grab' : 'crosshair';
+        const divHit = vfoHit ? null : this._findDividerHit(xPx, yPx, false);
+        this.surface.style.cursor = vfoHit ? 'grab' : (divHit ? 'ns-resize' : 'crosshair');
       }
     }
 
