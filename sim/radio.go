@@ -894,7 +894,12 @@ func (r *Radio) formatSystemInfoLocked(mod string, tSec float64) string {
 			volts, amps, r.FpTempC, cpu1, cpu2, cpu4,
 		)
 	case "RF":
-		return fmt.Sprintf("SIRFV8:8.0,V5:5.0,V27:27.1,LT:%.1f,LM:0,PA:%.2f,PM:0,PT:%.1f;", r.LpaTempC, paAmps, r.PaTempC)
+		lpaMa := 0
+		if r.TxActive || r.AtuTuning {
+			lpaMa = 1350
+		}
+		paMa := int(math.Round(paAmps * 1000.0))
+		return fmt.Sprintf("SIRFV8:8.0,V5:5.0,V27:27.1,LT:%.1f,LM:%d,PA:%.2f,PM:%d,PT:%.1f;", r.LpaTempC, lpaMa, paAmps, paMa, r.PaTempC)
 	case "DA":
 		return fmt.Sprintf("SIDAV5:4.9,V3A:3.3,V3D:3.3,V1P8:1.8,V1P2:1.1,VOSC:3.2,T:%.1f;", r.DapTempC)
 	case "DU":

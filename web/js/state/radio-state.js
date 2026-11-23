@@ -1098,9 +1098,15 @@
           } else if (parsed.module === 'RF') {
             if (Number.isFinite(f.PT)) { t.paTempC = f.PT; changed = true; }
             if (Number.isFinite(f.LT)) { t.lpaTempC = f.LT; changed = true; }
-            const paVal = Number.isFinite(f.PA)
+            // Real K4 SIRF reports PA current as PA (instantaneous A) and PM (peak/TX mA, e.g. PM:12670 -> 12.67 A).
+            const paFromA = Number.isFinite(f.PA)
               ? f.PA
               : (Number.isFinite(f.IA) ? f.IA : (Number.isFinite(f.IP) ? f.IP : null));
+            const paFromMa = Number.isFinite(f.PM) ? f.PM / 1000 : null;
+            const paVal =
+              paFromA !== null && paFromMa !== null
+                ? Math.max(paFromA, paFromMa)
+                : (paFromMa !== null ? paFromMa : paFromA);
             if (paVal !== null) {
               t.paAmps = paVal;
               t.totalAmps = this._computeTotalAmps(t);

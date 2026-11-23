@@ -2300,17 +2300,17 @@
 
     state.applyParsedCat(parseCommand('TX;'));
     state.applyParsedCat(parseCommand('SIFPVS:13.15,IS:3.00,TF:27.5;'));
-    state.applyParsedCat(parseCommand('SIRFV8:8.0,V5:5.0,V27:27.1,LT:31.2,LM:0,PA:16.00,PM:0,PT:48.5;'));
+    state.applyParsedCat(parseCommand('SIRFV8:8.0,V5:5.0,V27:27.1,LT:31.2,LM:1354,PA:0.6,PM:16000,PT:48.5;'));
     state.applyParsedCat(parseCommand('SIFPVS:13.25,IS:2.80,TF:27.8;'));
     snap = state.getSnapshot();
     assertApprox(snap.telemetry.rxBaselineVolts, 13.80, 1e-6, 'baseline preserved during TX');
     assertApprox(snap.telemetry.txVoltDrop, 0.55, 1e-6, 'txVoltDrop = baseline - supplyVolts');
     assertApprox(snap.telemetry.supplyAmps, 2.80, 1e-6, 'supplyAmps tracks SIFP IS');
-    assertApprox(snap.telemetry.paAmps, 16.00, 1e-6, 'paAmps tracks SIRF PA');
-    assertApprox(snap.telemetry.totalAmps, 18.80, 1e-6, 'totalAmps sums SIFP IS + SIRF PA');
-    assertApprox(snap.telemetry.peakSupplyAmps, 19.00, 1e-6, 'peakSupplyAmps retains max IS + PA (19.0 A)');
+    assertApprox(snap.telemetry.paAmps, 16.00, 1e-6, 'paAmps converts SIRF PM (mA -> A)');
+    assertApprox(snap.telemetry.totalAmps, 18.80, 1e-6, 'totalAmps sums SIFP IS + SIRF PM');
+    assertApprox(snap.telemetry.peakSupplyAmps, 19.00, 1e-6, 'peakSupplyAmps retains max IS + PM (19.0 A)');
     assertApprox(snap.telemetry.fpTempC, 27.8, 1e-6, 'fpTempC updated');
-    assertApprox(state.getSensorHistory('is', 60).current, 18.80, 1e-6, 'current sensor history records totalAmps (IS + PA)');
+    assertApprox(state.getSensorHistory('is', 60).current, 18.80, 1e-6, 'current sensor history records totalAmps (IS + PM)');
 
     // SIRF & SIDU/SID0 sensors
     state.applyParsedCat(parseCommand('SIDUV5:5.0,V3:3.3,T:36.8,DV:58.0;'));
