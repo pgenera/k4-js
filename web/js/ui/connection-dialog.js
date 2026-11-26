@@ -106,12 +106,16 @@
       pwLbl.textContent = 'K4 Network Password (hashed client-side with SHA-384)';
       this.pwInput = document.createElement('input');
       this.pwInput.id = 'k4-password-input';
+      this.pwInput.name = 'k4-password';
       this.pwInput.type = 'password';
+      this.pwInput.autocomplete = 'current-password';
       this.pwInput.className = 'k4-input';
       this.pwInput.dataset.testid = 'password-input';
       this.pwInput.placeholder = 'Optional if radio/sim requires no password';
-      const sessionPw = K4.storage ? K4.storage.getSession('k4.sessionPw', '') : '';
-      if (sessionPw) this.pwInput.value = sessionPw;
+      const savedPw = K4.storage
+        ? (K4.storage.get('k4.savedPw', '') || K4.storage.getSession('k4.sessionPw', ''))
+        : '';
+      if (savedPw) this.pwInput.value = savedPw;
       pwField.appendChild(pwLbl);
       pwField.appendChild(this.pwInput);
       body.appendChild(pwField);
@@ -120,9 +124,11 @@
       remRow.className = 'k4-checkbox-row';
       this.rememberCheck = document.createElement('input');
       this.rememberCheck.type = 'checkbox';
-      this.rememberCheck.checked = Boolean(sessionPw);
+      this.rememberCheck.checked = savedPw
+        ? true
+        : Boolean(K4.storage ? K4.storage.get('k4.rememberPw', true) : true);
       remRow.appendChild(this.rememberCheck);
-      remRow.appendChild(document.createTextNode('Remember password in browser session memory only'));
+      remRow.appendChild(document.createTextNode('Remember password on this device (localStorage)'));
       body.appendChild(remRow);
 
       // Audio Codec & Subprotocol
@@ -301,9 +307,12 @@
       K4.storage.set('k4.encodeMode', String(this.emSelect.value));
       K4.storage.set('k4.subprotocol', opts.subprotocolMode);
       K4.storage.set('k4.latencyTier', opts.latencyTier);
+      K4.storage.set('k4.rememberPw', Boolean(this.rememberCheck.checked));
       if (this.rememberCheck.checked && opts.password) {
-        K4.storage.setSession('k4.sessionPw', opts.password);
+        K4.storage.set('k4.savedPw', opts.password);
+        K4.storage.setSession('k4.sessionPw', '');
       } else {
+        K4.storage.set('k4.savedPw', '');
         K4.storage.setSession('k4.sessionPw', '');
       }
     }
