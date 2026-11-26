@@ -6,8 +6,8 @@
   // Stamped automatically by .github/workflows/deploy-demo.yml on deploy
   // (and updated in-repo for direct static checkouts).
   const BUILD_INFO = Object.freeze({
-    commit: 'wf-drag',
-    builtAt: '2026-11-23T21:10:00Z',
+    commit: 'pip-popout',
+    builtAt: '2026-11-26T01:15:00Z',
   });
 
   function formatBuildLabel(info) {

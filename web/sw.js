@@ -38,6 +38,7 @@ const UPDATE_WATCH_ASSETS = [
   './js/ui/inspector-panels.js',
   './js/ui/connection-dialog.js',
   './js/ui/settings-panel.js',
+  './js/ui/popout-view.js',
   './js/app.js',
 ];
 

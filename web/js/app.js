@@ -122,6 +122,7 @@
         txModeTestBtn: document.getElementById('tx-mode-test'),
         pttBtn: document.getElementById('ptt-btn'),
         settingsBtn: document.getElementById('settings-btn'),
+        popoutBtn: document.getElementById('popout-btn'),
         drawerToggleBtn: document.getElementById('drawer-toggle'),
         panStage: document.getElementById('pan-stage'),
         drawer: document.getElementById('inspector-drawer'),
@@ -821,12 +822,48 @@
           this.pwa.notifyActivityChanged();
         }
 
+        if (this.popout && this.popout.isOpen()) {
+          this.popout.update(snap);
+        }
         if (allMeterOnly) {
           this._scheduleMeterRender(keyList);
         } else {
           this._render(keyList);
         }
       });
+
+      this.popout =
+        typeof K4.PopoutView === 'function'
+          ? new K4.PopoutView({
+              getSnapshot: () => this._getSnapshot(),
+              getAudioDiag: () =>
+                this.audio && typeof this.audio.getDiagnostics === 'function'
+                  ? this.audio.getDiagnostics()
+                  : { muted: true },
+              onToggleMute: () => {
+                void this.toggleAudio();
+                if (this.popout && this.popout.isOpen()) {
+                  this.popout.update(this._getSnapshot(), this.audio && this.audio.getDiagnostics ? this.audio.getDiagnostics() : null);
+                }
+              },
+              onPttStart: () => this._beginHoldPtt(),
+              onPttEnd: () => this._endHoldPtt(),
+              onStepVfo: (rx, dir, fine) => {
+                const snap = this._getSnapshot();
+                const cur = rx === 'B' ? snap.rxB.freqHz : snap.rxA.freqHz;
+                const step = fine ? 10 : 100;
+                if (Number.isFinite(cur) && cur > 0) {
+                  this.client.tuneVfo(rx, Math.max(100000, cur + dir * step));
+                }
+              },
+              onStateChange: (open) => {
+                if (this._dom.popoutBtn) {
+                  this._dom.popoutBtn.setAttribute('aria-pressed', open ? 'true' : 'false');
+                  this._dom.popoutBtn.classList.toggle('is-active', open);
+                }
+              },
+            })
+          : null;
 
       // Top bar button handlers
       this._dom.connBtn.addEventListener('click', () => {
@@ -837,6 +874,13 @@
       this._dom.omnibarBtn.addEventListener('click', () => this.openOmnibar());
       this._dom.audioToggleBtn.addEventListener('click', () => this.toggleAudio());
       this._dom.drawerToggleBtn.addEventListener('click', () => this.toggleDrawer());
+      if (this._dom.popoutBtn && this.popout) {
+        this._dom.popoutBtn.addEventListener('click', () => {
+          this.popout.toggle().catch((err) => {
+            this.toast((err && err.message) || 'Could not open Pop-Out window', 'error');
+          });
+        });
+      }
       if (this._dom.settingsBtn) {
         this._dom.settingsBtn.addEventListener('click', () => {
           if (this.settingsPanel && this.settingsPanel.isOpen()) this.settingsPanel.close();
@@ -1257,6 +1301,9 @@
 
       window.addEventListener('pagehide', () => {
         this._endHoldPtt();
+        if (this.popout && this.popout.isOpen()) {
+          this.popout.close();
+        }
       });
 
       window.addEventListener('resize', () => {

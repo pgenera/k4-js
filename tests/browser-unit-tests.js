@@ -5331,6 +5331,75 @@
     }
   });
 
+  // 63. Document PiP PopoutView mini-rig readout
+  test('PopoutView mounts into Document PiP window and renders VFO, S-meter, TX meters & DC/PA metrics', async () => {
+    const K4 = globalThis.K4;
+    const pipDoc = document.implementation.createHTMLDocument('K4 Mini-Rig');
+    const listeners = {};
+    const mockPipWin = {
+      document: pipDoc,
+      closed: false,
+      addEventListener: (ev, fn) => { (listeners[ev] = listeners[ev] || []).push(fn); },
+      close: () => {
+        mockPipWin.closed = true;
+        for (const fn of listeners.pagehide || []) fn();
+      },
+      focus: () => {},
+    };
+    const origPip = globalThis.documentPictureInPicture;
+    Object.defineProperty(globalThis, 'documentPictureInPicture', {
+      configurable: true,
+      writable: true,
+      value: { requestWindow: async () => mockPipWin },
+    });
+
+    const state = new K4.RadioState();
+    state.updateConnection({ status: 'connected', authStatus: 'authenticated', radioId: 'K4D', rttMs: 14 });
+    state.applyParsedCat(K4.CatCodec.parseCommand('FA00014225000;'));
+    state.applyParsedCat(K4.CatCodec.parseCommand('FB00014230000;'));
+    state.applyParsedCat(K4.CatCodec.parseCommand('MD2;'));
+    state.applyParsedCat(K4.CatCodec.parseCommand('SMH064;'));
+    state.applyParsedCat(K4.CatCodec.parseCommand('TX;'));
+    state.applyParsedCat(K4.CatCodec.parseCommand('TM0312095125;'));
+    state.applyParsedCat(K4.CatCodec.parseCommand('SIFPVS:13.20,IS:2.90,TF:37.0;'));
+    state.applyParsedCat(K4.CatCodec.parseCommand('SIRFV8:8.0,V5:5.0,LT:40,LM:1350,PA:0.5,PM:16100,PT:44;'));
+
+    let openState = null;
+    let mutedToggled = 0;
+    const pop = new K4.PopoutView({
+      getSnapshot: () => state.getSnapshot(),
+      getAudioDiag: () => ({ muted: false }),
+      onToggleMute: () => { mutedToggled += 1; },
+      onPttStart: () => {},
+      onPttEnd: () => {},
+      onStateChange: (v) => { openState = v; },
+    });
+
+    try {
+      const opened = await pop.open();
+      assertEqual(opened, true, 'PopoutView.open() returns true');
+      assertEqual(openState, true, 'onStateChange(true) fired');
+      assertEqual(pipDoc.querySelector('[data-testid="pip-vfo-a"]').textContent, '14.225.000', 'VFO A rendered');
+      assertEqual(pipDoc.querySelector('[data-testid="pip-vfo-b"]').textContent, 'B 14.230.000', 'VFO B rendered');
+      assert(pipDoc.querySelector('[data-testid="pip-smeter-val"]').textContent.includes('dBm'), 'S-meter dBm rendered');
+      assert(pipDoc.querySelector('[data-testid="pip-tx-pwr"]').textContent.includes('W'), 'TX PWR rendered');
+      assert(pipDoc.querySelector('[data-testid="pip-tx-swr"]').textContent.includes(':1'), 'TX SWR rendered');
+      assert(pipDoc.body.textContent.includes('19.0A'), 'Footer includes total IS+PM amps (19.0A)');
+      assert(pipDoc.body.textContent.includes('PA 44°C'), 'Footer includes PA temp');
+      assert(pipDoc.body.textContent.includes('RTT 14ms'), 'Footer includes RTT');
+
+      pipDoc.querySelector('[data-testid="pip-mute-btn"]').click();
+      assertEqual(mutedToggled, 1, 'Mute button invokes callback');
+
+      pop.close();
+      assertEqual(pop.isOpen(), false, 'PopoutView.close() marks closed');
+      assertEqual(openState, false, 'onStateChange(false) fired on close');
+    } finally {
+      if (origPip === undefined) delete globalThis.documentPictureInPicture;
+      else Object.defineProperty(globalThis, 'documentPictureInPicture', { configurable: true, writable: true, value: origPip });
+    }
+  });
+
   async function runAll() {
     const resultsEl = document.getElementById('results');
     const summaryEl = document.getElementById('summary');
