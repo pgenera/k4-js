@@ -5382,11 +5382,19 @@
       assertEqual(pipDoc.querySelector('[data-testid="pip-vfo-a"]').textContent, '14.225.000', 'VFO A rendered');
       assertEqual(pipDoc.querySelector('[data-testid="pip-vfo-b"]').textContent, 'B 14.230.000', 'VFO B rendered');
       assert(pipDoc.querySelector('[data-testid="pip-smeter-val"]').textContent.includes('dBm'), 'S-meter dBm rendered');
+      assertEqual(pipDoc.querySelector('[data-testid="pip-smeter-b"]').hidden, true, 'VFO B S-meter hidden when Sub RX off');
       assert(pipDoc.querySelector('[data-testid="pip-tx-pwr"]').textContent.includes('W'), 'TX PWR rendered');
       assert(pipDoc.querySelector('[data-testid="pip-tx-swr"]').textContent.includes(':1'), 'TX SWR rendered');
       assert(pipDoc.body.textContent.includes('19.0A'), 'Footer includes total IS+PM amps (19.0A)');
       assert(pipDoc.body.textContent.includes('PA 44°C'), 'Footer includes PA temp');
       assert(pipDoc.body.textContent.includes('RTT 14ms'), 'Footer includes RTT');
+
+      // Enabling Sub RX reveals the VFO B S-meter with live dBm readout
+      state.applyParsedCat(K4.CatCodec.parseCommand('SB1;'));
+      state.applyParsedCat(K4.CatCodec.parseCommand('SMH$048;'));
+      pop.update(state.getSnapshot(), { muted: false }, true);
+      assertEqual(pipDoc.querySelector('[data-testid="pip-smeter-b"]').hidden, false, 'VFO B S-meter shown when Sub RX on');
+      assert(pipDoc.querySelector('[data-testid="pip-smeter-b-val"]').textContent.includes('dBm'), 'VFO B S-meter dBm rendered');
 
       pipDoc.querySelector('[data-testid="pip-mute-btn"]').click();
       assertEqual(mutedToggled, 1, 'Mute button invokes callback');

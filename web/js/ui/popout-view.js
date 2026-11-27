@@ -299,6 +299,17 @@
     .pip-bar-fill--s {
       background: linear-gradient(90deg, #22c55e 0%, #38bdf8 55%, #f59e0b 74%, #f43f5e 100%);
     }
+    .pip-bar-fill--sb {
+      background: linear-gradient(90deg, #10b981 0%, #34d399 55%, #f59e0b 74%, #f43f5e 100%);
+    }
+    .pip-s-b-wrap {
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      margin-top: 1px;
+    }
+    .pip-s-b-wrap[hidden] { display: none; }
+    .pip-s-label--b { color: var(--green); }
     .pip-bar-peak {
       position: absolute;
       top: 0;
@@ -316,6 +327,17 @@
       color: var(--dim);
       margin-top: -2px;
     }
+    .pip-root[data-sub="true"] {
+      gap: 5px;
+      padding: 6px 9px;
+    }
+    .pip-root[data-sub="true"] .pip-vfo-card,
+    .pip-root[data-sub="true"] .pip-meter-card {
+      padding: 5px 8px;
+      gap: 4px;
+    }
+    .pip-root[data-sub="true"] .pip-vfo-a { font-size: 22px; }
+    .pip-root[data-sub="true"] .pip-bar-track { height: 7px; }
 
     .pip-tx-grid {
       display: grid;
@@ -392,6 +414,7 @@
       this._win = null;
       this._refs = null;
       this._peakA = { peakDbm: -127, peakAt: 0, lastDecayAt: 0 };
+      this._peakB = { peakDbm: -127, peakAt: 0, lastDecayAt: 0 };
       this._pttHeld = false;
       this._rafId = 0;
       this._pendingRender = false;
@@ -426,14 +449,16 @@
         return true;
       }
 
+      const initSnap = this._getSnapshot() || {};
+      const initHeight = initSnap.subRxEnabled ? 276 : 252;
       let win = null;
       if (PopoutView.isDocumentPipSupported()) {
         win = await globalThis.documentPictureInPicture.requestWindow({
           width: 390,
-          height: 248,
+          height: initHeight,
         });
       } else if (typeof globalThis.open === 'function') {
-        win = globalThis.open('', 'k4-mini-rig', 'popup=yes,width=390,height=248');
+        win = globalThis.open('', 'k4-mini-rig', `popup=yes,width=390,height=${initHeight}`);
       }
       if (!win) {
         return false;
@@ -585,6 +610,25 @@
       sPeak.style.left = '0%';
       sTrack.append(sFill, sPeak);
 
+      const sBWrap = el('div', 'pip-s-b-wrap');
+      sBWrap.dataset.testid = 'pip-smeter-b';
+      sBWrap.hidden = true;
+      const sBHead = el('div', 'pip-s-head');
+      const sBLabel = el('span', 'pip-s-label pip-s-label--b', 'S-METER B');
+      const sBVal = el('span', 'pip-s-val');
+      sBVal.dataset.testid = 'pip-smeter-b-val';
+      const sUnitB = el('span', '', 'S0');
+      const sDbmB = el('span', 'pip-s-dbm', ' · -127 dBm');
+      sBVal.append(sUnitB, sDbmB);
+      sBHead.append(sBLabel, sBVal);
+
+      const sBTrack = el('div', 'pip-bar-track');
+      const sFillB = el('div', 'pip-bar-fill pip-bar-fill--sb');
+      const sPeakB = el('div', 'pip-bar-peak');
+      sPeakB.style.left = '0%';
+      sBTrack.append(sFillB, sPeakB);
+      sBWrap.append(sBHead, sBTrack);
+
       const sTicks = el('div', 'pip-s-ticks');
       for (const t of ['S1', 'S5', 'S9', '+20', '+40']) {
         sTicks.appendChild(el('span', '', t));
@@ -613,7 +657,7 @@
         cmp: makeTxBar('cmp', 'CMP'),
       };
 
-      meterCard.append(sHead, sTrack, sTicks, txGrid);
+      meterCard.append(sHead, sTrack, sBWrap, sTicks, txGrid);
 
       // 4. Footer Key Metrics
       const foot = el('div', 'pip-foot');
@@ -627,10 +671,12 @@
       doc.body.appendChild(root);
 
       this._refs = {
+        root,
         dot, host, statePill, muteBtn, pttBtn,
         vfoAFreq, modeBadge, bwBadge, splitBadge, ritBadge,
         vfoBRow, vfoBFreq, vfoBMeta,
-        sUnit, sDbm, sFill, sPeak,
+        sLabel, sUnit, sDbm, sFill, sPeak,
+        sBWrap, sUnitB, sDbmB, sFillB, sPeakB,
         txGrid, txBars,
         mVolts, mAmps, mTemp, mRtt,
       };
@@ -721,19 +767,32 @@
       }
 
       const subOn = Boolean(snap.subRxEnabled);
+      r.root.dataset.sub = subOn ? 'true' : 'false';
       r.vfoBFreq.textContent = `B ${formatFreqMHz(rxB.freqHz)}`;
       r.vfoBMeta.textContent = subOn
         ? `${formatMode(rxB)} ${formatBw(rxB.bwHz)}`.trim()
         : (snap.split ? `TX ${formatMode(rxB)}` : 'SUB OFF');
       r.vfoBRow.dataset.dim = (subOn || snap.split) ? 'false' : 'true';
 
-      // S-Meter
+      // S-Meters (VFO A always, VFO B when Sub RX is enabled)
+      const now = performance.now();
       const rawDbm = Number.isFinite(rxA.sMeterDbm) ? rxA.sMeterDbm : -127;
-      const peakDbm = stepPeak(performance.now(), rawDbm, this._peakA);
+      const peakDbm = stepPeak(now, rawDbm, this._peakA);
+      r.sLabel.textContent = subOn ? 'S-METER A' : 'S-METER';
       r.sUnit.textContent = formatSUnit(rawDbm);
       r.sDbm.textContent = ` · ${Math.round(rawDbm)} dBm`;
       r.sFill.style.width = `${dbmToPct(rawDbm).toFixed(1)}%`;
       r.sPeak.style.left = `${dbmToPct(peakDbm).toFixed(1)}%`;
+
+      r.sBWrap.hidden = !subOn;
+      if (subOn) {
+        const rawDbmB = Number.isFinite(rxB.sMeterDbm) ? rxB.sMeterDbm : -127;
+        const peakDbmB = stepPeak(now, rawDbmB, this._peakB);
+        r.sUnitB.textContent = formatSUnit(rawDbmB);
+        r.sDbmB.textContent = ` · ${Math.round(rawDbmB)} dBm`;
+        r.sFillB.style.width = `${dbmToPct(rawDbmB).toFixed(1)}%`;
+        r.sPeakB.style.left = `${dbmToPct(peakDbmB).toFixed(1)}%`;
+      }
 
       // TX Meters
       const tm = snap.txMeters || {};

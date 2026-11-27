@@ -6,8 +6,8 @@
   // Stamped automatically by .github/workflows/deploy-demo.yml on deploy
   // (and updated in-repo for direct static checkouts).
   const BUILD_INFO = Object.freeze({
-    commit: 'save-pw',
-    builtAt: '2026-11-26T01:21:00Z',
+    commit: 'pip-sub-smeter',
+    builtAt: '2026-11-27T16:48:00Z',
   });
 
   function formatBuildLabel(info) {
